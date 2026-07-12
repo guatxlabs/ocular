@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy@sha256:6db13504e3915a9d9fee8638432c8036216bfda087ea36dd86608db83e3eb560
 
 WORKDIR /app
 # playwright==1.41.0 pinné pour matcher les binaires navigateurs déjà présents
@@ -17,6 +17,9 @@ RUN useradd -u 10001 -m runner
 # pointer vers /work plutôt que /home/runner (en lecture seule à l'exécution).
 ENV HOME=/work
 ENV TMPDIR=/work
+# /work est le SEUL point d'écriture au runtime (HOME/TMPDIR de Chromium). Le runtime DOIT
+# monter --tmpfs /work:size=...,mode=1777 (cf. broker/launcher.py) : sans ce flag, /work reste
+# root:root en lecture seule et Chromium échoue silencieusement.
 RUN mkdir -p /work
 
 USER 10001
