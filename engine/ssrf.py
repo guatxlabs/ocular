@@ -39,14 +39,8 @@ def validate_capture_url(url: str) -> None:
         raise ValueError("host vide")
 
     for candidate_ip in _resolve_ips(host):
-        if (
-            candidate_ip.is_private
-            or candidate_ip.is_loopback
-            or candidate_ip.is_link_local
-            or candidate_ip.is_reserved
-            or candidate_ip.is_multicast
-        ):
-            raise ValueError(f"IP interdite: {candidate_ip}")
+        if not candidate_ip.is_global:
+            raise ValueError(f"URL interdite (IP non routable/interne): {url!r}")
 
 
 def _resolve_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:

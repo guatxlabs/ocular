@@ -18,6 +18,8 @@ def normalize_url(url: str) -> str:
     p = urlsplit(url)
     scheme = (p.scheme or "https").lower()
     host = (p.hostname or "").lower()
+    if ":" in host:                 # IPv6 littéral -> crochets
+        host = f"[{host}]"
     netloc = host
     if p.port is not None and p.port != _DEFAULT_PORTS.get(scheme):
         netloc = f"{host}:{p.port}"

@@ -31,3 +31,15 @@ def test_nondefault_port_kept():
 
 def test_empty_path_becomes_slash():
     assert normalize_url("https://Example.com") == "https://example.com/"
+
+
+def test_ipv6_host_keeps_brackets():
+    assert normalize_url("https://[::1]:8443/a") == "https://[::1]:8443/a"
+
+
+def test_ipv6_host_lowercased():
+    assert normalize_url("http://[FE80::1]/") == "http://[fe80::1]/"
+
+
+def test_ipv6_default_port_stripped():
+    assert normalize_url("https://[::1]:443/a") == "https://[::1]/a"

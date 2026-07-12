@@ -18,6 +18,13 @@ _RECON_IMAGE = "ocular-runner-recon:latest"
 _RECON_SECCOMP = "schemas/seccomp-recon.json"
 _ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
 
+_ANALYSIS_TIMEOUT = 60
+_CAPTURE_TIMEOUT = 90
+_ANALYSIS_MEMORY = "2g"
+_ANALYSIS_PIDS_LIMIT = "256"
+_CAPTURE_MEMORY = "4g"
+_CAPTURE_PIDS_LIMIT = "512"
+
 
 def _proxy_env() -> list[str]:
     out: list[str] = []
@@ -44,20 +51,31 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
+def _base_hardening(job_id: str) -> list[str]:
+    """Flags de durcissement communs aux deux profils (analysis + capture) :
+    conteneur jetable nommé, aucune capability, no-new-privileges, rootfs
+    read-only, utilisateur non-root. Les specifics (network/seccomp/mémoire/
+    tmpfs/proxy/image/args) restent composés par `build_docker_args`."""
+    return [
+        "--rm",
+        "--name", f"ocular-job-{job_id}",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges:true",
+        "--read-only",
+        "--user", "10001:10001",
+    ]
+
+
 def build_docker_args(job: Job) -> list[str]:
     if job.profile == "analysis":
         return [
-            "docker", "run", "--rm", "-i",
-            "--name", f"ocular-job-{job.job_id}",
+            "docker", "run", "-i",
+            *_base_hardening(job.job_id),
             "--network", "none",
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges:true",
             "--security-opt", f"seccomp={_SECCOMP}",
-            "--read-only",
             "--tmpfs", "/work:size=256m,mode=1777",
-            "--user", "10001:10001",
-            "--memory", "2g",
-            "--pids-limit", "256",
+            "--memory", _ANALYSIS_MEMORY,
+            "--pids-limit", _ANALYSIS_PIDS_LIMIT,
             _IMAGE,
             "--job-id", job.job_id,
         ]
@@ -65,17 +83,13 @@ def build_docker_args(job: Job) -> list[str]:
         # Réseau ON (recon a besoin d'Internet) mais durci : pas de docker.sock,
         # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
         return [
-            "docker", "run", "--rm",
-            "--name", f"ocular-job-{job.job_id}",
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges:true",
+            "docker", "run",
+            *_base_hardening(job.job_id),
             "--security-opt", f"seccomp={_RECON_SECCOMP}",
-            "--read-only",
             "--tmpfs", "/work:size=512m,mode=1777",
             "--tmpfs", "/tmp:size=64m,mode=1777",
-            "--user", "10001:10001",
-            "--memory", "4g",
-            "--pids-limit", "512",
+            "--memory", _CAPTURE_MEMORY,
+            "--pids-limit", _CAPTURE_PIDS_LIMIT,
             *_proxy_env(),
             _RECON_IMAGE,
             "--url", job.url or "",
@@ -90,7 +104,7 @@ def run_job(job: Job) -> str:
                     job.job_id, bool(_proxy_env()))
     started = time.monotonic()
     stdin = (job.html or "").encode() if job.profile == "analysis" else None
-    timeout = 60 if job.profile == "analysis" else 90
+    timeout = _ANALYSIS_TIMEOUT if job.profile == "analysis" else _CAPTURE_TIMEOUT
     try:
         proc = subprocess.run(
             build_docker_args(job),
