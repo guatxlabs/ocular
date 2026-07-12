@@ -40,6 +40,16 @@ async def _auth(request, call_next):
             # jamais le header/token dans les logs, seulement path + status
             log.warning("auth rejected path=%s status=%d", request.url.path, 401)
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        if request.method == "DELETE" and request.url.path.startswith("/saved"):
+            adm = os.environ.get("OCULAR_ADMIN_TOKEN")
+            if not adm:                                # fail-closed : jamais ouvert par défaut
+                log.warning("admin rejected path=%s status=%d", request.url.path, 503)
+                return JSONResponse({"detail": "OCULAR_ADMIN_TOKEN non configuré"}, status_code=503)
+            provided_adm = request.headers.get("x-admin-token", "")
+            if not secrets.compare_digest(provided_adm.encode("utf-8", "ignore"), adm.encode()):
+                # jamais le header/token dans les logs, seulement path + status
+                log.warning("admin rejected path=%s status=%d", request.url.path, 403)
+                return JSONResponse({"detail": "admin requis"}, status_code=403)
     return await call_next(request)
 
 
@@ -211,6 +221,30 @@ def get_saved_artifact(sid: int, ref: str) -> Response:
     if data is None:
         raise HTTPException(status_code=404, detail="artefact absent")
     return _serve_artifact_bytes(data, fname)
+
+
+@app.delete("/saved/{sid}")
+def delete_saved(sid: int) -> dict:
+    conn = _saved_conn()
+    try:
+        ok = saved_store.delete(conn, sid)
+    finally:
+        conn.close()
+    if not ok:
+        raise HTTPException(status_code=404, detail="introuvable")
+    log.info("saved deleted id=%s", sid)
+    return {"deleted": sid}
+
+
+@app.delete("/saved")
+def flush_saved() -> dict:
+    conn = _saved_conn()
+    try:
+        n = saved_store.flush(conn)
+    finally:
+        conn.close()
+    log.warning("saved flushed count=%d", n)
+    return {"flushed": n}
 
 
 # UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
