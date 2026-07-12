@@ -5,10 +5,13 @@ services:
 
   web:
     build: { context: .., dockerfile: deploy/Dockerfile.web }
+    restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_TOKEN: "${OCULAR_TOKEN:?OCULAR_TOKEN requis}"
+      OCULAR_ADMIN_TOKEN: "${OCULAR_ADMIN_TOKEN:-}"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
+      OCULAR_SAVED_DB: "/saved/saved.db"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: ["ALL"]
@@ -19,11 +22,13 @@ services:
     cpus: "1.0"
     volumes:
       - ocular-artifacts:/artifacts:ro   # web LIT les artefacts
+      - ocular-saved:/saved              # web LIT/ÉCRIT les analyses sauvegardées
     depends_on: [redis]
     # PAS de docker.sock — contrainte de sécurité
 
   broker:
     build: { context: .., dockerfile: deploy/Dockerfile.broker }
+    restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
@@ -37,3 +42,4 @@ services:
 
 volumes:
   ocular-artifacts:
+  ocular-saved:

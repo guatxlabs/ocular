@@ -1,4 +1,4 @@
-.PHONY: build-runner up down analyze test test-int gc
+.PHONY: build-runner up down analyze test test-int gc clean
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 up: build-runner
@@ -14,3 +14,6 @@ test-int:
 	. .venv/bin/activate && pytest -m integration -q
 gc:
 	docker compose -f deploy/docker-compose.yml exec -T broker python -m broker.gc
+clean:
+	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null; true
+	rm -rf .coverage *.egg-info artifacts *.db *.db-* 2>/dev/null; true

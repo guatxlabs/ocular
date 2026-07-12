@@ -3,9 +3,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Le broker est le SEUL tier autorisé à parler à Docker (socket monté par compose) :
-# il a donc besoin du CLI docker pour lancer/tuer les conteneurs runner_analysis.
+# il a besoin du CLI client `docker` pour lancer/tuer les conteneurs runner_analysis.
+# NB: sur Debian récent le paquet `docker.io` ne fournit QUE le daemon (dockerd) ;
+# le client `/usr/bin/docker` est désormais dans le paquet séparé `docker-cli`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends docker.io \
+    && apt-get install -y --no-install-recommends docker-cli \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./

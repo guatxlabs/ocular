@@ -41,3 +41,11 @@ def max_html_bytes() -> int:
 
 def log_level() -> str:
     return os.environ.get("OCULAR_LOG_LEVEL", "INFO").upper()
+
+
+def saved_db_path() -> str:
+    return os.environ.get("OCULAR_SAVED_DB", "/saved/saved.db")
+
+
+def admin_token() -> str | None:
+    return os.environ.get("OCULAR_ADMIN_TOKEN")

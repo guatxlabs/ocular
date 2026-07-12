@@ -6,6 +6,7 @@ import { LANG } from './state.js';
 const I18N_EN = {
   // header / nav
   'Analyser': 'Analyze', 'Jobs': 'Jobs', 'Se déconnecter': 'Sign out',
+  'Sauvegardes': 'Saved', 'Admin': 'Admin',
   'Langue / Language': 'Language', 'Thème clair / sombre': 'Light / dark theme',
   'Changer de thème': 'Toggle theme',
   // login
@@ -35,6 +36,35 @@ const I18N_EN = {
   'Chaîne de redirection': 'Redirect chain', 'détections': 'findings', 'requêtes': 'requests',
   'Job introuvable ou expiré.': 'Job not found or expired.',
   'Analyse en attente — actualisation automatique…': 'Analysis pending — auto-refreshing…',
+  'Aucune capture pour cette analyse.': 'No screenshot for this analysis.',
+  // sauvegarde (panneau détail)
+  'Conserver cette analyse': 'Keep this analysis', 'Sauvegarder': 'Save',
+  'étiquette (optionnelle)': 'label (optional)', 'Analyse sauvegardée': 'Analysis saved',
+  'Voir dans Sauvegardes': 'View in Saved',
+  'Artefacts expirés — relance l\'analyse avant de sauvegarder.': 'Artifacts expired — rerun the analysis before saving.',
+  // vue Sauvegardes
+  'Analyses conservées côté serveur, indépendantes du navigateur.': 'Analyses kept server-side, independent of the browser.',
+  'Aucune analyse sauvegardée.': 'No saved analysis.',
+  'Ouvre une analyse terminée puis « Sauvegarder ».': 'Open a finished analysis then “Save”.',
+  '(sans étiquette)': '(no label)',
+  // modale de dédup
+  'Analyse déjà sauvegardée': 'Already saved',
+  'Ce HTML a déjà été analysé et conservé. Tu peux la revoir sans relancer le moteur.':
+    'This HTML has already been analyzed and saved. You can review it without rerunning the engine.',
+  'Sauvegardée': 'Saved', 'Étiquette': 'Label',
+  'Analyser quand même': 'Analyze anyway', 'Voir': 'View', 'Annuler': 'Cancel',
+  // vue Admin
+  'Purge des analyses sauvegardées. Actions destructives.': 'Purge saved analyses. Destructive actions.',
+  'Token administrateur': 'Admin token',
+  'Gardé en mémoire pour cette session uniquement — jamais stocké. Requis pour supprimer.':
+    'Kept in memory for this session only — never stored. Required to delete.',
+  'Tout purger': 'Purge all', 'Supprimer': 'Delete',
+  'Supprimer cette sauvegarde ?': 'Delete this save?',
+  'Purger toutes les sauvegardes ?': 'Purge all saves?',
+  'Renseigne le token admin avant de supprimer.': 'Enter the admin token before deleting.',
+  'Token admin refusé — vérifie la valeur.': 'Admin token rejected — check the value.',
+  'Administration désactivée : le serveur n\'a pas de OCULAR_ADMIN_TOKEN.':
+    'Administration disabled: the server has no OCULAR_ADMIN_TOKEN.',
   // sévérités
   'critical': 'critical', 'high': 'high', 'medium': 'medium', 'low': 'low',
   // verdicts

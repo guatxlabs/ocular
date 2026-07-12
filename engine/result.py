@@ -70,6 +70,7 @@ class OcularResult(BaseModel):
     job_id: str
     profile: Profile
     target: str
+    input_hash: Optional[str] = None
     timestamp: str
     verdict: Verdict = "unknown"
     screenshots: list[Screenshot] = Field(default_factory=list)
