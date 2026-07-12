@@ -7,6 +7,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir pydantic>=2.6 playwright==1.41.0
 COPY engine/ ./engine/
 COPY runner_analysis/ ./runner_analysis/
+COPY ocular_settings.py ocular_logging.py ./
 
 # Utilisateur non privilégié
 RUN useradd -u 10001 -m runner

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class JobRequest(BaseModel):
-    profile: str
+    profile: Literal["analysis"] = "analysis"
     html: Optional[str] = None
-    url: Optional[str] = None
+    url: Optional[str] = Field(default=None, max_length=2048)
 
 
 class JobResponse(BaseModel):

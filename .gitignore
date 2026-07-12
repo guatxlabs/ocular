@@ -8,3 +8,5 @@ logs/
 .venv/
 *.egg-info/
 artifacts/
+.coverage
+*.egg-info/

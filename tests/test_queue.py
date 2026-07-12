@@ -1,6 +1,6 @@
 import fakeredis
 
-from broker.queue import Job, RedisJobQueue
+from bus.queue import Job, RedisJobQueue
 
 
 def test_enqueue_then_dequeue_roundtrip():

@@ -43,7 +43,21 @@ export function renderDetail(app, id) {
       return;
     }
     stop();
+    if (res && res.status === 'error') { renderError(res); return; }
     renderResult(res);
+  }
+
+  // Job réellement en échec côté broker (distinct d'un verdict "unknown") :
+  // badge « Échec » + message d'erreur brut posé en textNode (jamais innerHTML —
+  // le message peut contenir du stderr Docker non fiable).
+  function renderError(r) {
+    body.replaceChildren(el('div', { class: 'verdict-hero v-error' }, [
+      el('span.sev.sev-err', {}, 'Échec'),
+      el('div.verdict-meta', {}, [
+        el('span.vt', { title: r.target || '' }, r.target || id),
+      ]),
+    ]));
+    body.appendChild(el('div.errbox', {}, r.error || ''));
   }
 
   function renderResult(r) {
@@ -183,7 +197,7 @@ export function renderDetail(app, id) {
           const b = e.currentTarget; b.disabled = true;
           try {
             const url = await artifactObjectUrl(id, artifacts.dom_html_ref);
-            const a = el('a', { href: url, download: id + '-dom.html' });
+            const a = el('a', { href: url, download: id + '-dom.txt' });
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 4000);
           } catch (ex) { if (!(ex instanceof Unauthorized)) b.textContent = 'Téléchargement indisponible'; }

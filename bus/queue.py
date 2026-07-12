@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 _QUEUE_KEY = "ocular:jobs"
-_RESULT_PREFIX = "ocular:result:"
+RESULT_PREFIX = "ocular:result:"
 
 
 class Job(BaseModel):
@@ -29,9 +29,12 @@ class RedisJobQueue:
         _, raw = item
         return Job.model_validate_json(raw)
 
-    def set_result(self, job_id: str, result_json: str) -> None:
-        self._r.set(_RESULT_PREFIX + job_id, result_json)
+    def set_result(self, job_id: str, result_json: str, ttl: Optional[int] = None) -> None:
+        if ttl:
+            self._r.set(RESULT_PREFIX + job_id, result_json, ex=ttl)
+        else:
+            self._r.set(RESULT_PREFIX + job_id, result_json)
 
     def get_result(self, job_id: str) -> Optional[str]:
-        val = self._r.get(_RESULT_PREFIX + job_id)
+        val = self._r.get(RESULT_PREFIX + job_id)
         return val.decode() if isinstance(val, bytes) else val

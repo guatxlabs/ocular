@@ -24,7 +24,7 @@ const I18N_EN = {
   // jobs
   'Mes analyses': 'My analyses', 'Les jobs soumis depuis ce navigateur.': 'Jobs submitted from this browser.',
   'Aucune analyse pour l\'instant.': 'No analysis yet.', 'Lancer une analyse': 'Run an analysis',
-  'en attente': 'pending', 'échec': 'failed',
+  'en attente': 'pending', 'échec': 'failed', 'Échec': 'Failed',
   // detail
   '← Jobs': '← Jobs', 'Capture d\'écran': 'Screenshot', 'chargement de la capture…': 'loading screenshot…',
   'Aucune capture pour ce job.': 'No screenshot for this job.',

@@ -3,13 +3,13 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY ocular_settings.py ocular_logging.py ./
 COPY engine/ ./engine/
-COPY broker/__init__.py ./broker/__init__.py
-COPY broker/queue.py ./broker/queue.py
+COPY bus/ ./bus/
 COPY web/ ./web/
 
 # Le tier web n'a besoin ni de docker CLI ni de broker/launcher.py :
-# il ne parle qu'à Redis (via broker.queue), jamais à Docker.
+# il ne parle qu'à Redis (via bus.queue), jamais à Docker.
 RUN pip install --no-cache-dir fastapi uvicorn redis pydantic
 
 RUN useradd -u 10002 -m ocular-web

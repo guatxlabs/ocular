@@ -8,11 +8,7 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <meta name="theme-color" content="#0b0e14">
 <link rel="stylesheet" href="/style.css">
-<script>
-  // thème appliqué AVANT le rendu (évite le flash clair/sombre)
-  try { document.documentElement.setAttribute('data-theme', localStorage.getItem('ocular_theme') || 'dark'); } catch (e) {}
-  try { document.documentElement.setAttribute('lang', localStorage.getItem('ocular_lang') || 'fr'); } catch (e) {}
-</script>
+<script src="/boot.js"></script>
 </head>
 <body>
 <header>
