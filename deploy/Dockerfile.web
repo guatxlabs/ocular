@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY engine/ ./engine/
+COPY broker/__init__.py ./broker/__init__.py
+COPY broker/queue.py ./broker/queue.py
+COPY web/ ./web/
+
+# Le tier web n'a besoin ni de docker CLI ni de broker/launcher.py :
+# il ne parle qu'à Redis (via broker.queue), jamais à Docker.
+RUN pip install --no-cache-dir fastapi uvicorn redis pydantic
+
+RUN useradd -u 10002 -m ocular-web
+USER 10002:10002
+
+EXPOSE 8000
+
+CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
