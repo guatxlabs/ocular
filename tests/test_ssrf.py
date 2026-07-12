@@ -60,3 +60,23 @@ def test_public_url_accepted():
 
 def test_public_ip_literal_accepted():
     validate_capture_url("http://93.184.216.34")
+
+
+def test_cgnat_ip_rejected():
+    with pytest.raises(ValueError):
+        validate_capture_url("http://100.64.0.1/")
+
+
+def test_cgnat_ip_rejected_second():
+    with pytest.raises(ValueError):
+        validate_capture_url("http://100.100.100.100/")
+
+
+def test_decimal_encoded_loopback_rejected():
+    with pytest.raises(ValueError):
+        validate_capture_url("http://2130706433/")
+
+
+def test_ipv4_mapped_ipv6_loopback_rejected():
+    with pytest.raises(ValueError):
+        validate_capture_url("http://[::ffff:127.0.0.1]/")
