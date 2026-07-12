@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
@@ -7,12 +8,15 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import redis
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+import websockets
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocketState
 
 import saved_store
 from bus.queue import Job, RedisJobQueue
@@ -274,6 +278,97 @@ def delete_session(
     registry.delete(session_id)
     log.info("session delete session_id=%s", session_id)
     return {"deleted": session_id}
+
+
+_WS_SUBPROTOCOL_PREFIX = "ocular.session."
+_WS_TOUCH_INTERVAL = 5.0
+
+
+def _extract_ws_token(websocket: WebSocket) -> str | None:
+    """Extrait le token capability du sous-protocole WebSocket, JAMAIS de
+    l'URL (anti-fuite logs/referrer). Le client envoie
+    `Sec-WebSocket-Protocol: binary, ocular.session.<token>` ; on lit le 2e
+    élément portant le préfixe `ocular.session.`. Ne jamais logger le résultat
+    ni l'en-tête brut."""
+    raw = websocket.headers.get("sec-websocket-protocol", "")
+    if not raw:
+        return None
+    for part in (p.strip() for p in raw.split(",")):
+        if part.startswith(_WS_SUBPROTOCOL_PREFIX):
+            return part[len(_WS_SUBPROTOCOL_PREFIX):]
+    return None
+
+
+async def _ws_pump(websocket: WebSocket, upstream, registry: SessionRegistry, sid: str) -> None:
+    """Pompe bidirectionnelle d'octets bruts (RFB) entre l'analyste et le
+    websockify du conteneur de session. `registry.touch` est rafraîchi au
+    plus une fois toutes les `_WS_TOUCH_INTERVAL` secondes, dès qu'il y a du
+    trafic dans un sens ou dans l'autre — jamais le contenu des trames ni le
+    token ne sont journalisés ici."""
+    last_touch = 0.0
+
+    def _maybe_touch() -> None:
+        nonlocal last_touch
+        now = time.monotonic()
+        if now - last_touch >= _WS_TOUCH_INTERVAL:
+            registry.touch(sid, datetime.now(timezone.utc).isoformat())
+            last_touch = now
+
+    async def client_to_upstream() -> None:
+        async for msg in websocket.iter_bytes():
+            await upstream.send(msg)
+            _maybe_touch()
+
+    async def upstream_to_client() -> None:
+        async for msg in upstream:
+            await websocket.send_bytes(msg)
+            _maybe_touch()
+
+    tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@app.websocket("/sessions/{sid}/ws")
+async def session_ws_proxy(
+    websocket: WebSocket,
+    sid: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+) -> None:
+    """Proxy websocket noVNC : relaie le RFB entre l'analyste et le conteneur
+    de session (réseau interne), sur l'origine web. Sécu critique : auth par
+    sous-protocole (token HORS URL), fail-closed AVANT accept(), et le
+    sous-protocole renvoyé au client est TOUJOURS "binary" seul — jamais le
+    token. Rien de ceci n'est journalisé (ni token, ni en-tête)."""
+    token = _extract_ws_token(websocket)
+    if not token or not registry.valid_token(sid, token):
+        await websocket.close(code=1008)
+        return
+
+    sess = registry.get(sid)
+    if not sess or not sess.get("container"):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept(subprotocol="binary")
+
+    upstream_url = f"ws://{sess['container']}:6080/websockify"
+    try:
+        async with websockets.connect(upstream_url, subprotocols=["binary"]) as upstream:
+            await _ws_pump(websocket, upstream, registry, sid)
+    except Exception:  # noqa: BLE001 - erreurs réseau/upstream : jamais de détail sensible loggé
+        pass
+    finally:
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                pass  # déjà fermé côté ASGI
 
 
 def _saved_conn():
