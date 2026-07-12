@@ -7,3 +7,4 @@ logs/
 .superpowers/
 .venv/
 *.egg-info/
+artifacts/

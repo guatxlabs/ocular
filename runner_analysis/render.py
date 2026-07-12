@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
+import json
 import sys
 from datetime import datetime, timezone
 
@@ -23,7 +25,7 @@ def _sha256_ref(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> OcularResult:
+def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple[OcularResult, dict[str, bytes]]:
     network: list[NetworkEntry] = []
     console: list[ConsoleEntry] = []
     # L'analyse static ne dépend PAS du navigateur : toujours disponible, même si le rendu échoue.
@@ -31,6 +33,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> Ocula
     screenshots: list[Screenshot] = []
     dom = DomInfo()
     artifacts = Artifacts()
+    blobs: dict[str, bytes] = {}
     render_error: str | None = None
 
     try:
@@ -66,15 +69,19 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> Ocula
                 render_error = f"render timeout/error: {type(exc).__name__}"
             try:
                 png = page.screenshot(full_page=True)
+                ref = _sha256_ref(png)
+                blobs[ref] = png
                 screenshots.append(
-                    Screenshot(step=0, phase="initial", image_ref=_sha256_ref(png), viewport="1280x720")
+                    Screenshot(step=0, phase="initial", image_ref=ref, viewport="1280x720")
                 )
             except Exception:
                 pass
             try:
                 dom_html = page.content().encode()
+                ref = _sha256_ref(dom_html)
+                blobs[ref] = dom_html
                 dom = DomInfo(title=page.title(), final_url=page.url)
-                artifacts = Artifacts(dom_html_ref=_sha256_ref(dom_html))
+                artifacts = Artifacts(dom_html_ref=ref)
             except Exception:
                 pass
             browser.close()
@@ -84,7 +91,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> Ocula
     if render_error:
         console.append(ConsoleEntry(level="error", text=render_error, location="ocular-runner"))
 
-    return OcularResult(
+    result = OcularResult(
         job_id=job_id,
         profile="analysis",
         target="inline-html",
@@ -97,6 +104,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> Ocula
         stealth=StealthInfo(engine="chromium"),
         artifacts=artifacts,
     )
+    return result, blobs
 
 
 def main() -> None:
@@ -104,8 +112,12 @@ def main() -> None:
     ap.add_argument("--job-id", required=True)
     args = ap.parse_args()
     html = sys.stdin.read()
-    result = render_html(html, args.job_id)
-    sys.stdout.write(result.model_dump_json() + "\n")
+    result, blobs = render_html(html, args.job_id)
+    payload = {
+        "result": result.model_dump(mode="json"),
+        "blobs": {ref: base64.b64encode(data).decode() for ref, data in blobs.items()},
+    }
+    sys.stdout.write(json.dumps(payload) + "\n")
 
 
 if __name__ == "__main__":

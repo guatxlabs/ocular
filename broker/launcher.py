@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 import subprocess
 
 from broker.queue import Job
+from engine.artifacts import ref_to_filename
 
 _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
+_ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+
+
+def _store_blobs(blobs: dict, artifacts_dir: str) -> None:
+    os.makedirs(artifacts_dir, exist_ok=True)
+    for ref, b64 in blobs.items():
+        try:
+            fname = ref_to_filename(ref)          # lève ValueError si ref non conforme (anti-traversal)
+        except ValueError:
+            continue
+        with open(os.path.join(artifacts_dir, fname), "wb") as fh:
+            fh.write(base64.b64decode(b64))
+
+
+def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
+    wrapper = json.loads(stdout)
+    _store_blobs(wrapper.get("blobs", {}), artifacts_dir)
+    return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
 def build_docker_args(job: Job) -> list[str]:
@@ -42,4 +64,4 @@ def run_analysis_job(job: Job) -> str:
         raise RuntimeError(f"runner timeout (job {job.job_id})")
     if proc.returncode != 0:
         raise RuntimeError(f"runner a échoué: {proc.stderr.decode()[:500]}")
-    return proc.stdout.decode()
+    return _parse_and_store(proc.stdout.decode(), _ARTIFACTS_DIR)
