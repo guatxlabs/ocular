@@ -19,6 +19,11 @@ def test_503_when_token_unset(monkeypatch):
     assert c.get("/jobs/x").status_code == 503
 
 
+def test_503_when_token_empty_string(monkeypatch):
+    c = _client(monkeypatch, "")
+    assert c.get("/jobs/x").status_code == 503
+
+
 def test_401_without_or_wrong_header(monkeypatch):
     c = _client(monkeypatch, "s3cret")
     assert c.get("/jobs/x").status_code == 401

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import uuid
 
 import redis
@@ -23,7 +24,9 @@ async def _auth(request, call_next):
         token = os.environ.get("OCULAR_TOKEN")
         if not token:                              # fail-closed : jamais ouvert par défaut
             return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
-        if request.headers.get("authorization", "") != f"Bearer {token}":
+        expected = f"Bearer {token}"
+        provided = request.headers.get("authorization", "")
+        if not secrets.compare_digest(provided, expected):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
 
