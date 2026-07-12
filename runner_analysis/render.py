@@ -35,22 +35,31 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> Ocula
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=["--no-sandbox"])  # isolation assurée par le conteneur
+            # isolation réseau assurée par le conteneur (--network none) ; on désactive la
+            # same-origin policy pour que les réponses réseau (y compris cross-origin) soient
+            # bien remontées via l'event "response" (sinon CORS masque le status même quand le
+            # réseau est réellement joignable, cf. task-6-report.md)
+            browser = p.chromium.launch(args=["--no-sandbox", "--disable-web-security"])
             context = browser.new_context(viewport={"width": 1280, "height": 720})
             page = context.new_page()
-            page.on(
-                "request",
-                lambda req: network.append(
-                    NetworkEntry(
-                        url=req.url, method=req.method, resource_type=req.resource_type,
-                        post_data=req.post_data,
-                    )
-                ),
-            )
-            page.on(
-                "console",
-                lambda msg: console.append(ConsoleEntry(level=msg.type, text=msg.text)),
-            )
+            req_index: dict = {}
+
+            def _on_request(req):
+                entry = NetworkEntry(
+                    url=req.url, method=req.method, resource_type=req.resource_type,
+                    post_data=req.post_data,
+                )
+                network.append(entry)
+                req_index[req] = entry
+
+            def _on_response(resp):
+                entry = req_index.get(resp.request)
+                if entry is not None:
+                    entry.status = resp.status
+
+            page.on("request", _on_request)
+            page.on("response", _on_response)
+            page.on("console", lambda msg: console.append(ConsoleEntry(level=msg.type, text=msg.text)))
             try:
                 page.set_content(html, wait_until="networkidle", timeout=render_timeout_ms)
             except Exception as exc:  # rendu partiel : on capture ce qu'on peut
