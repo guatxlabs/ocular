@@ -6,7 +6,10 @@ import redis
 
 from broker.launcher import run_analysis_job
 from bus.queue import RedisJobQueue
+from ocular_logging import get_logger
 from ocular_settings import redis_url, result_ttl
+
+log = get_logger("broker")
 
 
 def error_result(job_id: str, exc: Exception) -> str:
@@ -20,10 +23,14 @@ def process_one(queue: RedisJobQueue, job) -> None:
     """Une itération de la boucle : traite un job et stocke son résultat
     (ou l'erreur). Extrait de run_forever() pour être testable sans mocker
     une boucle infinie."""
+    log.info("job start job_id=%s", job.job_id)
     try:
         result_json = run_analysis_job(job)
     except Exception as exc:  # le job échoue proprement, le broker survit
+        log.error("job failed job_id=%s err=%s", job.job_id, str(exc)[:200])
         result_json = error_result(job.job_id, exc)
+    else:
+        log.info("job done job_id=%s", job.job_id)
     queue.set_result(job.job_id, result_json, ttl=result_ttl())
 
 

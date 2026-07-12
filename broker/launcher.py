@@ -4,9 +4,13 @@ import base64
 import json
 import os
 import subprocess
+import time
 
 from bus.queue import Job
 from engine.artifacts import ref_to_filename
+from ocular_logging import get_logger
+
+log = get_logger("broker.launcher")
 
 _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
@@ -51,6 +55,8 @@ def build_docker_args(job: Job) -> list[str]:
 
 
 def run_analysis_job(job: Job) -> str:
+    log.info("runner launch job_id=%s", job.job_id)
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             build_docker_args(job),
@@ -61,7 +67,12 @@ def run_analysis_job(job: Job) -> str:
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", f"ocular-job-{job.job_id}"],
                        capture_output=True, check=False)
+        log.error("runner timeout job_id=%s duration_ms=%d",
+                   job.job_id, int((time.monotonic() - started) * 1000))
         raise RuntimeError(f"runner timeout (job {job.job_id})")
+    duration_ms = int((time.monotonic() - started) * 1000)
     if proc.returncode != 0:
+        log.error("runner failed job_id=%s duration_ms=%d", job.job_id, duration_ms)
         raise RuntimeError(f"runner a échoué: {proc.stderr.decode()[:500]}")
+    log.info("runner done job_id=%s duration_ms=%d", job.job_id, duration_ms)
     return _parse_and_store(proc.stdout.decode(), _ARTIFACTS_DIR)
