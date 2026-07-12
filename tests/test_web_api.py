@@ -2,7 +2,7 @@ import fakeredis
 from fastapi.testclient import TestClient
 
 from web.app import app, get_queue
-from broker.queue import RedisJobQueue
+from bus.queue import RedisJobQueue
 
 
 def _client(monkeypatch):

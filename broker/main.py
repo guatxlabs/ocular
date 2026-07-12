@@ -6,7 +6,7 @@ import os
 import redis
 
 from broker.launcher import run_analysis_job
-from broker.queue import RedisJobQueue
+from bus.queue import RedisJobQueue
 
 
 def error_result(job_id: str, exc: Exception) -> str:

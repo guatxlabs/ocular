@@ -1,7 +1,7 @@
 import json
 import pytest
 from broker.launcher import build_docker_args, run_analysis_job
-from broker.queue import Job
+from bus.queue import Job
 
 
 def test_analysis_container_has_all_hardening_flags():
