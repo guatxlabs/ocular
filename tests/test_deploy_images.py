@@ -1,4 +1,4 @@
-"""Garde de build des 3 images de déploiement.
+"""Garde de build des 4 images de déploiement.
 
 Ce test aurait attrapé :
   - P2 : `docker.io` (Debian récent) ne fournit QUE le daemon, pas le client
@@ -6,12 +6,18 @@ Ce test aurait attrapé :
     Ici on vérifie explicitement la présence du CLI `docker` dans l'image broker.
   - C1-adjacent : l'image web doit importer `web.app` ET `saved_store`
     (le tier /saved) — un COPY manquant casserait tout /saved.
+  - Régression Dockerfile runner-recon : l'image doit être rebuildée à chaque
+    changement de `runner_recon/capture.py` (ex. le fix de résilience — wrapper
+    valide même si Camoufox meurt en cours de capture) ; ce test build à neuf
+    et fait naviguer réellement le conteneur (`--url https://example.com`)
+    pour vérifier que le binaire embarqué émet bien un wrapper `profile:capture`.
 
 Marqué `integration` : nécessite un daemon Docker. Exclu par défaut
 (addopts = "-m 'not integration'").
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -75,3 +81,39 @@ def test_runner_image_builds():
     tag = "ocular-runner-guard:test"
     _build("runner_analysis/Dockerfile", tag)
     subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
+
+
+def test_runner_recon_image_builds_and_navigates():
+    """4e image (recon) : rebuild à neuf (jamais de cache implicite d'une
+    image obsolète) puis navigation réelle avec le profil sécurité de
+    production (broker.launcher.build_docker_args, profil `capture`) — garde
+    contre une régression Dockerfile qui empêcherait de rebuild
+    `capture.py`/`vision.py`/`engine/` à jour dans l'image."""
+    tag = "ocular-runner-recon-guard:test"
+    _build("runner_recon/Dockerfile", tag)
+    try:
+        proc = subprocess.run(
+            [
+                _docker(), "run", "--rm",
+                "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges:true",
+                "--security-opt", "seccomp=schemas/seccomp-recon.json",
+                "--read-only",
+                "--tmpfs", "/work:size=512m,mode=1777",
+                "--tmpfs", "/tmp:size=64m,mode=1777",
+                "--user", "10001:10001",
+                "--memory", "4g",
+                "--pids-limit", "512",
+                tag,
+                "--url", "https://example.com",
+            ],
+            cwd=_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        wrapper = json.loads(proc.stdout)
+        assert wrapper["result"]["profile"] == "capture", wrapper["result"]
+    finally:
+        subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)

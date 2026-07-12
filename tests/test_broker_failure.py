@@ -19,7 +19,7 @@ def test_process_one_stores_error_result_on_job_failure(monkeypatch):
     def boom(_job):
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(main, "run_analysis_job", boom)
+    monkeypatch.setattr(main, "run_job", boom)
 
     main.process_one(q, job)
 
@@ -32,7 +32,7 @@ def test_process_one_stores_ok_result_on_success(monkeypatch):
     q = RedisJobQueue(r)
     job = Job(job_id="jok", profile="analysis", html="x")
 
-    monkeypatch.setattr(main, "run_analysis_job", lambda _job: '{"job_id": "jok", "verdict": "benign"}')
+    monkeypatch.setattr(main, "run_job", lambda _job: '{"job_id": "jok", "verdict": "benign"}')
 
     main.process_one(q, job)
 

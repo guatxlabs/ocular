@@ -19,15 +19,17 @@ async function authFetch(path, opts = {}) {
   return res;
 }
 
-// POST /jobs {profile, html} -> {job_id}. Sert aussi de vérification du token
-// à la connexion (401 rejeté par authFetch, 503 = token serveur absent).
-export async function submitJob(html) {
+// POST /jobs -> {job_id}. `body` porte le profil et sa charge utile :
+//   { profile: 'analysis', html }  ou  { profile: 'capture', url }.
+// L'erreur applicative garde le status (400 url interdite, 422 payload manquant)
+// pour un message clair côté vue.
+export async function submitJob(body) {
   const res = await authFetch('/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: 'analysis', html }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
   return res.json();
 }
 
@@ -75,6 +77,21 @@ export async function saveAnalysis(jobId, label) {
 // (pas de sauvegarde pour ce hash) -> sert la dédup avant soumission.
 export async function lookupSaved(hash) {
   const res = await authFetch('/saved/' + encodeURIComponent(hash));
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+// POST /saved/lookup {url} -> méta {id,input_hash,verdict,label,saved_at} ; null si 404.
+// La normalisation + le hash sont calculés côté serveur (normaliseur Python canonique) :
+// évite la divergence avec un parseur URL JS (new URL()) qui gère différemment IPv6,
+// IDN/punycode et le percent-encoding du path.
+export async function lookupSavedByUrl(url) {
+  const res = await authFetch('/saved/lookup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(await errText(res));
   return res.json();

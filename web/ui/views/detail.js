@@ -103,10 +103,13 @@ function mount(app, id, src) {
       el('div.finding-count', {}, [el('b', {}, String(findings.length)), 'détections']),
     ]));
 
+    // ---- furtivité (profil capture) : moteur + statut Turnstile ----
+    if (r.stealth) frag.appendChild(buildStealth(r.stealth));
+
     // ---- panneau « Sauvegarder » (source job uniquement) ----
     if (src.saveable) frag.appendChild(buildSavePanel(r));
 
-    // ---- screenshot (blob) ----
+    // ---- screenshot(s) (blob) ----
     frag.appendChild(buildScreenshot(r));
 
     // ---- détections statiques groupées par sévérité ----
@@ -164,22 +167,49 @@ function mount(app, id, src) {
     return sec;
   }
 
+  // Étiquette lisible d'une étape de capture (phase brute -> libellé traduisible).
+  const PHASE_LABEL = {
+    initial: 'Capture initiale',
+    'post-turnstile': 'Après Turnstile',
+    post_turnstile: 'Après Turnstile',
+    final: 'Capture finale',
+  };
+
+  function buildStealth(st) {
+    const sec = el('div.stealth-bar');
+    sec.appendChild(el('span.stealth-engine', {}, [
+      iconNode('shield'), 'Moteur furtif ', el('b', {}, st.engine || 'inconnu'),
+    ]));
+    if (st.turnstile_solved) {
+      sec.appendChild(el('span.turnstile-ok', {}, [iconNode('check'), 'Turnstile passé']));
+    } else if (st.challenge) {
+      sec.appendChild(el('span.turnstile-pending', {}, [iconNode('warn'), 'Challenge : ' + st.challenge]));
+    }
+    return sec;
+  }
+
   function buildScreenshot(r) {
     const sec = el('div.shot-wrap');
-    const shots = r.screenshots || [];
+    const shots = (r.screenshots || []).slice().sort((a, b) => (a.step || 0) - (b.step || 0));
     if (!shots.length) {
       sec.appendChild(el('div.shot-ph', {}, 'Aucune capture pour cette analyse.'));
       return sec;
     }
-    const ph = el('div.shot-ph', {}, 'chargement de la capture…');
-    sec.appendChild(ph);
-    src.artifactUrl(shots[0].image_ref).then((url) => {
-      urls.push(url);
-      const img = el('img', { alt: 'Capture d\'écran de la page analysée' });
-      img.src = url;
-      ph.replaceWith(img);
-    }).catch((ex) => {
-      if (!(ex instanceof Unauthorized)) ph.textContent = 'Capture indisponible.';
+    const multi = shots.length > 1;
+    shots.forEach((shot) => {
+      const fig = el('figure.shot-fig');
+      if (multi) fig.appendChild(el('figcaption.shot-cap', {}, PHASE_LABEL[shot.phase] || shot.phase || 'Capture'));
+      const ph = el('div.shot-ph', {}, 'chargement de la capture…');
+      fig.appendChild(ph);
+      sec.appendChild(fig);
+      src.artifactUrl(shot.image_ref).then((url) => {
+        urls.push(url);
+        const img = el('img', { alt: 'Capture d\'écran — ' + (PHASE_LABEL[shot.phase] || shot.phase || 'page analysée') });
+        img.src = url;
+        ph.replaceWith(img);
+      }).catch((ex) => {
+        if (!(ex instanceof Unauthorized)) ph.textContent = 'Capture indisponible.';
+      });
     });
     return sec;
   }

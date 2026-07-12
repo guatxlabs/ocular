@@ -1,13 +1,15 @@
 .PHONY: build-runner up down analyze test test-int gc clean
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
+	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
 up: build-runner
 	docker compose -f deploy/docker-compose.yml up -d --build
 down:
 	docker compose -f deploy/docker-compose.yml down
 analyze: build-runner
-	@test -n "$(FILE)" || (echo "usage: make analyze FILE=suspect.html"; exit 1)
-	. .venv/bin/activate && python -c "from broker.launcher import run_analysis_job; from bus.queue import Job; import sys; print(run_analysis_job(Job(job_id='cli', profile='analysis', html=open('$(FILE)').read())))"
+	@if [ -n "$(URL)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='capture', url='$(URL)')))"; \
+	elif [ -n "$(FILE)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='analysis', html=open('$(FILE)').read())))"; \
+	else echo "usage: make analyze FILE=x.html | URL=https://…"; exit 1; fi
 test:
 	. .venv/bin/activate && pytest -q
 test-int:
