@@ -51,26 +51,32 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
-def _base_hardening(job_id: str) -> list[str]:
-    """Flags de durcissement communs aux deux profils (analysis + capture) :
-    conteneur jetable nommé, aucune capability, no-new-privileges, rootfs
-    read-only, utilisateur non-root. Les specifics (network/seccomp/mémoire/
-    tmpfs/proxy/image/args) restent composés par `build_docker_args`."""
-    return [
-        "--rm",
-        "--name", f"ocular-job-{job_id}",
+def _base_hardening(name: str, rm: bool = True) -> list[str]:
+    """Flags de durcissement communs à tous les conteneurs lancés par le
+    broker (jobs jetables ET sessions interactives détachées) : nommage,
+    aucune capability, no-new-privileges, rootfs read-only, utilisateur
+    non-root. `rm=False` pour les conteneurs détachés persistants (sessions),
+    dont le cycle de vie est géré explicitement (kill puis rm -f). Les
+    specifics (network/seccomp/mémoire/tmpfs/proxy/image/args) restent
+    composés par les appelants (`build_docker_args`, `build_session_args`)."""
+    flags: list[str] = []
+    if rm:
+        flags.append("--rm")
+    flags += [
+        "--name", name,
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
         "--read-only",
         "--user", "10001:10001",
     ]
+    return flags
 
 
 def build_docker_args(job: Job) -> list[str]:
     if job.profile == "analysis":
         return [
             "docker", "run", "-i",
-            *_base_hardening(job.job_id),
+            *_base_hardening(f"ocular-job-{job.job_id}"),
             "--network", "none",
             "--security-opt", f"seccomp={_SECCOMP}",
             "--tmpfs", "/work:size=256m,mode=1777",
@@ -84,7 +90,7 @@ def build_docker_args(job: Job) -> list[str]:
         # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
         return [
             "docker", "run",
-            *_base_hardening(job.job_id),
+            *_base_hardening(f"ocular-job-{job.job_id}"),
             "--security-opt", f"seccomp={_RECON_SECCOMP}",
             "--tmpfs", "/work:size=512m,mode=1777",
             "--tmpfs", "/tmp:size=64m,mode=1777",
