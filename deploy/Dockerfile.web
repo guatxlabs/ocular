@@ -13,6 +13,10 @@ COPY web/ ./web/
 RUN pip install --no-cache-dir fastapi uvicorn redis pydantic
 
 RUN useradd -u 10002 -m ocular-web
+# /saved est un volume nommé rw : le créer possédé par l'uid non-root ici garantit
+# qu'un volume frais hérite de cette propriété (sinon Docker le crée root -> SQLite
+# ne peut pas ouvrir la base sous user 10002).
+RUN mkdir -p /saved && chown 10002:10002 /saved
 USER 10002:10002
 
 EXPOSE 8000

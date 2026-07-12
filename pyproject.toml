@@ -19,7 +19,7 @@ pythonpath = ["."]
 testpaths = ["tests"]
 addopts = "-m 'not integration'"
 markers = [
-  "integration: requires Playwright + Chromium (playwright install chromium)",
+  "integration: requires external tooling — Playwright + Chromium (playwright install chromium) and/or a working Docker daemon",
 ]
 
 [tool.ruff]

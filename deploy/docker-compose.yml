@@ -5,6 +5,7 @@ services:
 
   web:
     build: { context: .., dockerfile: deploy/Dockerfile.web }
+    restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_TOKEN: "${OCULAR_TOKEN:?OCULAR_TOKEN requis}"
@@ -27,6 +28,7 @@ services:
 
   broker:
     build: { context: .., dockerfile: deploy/Dockerfile.broker }
+    restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
