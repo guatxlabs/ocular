@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import json
+import threading
+import time as _time
 
 import redis
 
 from broker.launcher import run_job
+from broker.sessions import reap
 from bus.queue import RedisJobQueue
+from bus.sessions import SessionRegistry
 from ocular_logging import get_logger
-from ocular_settings import redis_url, result_ttl
+from ocular_settings import (
+    reaper_interval,
+    redis_url,
+    result_ttl,
+    session_idle,
+    session_ttl,
+)
 
 log = get_logger("broker")
 
@@ -34,8 +44,38 @@ def process_one(queue: RedisJobQueue, job) -> None:
     queue.set_result(job.job_id, result_json, ttl=result_ttl())
 
 
+def _reaper_loop(registry, stop_event=None) -> None:
+    """Boucle du reaper de sessions : appelle `reap` à intervalle régulier
+    (`reaper_interval()`). `stop_event` permet un arrêt propre en test (une
+    seule itération) ; en production (`stop_event=None`) tourne indéfiniment
+    dans un thread démon. Les erreurs de `reap` sont capturées pour que le
+    reaper survive à un incident Redis/Docker transitoire."""
+    while stop_event is None or not stop_event.is_set():
+        try:
+            reap(registry, _time.time(), session_ttl(), session_idle())
+        except Exception as exc:  # le reaper survit à une erreur transitoire
+            log.error("reaper error err=%s", str(exc)[:200])
+        if stop_event is not None:
+            if stop_event.wait(reaper_interval()):
+                break
+        else:
+            _time.sleep(reaper_interval())
+
+
+def _start_reaper(client) -> threading.Thread:
+    """Démarre le reaper de sessions dans un thread démon (n'empêche jamais
+    l'arrêt du process broker). Réutilise le client Redis déjà créé par
+    `run_forever` (pas de connexion supplémentaire)."""
+    reg = SessionRegistry(client)
+    t = threading.Thread(target=_reaper_loop, args=(reg,), daemon=True, name="ocular-reaper")
+    t.start()
+    return t
+
+
 def run_forever() -> None:
-    queue = RedisJobQueue(redis.Redis.from_url(redis_url()))
+    client = redis.Redis.from_url(redis_url())
+    queue = RedisJobQueue(client)
+    _start_reaper(client)
     while True:
         job = queue.dequeue(timeout=5)
         if job is None:

@@ -3,10 +3,10 @@ from __future__ import annotations
 import subprocess
 
 from broker.launcher import (
-    _CAPTURE_MEMORY,
-    _CAPTURE_PIDS_LIMIT,
-    _RECON_SECCOMP,
-    _base_hardening,
+    CAPTURE_MEMORY,
+    CAPTURE_PIDS_LIMIT,
+    RECON_SECCOMP,
+    base_hardening,
 )
 from ocular_logging import get_logger
 
@@ -28,16 +28,16 @@ def build_session_args(session_id: str, image: str = _SESSION_IMAGE) -> list[str
     le web/broker parlent au conteneur via le réseau Docker interne
     uniquement — jamais docker.sock, jamais `--network host`, jamais
     `--privileged`. Durcissement (cap-drop/no-new-privileges/read-only/user)
-    réutilisé de `launcher._base_hardening` (DRY, cf. audit phase 3a)."""
+    réutilisé de `launcher.base_hardening` (DRY, cf. audit phase 3a)."""
     return [
         "docker", "run", "-d",
-        *_base_hardening(_session_name(session_id), rm=False),
+        *base_hardening(_session_name(session_id), rm=False),
         "--network", _SESSION_NETWORK,
-        "--security-opt", f"seccomp={_RECON_SECCOMP}",
+        "--security-opt", f"seccomp={RECON_SECCOMP}",
         "--tmpfs", "/work:size=512m,mode=1777",
         "--tmpfs", "/tmp:size=64m,mode=1777",
-        "--memory", _CAPTURE_MEMORY,
-        "--pids-limit", _CAPTURE_PIDS_LIMIT,
+        "--memory", CAPTURE_MEMORY,
+        "--pids-limit", CAPTURE_PIDS_LIMIT,
         image,
     ]
 
@@ -45,10 +45,17 @@ def build_session_args(session_id: str, image: str = _SESSION_IMAGE) -> list[str
 def launch_session(session_id: str) -> str:
     """Lance un conteneur de session détaché et retourne son nom
     (`ocular-sess-{session_id}`). Seul le broker (jamais le web) exécute
-    ceci : le web n'a pas accès à Docker."""
+    ceci : le web n'a pas accès à Docker. Le nom est toujours retourné même
+    si `docker run` échoue (returncode != 0) : c'est le poll de santé aval
+    qui décide de l'état réel de la session — on logue juste un warning ici."""
     name = _session_name(session_id)
     log.info("session launch session_id=%s", session_id)
-    subprocess.run(build_session_args(session_id), capture_output=True, check=False)
+    proc = subprocess.run(build_session_args(session_id), capture_output=True, check=False)
+    if proc.returncode != 0:
+        log.warning(
+            "session launch failed session_id=%s returncode=%s stderr=%s",
+            session_id, proc.returncode, proc.stderr.decode(errors="replace")[:200],
+        )
     return name
 
 
@@ -63,13 +70,15 @@ def stop_session(container: str) -> None:
 
 def reap(registry, now_epoch: float, ttl: float, idle: float) -> int:
     """Détruit les sessions expirées (TTL absolu ou inactivité) : pour
-    chaque id retourné par `registry.expired`, stoppe le conteneur associé
-    puis le retire du registre. Retourne le nombre de sessions détruites."""
+    chaque id retourné par `registry.expired`, stoppe le conteneur par son
+    nom **déterministe** `ocular-sess-{id}` (dérivé du session_id, jamais via
+    `registry.get` qui peut renvoyer None sur une course entre l'expiration
+    et le reap — le conteneur existe toujours indépendamment de l'état du
+    registre) puis retire la session du registre. Retourne le nombre de
+    sessions réellement traitées."""
     count = 0
     for session_id in registry.expired(now_epoch, ttl, idle):
-        sess = registry.get(session_id)
-        if sess is not None:
-            stop_session(sess["container"])
+        stop_session(_session_name(session_id))
         registry.delete(session_id)
         count += 1
     return count

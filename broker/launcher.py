@@ -15,15 +15,21 @@ log = get_logger("broker.launcher")
 _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
 _RECON_IMAGE = "ocular-runner-recon:latest"
-_RECON_SECCOMP = "schemas/seccomp-recon.json"
+RECON_SECCOMP = "schemas/seccomp-recon.json"
 _ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
 
 _ANALYSIS_TIMEOUT = 60
 _CAPTURE_TIMEOUT = 90
 _ANALYSIS_MEMORY = "2g"
 _ANALYSIS_PIDS_LIMIT = "256"
-_CAPTURE_MEMORY = "4g"
-_CAPTURE_PIDS_LIMIT = "512"
+CAPTURE_MEMORY = "4g"
+CAPTURE_PIDS_LIMIT = "512"
+
+# Alias rétro-compat (noms privés historiques) : gardés au cas où d'autres
+# points internes du repo s'y référeraient encore.
+_RECON_SECCOMP = RECON_SECCOMP
+_CAPTURE_MEMORY = CAPTURE_MEMORY
+_CAPTURE_PIDS_LIMIT = CAPTURE_PIDS_LIMIT
 
 
 def _proxy_env() -> list[str]:
@@ -51,7 +57,7 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
-def _base_hardening(name: str, rm: bool = True) -> list[str]:
+def base_hardening(name: str, rm: bool = True) -> list[str]:
     """Flags de durcissement communs à tous les conteneurs lancés par le
     broker (jobs jetables ET sessions interactives détachées) : nommage,
     aucune capability, no-new-privileges, rootfs read-only, utilisateur
@@ -72,11 +78,14 @@ def _base_hardening(name: str, rm: bool = True) -> list[str]:
     return flags
 
 
+_base_hardening = base_hardening  # alias rétro-compat
+
+
 def build_docker_args(job: Job) -> list[str]:
     if job.profile == "analysis":
         return [
             "docker", "run", "-i",
-            *_base_hardening(f"ocular-job-{job.job_id}"),
+            *base_hardening(f"ocular-job-{job.job_id}"),
             "--network", "none",
             "--security-opt", f"seccomp={_SECCOMP}",
             "--tmpfs", "/work:size=256m,mode=1777",
@@ -90,12 +99,12 @@ def build_docker_args(job: Job) -> list[str]:
         # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
         return [
             "docker", "run",
-            *_base_hardening(f"ocular-job-{job.job_id}"),
-            "--security-opt", f"seccomp={_RECON_SECCOMP}",
+            *base_hardening(f"ocular-job-{job.job_id}"),
+            "--security-opt", f"seccomp={RECON_SECCOMP}",
             "--tmpfs", "/work:size=512m,mode=1777",
             "--tmpfs", "/tmp:size=64m,mode=1777",
-            "--memory", _CAPTURE_MEMORY,
-            "--pids-limit", _CAPTURE_PIDS_LIMIT,
+            "--memory", CAPTURE_MEMORY,
+            "--pids-limit", CAPTURE_PIDS_LIMIT,
             *_proxy_env(),
             _RECON_IMAGE,
             "--url", job.url or "",
