@@ -55,6 +55,42 @@ def test_save_expired_artifact_409(tmp_path, monkeypatch):
     assert c.post("/saved", json={"job_id": "jy"}).status_code == 409
 
 
+def test_lookup_saved_url_finds_same_save_for_equivalent_urls(tmp_path, monkeypatch):
+    # La normalisation est calculée côté serveur (un seul normaliseur Python
+    # canonique) : deux URLs équivalentes (casse du host, port par défaut explicite)
+    # doivent trouver la MÊME sauvegarde, sans dépendre d'un normaliseur JS côté client.
+    c, q, tp = _client(tmp_path, monkeypatch)
+    ref = "sha256:" + "b" * 64
+    (tp / "artifacts" / ("sha256_" + "b" * 64)).write_bytes(b"\x89PNG\r\n\x1a\nX")
+    from engine.urlnorm import url_input_hash
+    q.set_result("ju", json.dumps({
+        "input_hash": url_input_hash("https://example.com/a"), "job_id": "ju",
+        "profile": "capture", "verdict": "benign",
+        "screenshots": [{"image_ref": ref}], "artifacts": {},
+    }))
+    saved = c.post("/saved", json={"job_id": "ju"})
+    assert saved.status_code == 200
+    sid = saved.json()["id"]
+
+    r1 = c.post("/saved/lookup", json={"url": "https://EXAMPLE.com:443/a"})
+    assert r1.status_code == 200 and r1.json()["id"] == sid
+
+    r2 = c.post("/saved/lookup", json={"url": "https://example.com/a"})
+    assert r2.status_code == 200 and r2.json()["id"] == sid
+
+
+def test_lookup_saved_url_404_for_unknown_url(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    r = c.post("/saved/lookup", json={"url": "https://never-saved.example/x"})
+    assert r.status_code == 404
+
+
+def test_lookup_saved_url_422_without_url(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    r = c.post("/saved/lookup", json={})
+    assert r.status_code == 422
+
+
 def test_saved_artifact_nosniff_and_dom_attachment(tmp_path, monkeypatch):
     c, q, tp = _client(tmp_path, monkeypatch)
     ref = _seed_job(q, tp)

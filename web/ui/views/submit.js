@@ -1,12 +1,14 @@
 // submit.js — deux profils d'analyse, sélectionnés par un toggle segmenté :
 //   • « Analyser HTML » (profile: analysis) : textarea HTML + upload .eml.
 //   • « Analyser URL »  (profile: capture)  : capture live d'une URL (stealth).
-// Avant POST /jobs : dédup. On calcule le hash d'entrée (identique à l'input_hash
-// du moteur — HTML brut pour analysis, URL normalisée pour capture) et on interroge
-// /saved/{hash} ; si une analyse existe déjà, une modale propose de la revoir.
+// Avant POST /jobs : dédup. Profil HTML : hash du HTML brut (sha256Hex côté client,
+// identique à l'input_hash du moteur) puis /saved/{hash}. Profil URL : normalisation
+// ET hash calculés côté serveur via POST /saved/lookup (un seul normaliseur Python
+// canonique — évite la divergence avec un parseur URL JS). Si une analyse existe
+// déjà, une modale propose de la revoir.
 import { el, iconNode, openModal } from '../core.js';
 import { addJob } from '../state.js';
-import { submitJob, sha256Hex, normalizeUrlClient, lookupSaved, Unauthorized } from '../api.js';
+import { submitJob, sha256Hex, lookupSaved, lookupSavedByUrl, Unauthorized } from '../api.js';
 
 function fmtIso(iso) {
   if (!iso) return '';
@@ -113,7 +115,7 @@ export function renderSubmit(app) {
     }
     if (ex && ex.status === 422) {
       return prof === 'capture'
-        ? 'URL manquante — renseigne une URL avant de lancer.'
+        ? 'Requête invalide (URL manquante ou trop longue).'
         : 'HTML manquant ou trop volumineux.';
     }
     return String((ex && ex.message) || ex);
@@ -146,31 +148,29 @@ export function renderSubmit(app) {
   const form = el('form', {
     onsubmit: async (e) => {
       e.preventDefault();
-      let payload, target, hashInput;
-      if (profile === 'capture') {
+      let payload, target;
+      const isCapture = profile === 'capture';
+      if (isCapture) {
         const raw = urlInput.value.trim();
         if (!raw) { showErr('Renseigne une URL avant de lancer.'); return; }
-        let norm;
-        try { norm = normalizeUrlClient(raw); }
-        catch { showErr('URL invalide — vérifie le format (ex. https://exemple.com).'); return; }
         payload = { profile: 'capture', url: raw };
-        target = norm;
-        hashInput = norm;
+        target = raw;
       } else {
         const html = ta.value.trim();
         if (!html) { showErr('Ajoute du HTML ou charge un .eml avant de lancer.'); return; }
         const m = html.match(/<title[^>]*>([^<]{0,80})/i);
         payload = { profile: 'analysis', html };
         target = (m && m[1].trim()) || (html.slice(0, 60).replace(/\s+/g, ' ').trim() + '…');
-        hashInput = html;
       }
       err.hidden = true;
       btn.disabled = true;
       // dédup best-effort : en cas d'échec du lookup, on n'empêche pas l'analyse.
+      // Profil URL : normalisation + hash calculés côté serveur (normaliseur canonique
+      // unique) — élimine la divergence avec un parseur URL JS. Profil HTML : hash
+      // client du HTML brut, identique à l'input_hash du moteur.
       let meta = null;
       try {
-        const h = await sha256Hex(hashInput);
-        meta = await lookupSaved(h);
+        meta = isCapture ? await lookupSavedByUrl(payload.url) : await lookupSaved(await sha256Hex(payload.html));
       } catch (ex) {
         if (ex instanceof Unauthorized) return;
         meta = null; // lookup indisponible -> on soumet directement
