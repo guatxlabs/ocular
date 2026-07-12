@@ -50,6 +50,12 @@ def test_invalid_profile_rejected(monkeypatch):
     assert r.status_code == 422
 
 
+def test_oversized_url_rejected(monkeypatch):
+    client = _client(monkeypatch)[0]
+    r = client.post("/jobs", json={"profile": "analysis", "url": "x" * 5000})
+    assert r.status_code == 422
+
+
 def test_web_package_never_imports_docker():
     import pathlib
     for f in pathlib.Path("web").rglob("*.py"):
