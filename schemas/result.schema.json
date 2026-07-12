@@ -1,0 +1,408 @@
+{
+  "$defs": {
+    "Artifacts": {
+      "properties": {
+        "har_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Har Ref"
+        },
+        "dom_html_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dom Html Ref"
+        }
+      },
+      "title": "Artifacts",
+      "type": "object"
+    },
+    "ConsoleEntry": {
+      "properties": {
+        "level": {
+          "title": "Level",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Location"
+        }
+      },
+      "required": [
+        "level",
+        "text"
+      ],
+      "title": "ConsoleEntry",
+      "type": "object"
+    },
+    "DomInfo": {
+      "properties": {
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "final_url": {
+          "default": "",
+          "title": "Final Url",
+          "type": "string"
+        },
+        "redirect_chain": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Redirect Chain",
+          "type": "array"
+        },
+        "forms": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Forms",
+          "type": "array"
+        },
+        "links": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Links",
+          "type": "array"
+        }
+      },
+      "title": "DomInfo",
+      "type": "object"
+    },
+    "DynamicStep": {
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "screenshot_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Screenshot Ref"
+        },
+        "triggered_requests": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Triggered Requests",
+          "type": "array"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "title": "DynamicStep",
+      "type": "object"
+    },
+    "NetworkEntry": {
+      "properties": {
+        "url": {
+          "title": "Url",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
+        "post_data": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Post Data"
+        },
+        "resource_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resource Type"
+        },
+        "initiator": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Initiator"
+        }
+      },
+      "required": [
+        "url",
+        "method"
+      ],
+      "title": "NetworkEntry",
+      "type": "object"
+    },
+    "Screenshot": {
+      "properties": {
+        "step": {
+          "title": "Step",
+          "type": "integer"
+        },
+        "phase": {
+          "title": "Phase",
+          "type": "string"
+        },
+        "image_ref": {
+          "title": "Image Ref",
+          "type": "string"
+        },
+        "viewport": {
+          "title": "Viewport",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "phase",
+        "image_ref",
+        "viewport"
+      ],
+      "title": "Screenshot",
+      "type": "object"
+    },
+    "StaticFinding": {
+      "properties": {
+        "rule": {
+          "title": "Rule",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "match": {
+          "title": "Match",
+          "type": "string"
+        },
+        "line": {
+          "title": "Line",
+          "type": "integer"
+        },
+        "context": {
+          "title": "Context",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule",
+        "severity",
+        "match",
+        "line",
+        "context"
+      ],
+      "title": "StaticFinding",
+      "type": "object"
+    },
+    "StealthInfo": {
+      "properties": {
+        "engine": {
+          "enum": [
+            "camoufox",
+            "chromium"
+          ],
+          "title": "Engine",
+          "type": "string"
+        },
+        "turnstile_solved": {
+          "default": false,
+          "title": "Turnstile Solved",
+          "type": "boolean"
+        },
+        "challenge": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Challenge"
+        }
+      },
+      "required": [
+        "engine"
+      ],
+      "title": "StealthInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "job_id": {
+      "title": "Job Id",
+      "type": "string"
+    },
+    "profile": {
+      "enum": [
+        "capture",
+        "analysis"
+      ],
+      "title": "Profile",
+      "type": "string"
+    },
+    "target": {
+      "title": "Target",
+      "type": "string"
+    },
+    "timestamp": {
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "verdict": {
+      "default": "unknown",
+      "enum": [
+        "benign",
+        "suspicious",
+        "malicious",
+        "unknown"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "screenshots": {
+      "items": {
+        "$ref": "#/$defs/Screenshot"
+      },
+      "title": "Screenshots",
+      "type": "array"
+    },
+    "network": {
+      "items": {
+        "$ref": "#/$defs/NetworkEntry"
+      },
+      "title": "Network",
+      "type": "array"
+    },
+    "console": {
+      "items": {
+        "$ref": "#/$defs/ConsoleEntry"
+      },
+      "title": "Console",
+      "type": "array"
+    },
+    "dom": {
+      "$ref": "#/$defs/DomInfo"
+    },
+    "static_findings": {
+      "items": {
+        "$ref": "#/$defs/StaticFinding"
+      },
+      "title": "Static Findings",
+      "type": "array"
+    },
+    "dynamic_steps": {
+      "items": {
+        "$ref": "#/$defs/DynamicStep"
+      },
+      "title": "Dynamic Steps",
+      "type": "array"
+    },
+    "stealth": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StealthInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "artifacts": {
+      "$ref": "#/$defs/Artifacts"
+    }
+  },
+  "required": [
+    "job_id",
+    "profile",
+    "schema_version",
+    "target",
+    "timestamp"
+  ],
+  "title": "OcularResult",
+  "type": "object"
+}
