@@ -105,6 +105,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
         job_id=job_id,
         profile="analysis",
         target="inline-html",
+        input_hash=_sha256_ref(html.encode()),
         timestamp=datetime.now(timezone.utc).isoformat(),
         screenshots=screenshots,
         network=network,
