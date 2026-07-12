@@ -23,7 +23,13 @@ class RedisJobQueue:
         self._r.rpush(_QUEUE_KEY, job.model_dump_json())
 
     def dequeue(self, timeout: int = 0) -> Optional[Job]:
-        item = self._r.blpop([_QUEUE_KEY], timeout=timeout)
+        try:
+            item = self._r.blpop([_QUEUE_KEY], timeout=timeout)
+        except Exception:  # noqa: BLE001
+            # timeout/déconnexion redis transitoire : ne pas tuer le broker.
+            # Effet volontairement étroit : on ne masque qu'un cycle de dépilage,
+            # la boucle broker réessaie au tour suivant.
+            return None
         if item is None:
             return None
         _, raw = item

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+.coverage
+.superpowers
+docs
+.env
+artifacts
+*.db
+*.db-*
+tests
+.superpowers/

@@ -9,4 +9,5 @@ logs/
 *.egg-info/
 artifacts/
 .coverage
-*.egg-info/
+*.db
+*.db-*
