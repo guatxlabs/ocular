@@ -6,7 +6,9 @@ import { i18nWalk } from './i18n.js';
 import { renderLogin } from './views/login.js';
 import { renderSubmit } from './views/submit.js';
 import { renderJobs } from './views/jobs.js';
-import { renderDetail } from './views/detail.js';
+import { renderDetail, renderSavedDetail } from './views/detail.js';
+import { renderSaved } from './views/saved.js';
+import { renderAdmin } from './views/admin.js';
 
 // ---- helpers DOM (repris de l'esprit de core.js/plume, réduits au nécessaire) ----
 export const $ = (s, r = document) => r.querySelector(s);
@@ -27,6 +29,10 @@ const ICONS = {
   upload: '<path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/>',
   inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13l3.5 7v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-6z"/>',
   warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/>',
+  bookmark: '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
+  check: '<path d="M20 6L9 17l-5-5"/>',
+  trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
 };
 export const ic = (n, cls = '') =>
   `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
@@ -60,6 +66,23 @@ export function el(tag, attrs = {}, kids = []) {
     node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
   });
   return node;
+}
+
+// Ouvre une modale : voile `.modal-ov` + carte `.modal` (déjà stylés). L'appelant
+// fournit un nœud `.modal` déjà construit (contenu en textNode -> XSS-safe). Ferme
+// sur clic hors carte, sur Échap, et via le `close()` retourné.
+export function openModal(modalEl) {
+  const ov = el('div.modal-ov', {}, [modalEl]);
+  const close = () => {
+    document.removeEventListener('keydown', onKey);
+    ov.classList.add('out');
+    setTimeout(() => ov.remove(), 150);
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(ov);
+  return close;
 }
 
 export function fmtTs(ms) {
@@ -97,6 +120,9 @@ function route() {
   else if (view === 'submit') cleanup = renderSubmit(app);
   else if (view === 'jobs') cleanup = renderJobs(app);
   else if (view === 'job') cleanup = renderDetail(app, parts[1]);
+  else if (view === 'saved' && parts[1]) cleanup = renderSavedDetail(app, parts[1]);
+  else if (view === 'saved') cleanup = renderSaved(app);
+  else if (view === 'admin') cleanup = renderAdmin(app);
   else { location.hash = '#/jobs'; return; }
   i18nWalk(app);
   window.scrollTo(0, 0);
