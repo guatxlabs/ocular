@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
 
 import redis
 
 from broker.launcher import run_analysis_job
 from bus.queue import RedisJobQueue
+from ocular_settings import redis_url, result_ttl
 
 
 def error_result(job_id: str, exc: Exception) -> str:
@@ -16,7 +16,7 @@ def error_result(job_id: str, exc: Exception) -> str:
 
 
 def run_forever() -> None:
-    queue = RedisJobQueue(redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379")))
+    queue = RedisJobQueue(redis.Redis.from_url(redis_url()))
     while True:
         job = queue.dequeue(timeout=5)
         if job is None:
@@ -25,7 +25,7 @@ def run_forever() -> None:
             result_json = run_analysis_job(job)
         except Exception as exc:  # le job échoue proprement, le broker survit
             result_json = error_result(job.job_id, exc)
-        queue.set_result(job.job_id, result_json)
+        queue.set_result(job.job_id, result_json, ttl=result_ttl())
 
 
 if __name__ == "__main__":
