@@ -15,3 +15,11 @@ def test_render_benign_html_produces_screenshot_and_dom():
 def test_render_populates_static_findings():
     r = render.render_html("<script>eval(atob('x'))</script>", "job-2")
     assert any(f.severity == "critical" for f in r.static_findings)
+
+
+@pytest.mark.integration
+def test_render_hostile_hanging_html_still_returns_result_with_static_findings():
+    r = render.render_html("<script>eval(atob('x')); while(true){}</script>", "job-hang",
+                           render_timeout_ms=2000)
+    assert r.job_id == "job-hang"
+    assert any(f.severity == "critical" for f in r.static_findings)  # static toujours calculé
