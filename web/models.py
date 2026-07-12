@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 class JobRequest(BaseModel):
-    profile: Literal["analysis"] = "analysis"
+    profile: Literal["analysis", "capture"] = "analysis"
     html: Optional[str] = None
     url: Optional[str] = Field(default=None, max_length=2048)
 
