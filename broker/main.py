@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
 
 import redis
 
 from broker.launcher import run_analysis_job
 from broker.queue import RedisJobQueue
+
+
+def error_result(job_id: str, exc: Exception) -> str:
+    """Résultat JSON TOUJOURS valide pour un job échoué (le message d'exception
+    peut contenir des guillemets/newlines venant de stderr Docker)."""
+    return json.dumps({"job_id": job_id, "error": str(exc)[:200]})
 
 
 def run_forever() -> None:
@@ -17,7 +24,7 @@ def run_forever() -> None:
         try:
             result_json = run_analysis_job(job)
         except Exception as exc:  # le job échoue proprement, le broker survit
-            result_json = f'{{"job_id": "{job.job_id}", "error": "{str(exc)[:200]}"}}'
+            result_json = error_result(job.job_id, exc)
         queue.set_result(job.job_id, result_json)
 
 
