@@ -100,29 +100,30 @@ def test_stop_session_is_best_effort_check_false(monkeypatch):
 
 
 class _FakeRegistry:
-    def __init__(self, expired_ids, containers):
+    """`get` renvoie toujours None : simule la course où le conteneur a
+    expiré mais l'entrée registre a déjà disparu (ou n'a jamais reflété le
+    conteneur) — `reap` doit rester robuste et stopper par nom déterministe
+    sans jamais consulter `get`."""
+
+    def __init__(self, expired_ids):
         self._expired_ids = expired_ids
-        self._containers = containers
         self.deleted = []
 
     def expired(self, now_epoch, ttl, idle):
         return self._expired_ids
 
     def get(self, session_id):
-        return {"session_id": session_id, "container": self._containers[session_id]}
+        return None
 
     def delete(self, session_id):
         self.deleted.append(session_id)
 
 
-def test_reap_stops_and_deletes_each_expired_session(monkeypatch):
+def test_reap_stops_by_deterministic_name_and_deletes_each_expired_session(monkeypatch):
     stopped = []
     monkeypatch.setattr(sessions_mod, "stop_session", lambda c: stopped.append(c))
 
-    registry = _FakeRegistry(
-        expired_ids=["s1", "s2"],
-        containers={"s1": "ocular-sess-s1", "s2": "ocular-sess-s2"},
-    )
+    registry = _FakeRegistry(expired_ids=["s1", "s2"])
 
     count = reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
 
@@ -131,11 +132,28 @@ def test_reap_stops_and_deletes_each_expired_session(monkeypatch):
     assert registry.deleted == ["s1", "s2"]
 
 
+def test_reap_stops_even_when_registry_get_returns_none(monkeypatch):
+    """Le coeur du fix : `reap` ne doit JAMAIS dépendre de `registry.get`
+    (peut renvoyer None sur une course) pour retrouver le conteneur à
+    stopper — le nom est dérivé directement du session_id."""
+    stopped = []
+    monkeypatch.setattr(sessions_mod, "stop_session", lambda c: stopped.append(c))
+
+    registry = _FakeRegistry(expired_ids=["ghost"])
+    assert registry.get("ghost") is None  # confirme la course simulée
+
+    count = reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
+
+    assert count == 1
+    assert stopped == ["ocular-sess-ghost"]
+    assert registry.deleted == ["ghost"]
+
+
 def test_reap_returns_zero_when_nothing_expired(monkeypatch):
     stopped = []
     monkeypatch.setattr(sessions_mod, "stop_session", lambda c: stopped.append(c))
 
-    registry = _FakeRegistry(expired_ids=[], containers={})
+    registry = _FakeRegistry(expired_ids=[])
 
     count = reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
 
