@@ -109,7 +109,27 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     args = ap.parse_args()
-    emit_wrapper(*asyncio.run(capture_url(args.url)))
+    # CRITIQUE (résilience) : les pages visitées sont hostiles (Cloudflare/Auth0)
+    # et peuvent faire mourir le driver/navigateur Camoufox en cours de capture
+    # (ex. "Connection closed"). On n'a plus de patch driver pour absorber ça
+    # (cf. Dockerfile) : toute exception non catchée par `capture_url` doit
+    # quand même produire un wrapper `OcularResult` valide sur stdout, sinon le
+    # broker/launcher.py qui lit stdout reste sans résultat exploitable.
+    try:
+        result, blobs = asyncio.run(capture_url(args.url))
+    except Exception as exc:
+        log.warning("url=%s capture failed err=%s", args.url, type(exc).__name__)
+        result, blobs = build_result(
+            url=args.url,
+            screenshots=[],
+            network=[],
+            console=[{"level": "error", "text": f"capture failed: {type(exc).__name__}"}],
+            dom_html=b"",
+            title="",
+            final_url=args.url,
+            turnstile_solved=False,
+        )
+    emit_wrapper(result, blobs)
 
 
 if __name__ == "__main__":
