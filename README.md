@@ -15,6 +15,34 @@ make analyze FILE=suspect.html
 Construit l'image `ocular-runner-analysis` si besoin, lance l'analyse dans le conteneur durci
 (`--network none`, seccomp, `--read-only`, utilisateur non-root) et affiche le résultat JSON.
 
+### Analyser une URL (recon live)
+
+```sh
+make analyze URL=https://exemple-suspect.tld
+```
+
+Construit `ocular-runner-analysis` **et** `ocular-runner-recon` si besoin, puis lance une
+capture live (profil `capture` : Camoufox anti-detect + Xvfb, résolution auto du Turnstile
+Cloudflare via vision) dans le conteneur durci — `--cap-drop ALL`, seccomp dédié, `--read-only`,
+utilisateur non-root — et affiche le résultat JSON (verdict statique calculé sur le DOM capturé).
+
+**⚠️ Avertissement — exposition IP.** Contrairement au profil `analysis` (`--network none`),
+le profil `capture` a le réseau **activé** : le conteneur `ocular-runner-recon` effectue une
+vraie requête sortante vers l'URL cible, ce qui expose l'IP de la machine qui exécute Ocular à
+la cible (et à tout service tiers qu'elle charge). Pour analyser une cible sans révéler son IP
+réelle (recon offensive, cible potentiellement hostile ou surveillée), faire transiter ce trafic
+par un VPN ou Tor via les variables `HTTP_PROXY`/`HTTPS_PROXY`, lues et transmises au conteneur
+par `broker/launcher.py` :
+
+```sh
+HTTPS_PROXY=socks5h://127.0.0.1:9050 make analyze URL=https://exemple-suspect.tld
+```
+
+Une garde SSRF (`engine/ssrf.py`) bloque en amont les URL dont l'hôte résout vers une IP privée
+(RFC1918), loopback, link-local ou le service de metadata cloud (`169.254.169.254`) — best-effort
+au moment du submit, pas une protection complète contre le DNS-rebinding (cf. docstring du
+module).
+
 ### Via l'API (web + broker + redis, avec docker compose)
 
 ```sh
