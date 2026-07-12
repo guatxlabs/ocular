@@ -1,0 +1,18 @@
+import json
+import time
+
+import pytest
+import redis
+
+from broker.launcher import run_analysis_job
+from broker.queue import Job, RedisJobQueue
+
+
+@pytest.mark.integration
+def test_end_to_end_analysis_via_broker():
+    out = run_analysis_job(Job(job_id="e2e-1", profile="analysis",
+                               html="<script>eval(atob('x'))</script>"))
+    result = json.loads(out)
+    assert result["profile"] == "analysis"
+    assert any(f["severity"] == "critical" for f in result["static_findings"])
+    assert result["screenshots"][0]["image_ref"].startswith("sha256:")
