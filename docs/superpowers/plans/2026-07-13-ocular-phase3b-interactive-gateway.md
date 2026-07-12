@@ -197,7 +197,7 @@ Attendu : HEALTH_OK, NOVNC_OK, CLIPBOARD_OFF. (curl doit être installé, sinon 
 
 **Files:** Modify `web/app.py`, `pyproject.toml` (+`websockets`) ; Create `tests/test_ws_proxy.py`.
 - [ ] `pyproject` : ajouter `websockets>=12` aux dependencies.
-- [ ] `@app.websocket("/sessions/{sid}/ws")` : auth par **token de session** (query `?token=` validé `registry.valid_token`, sinon `close(1008)`) → `accept(subprotocol="binary")` → `websockets.connect(f"ws://{container}:6080/websockify", subprotocols=["binary"])` → **pump bidirectionnel** octets bruts (RFB) `ws.iter_bytes()`↔`upstream` ; `registry.touch` périodique. Fermer proprement à la déconnexion.
+- [ ] `@app.websocket("/sessions/{sid}/ws")` : **auth par sous-protocole WebSocket (token HORS URL — pas de `?token=` qui fuiterait en logs/referrer)**. Le client envoie deux valeurs dans `Sec-WebSocket-Protocol` : `["binary", "ocular.session.<token>"]` (pattern k8s bearer-subprotocol). Le serveur lit `ws.headers["sec-websocket-protocol"]`, extrait le token du 2e élément, le valide via `registry.valid_token(sid, token)` (temps constant) ; sinon `close(1008)`. Puis `accept(subprotocol="binary")` (ne renvoie QUE `binary`, jamais le token) → `websockets.connect(f"ws://{container}:6080/websockify", subprotocols=["binary"])` → **pump bidirectionnel** octets bruts (RFB) `ws.iter_bytes()`↔`upstream` ; `registry.touch` périodique. Fermer proprement à la déconnexion. **Ne JAMAIS logger le token ni le sous-protocole.**
 - [ ] Test (`tests/test_ws_proxy.py`) : token invalide → refus (close 1008) ; avec un faux upstream websocket (serveur de test), les octets transitent dans les deux sens ; touch appelé. (Utiliser `websockets` en test ou un stub.)
 
 ---
