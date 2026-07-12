@@ -7,6 +7,7 @@ import uuid
 
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
 
 from broker.queue import Job, RedisJobQueue
@@ -70,3 +71,12 @@ def get_artifact(job_id: str, ref: str) -> Response:
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}.html"'},
     )
+
+
+# UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
+# pas les masquer. Le middleware auth ne touche que /jobs* -> l'UI reste publique.
+app.mount(
+    "/",
+    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "ui"), html=True),
+    name="ui",
+)

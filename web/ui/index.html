@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ocular</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0e14">
+<link rel="stylesheet" href="/style.css">
+<script>
+  // thème appliqué AVANT le rendu (évite le flash clair/sombre)
+  try { document.documentElement.setAttribute('data-theme', localStorage.getItem('ocular_theme') || 'dark'); } catch (e) {}
+  try { document.documentElement.setAttribute('lang', localStorage.getItem('ocular_lang') || 'fr'); } catch (e) {}
+</script>
+</head>
+<body>
+<header>
+  <h1>
+    <svg class="ic ic-lg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--acc)"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+    <span>Ocular</span><span class="brand-sub">moteur d'analyse</span>
+  </h1>
+  <nav id="topnav" class="topnav" aria-label="Navigation" hidden>
+    <a href="#/submit" data-route="submit"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><path d="M7 14h10"/></svg> <span>Analyser</span></a>
+    <a href="#/jobs" data-route="jobs"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg> <span>Jobs</span></a>
+  </nav>
+  <div class="hdr-tools">
+    <select id="lang" class="k-theme" aria-label="Langue / Language" title="Langue / Language">
+      <option value="fr">FR</option>
+      <option value="en">EN</option>
+    </select>
+    <button id="theme" class="k-theme" type="button" aria-label="Changer de thème" title="Thème clair / sombre"></button>
+    <button id="logout" class="k-theme" type="button" aria-label="Se déconnecter" title="Se déconnecter" hidden>
+      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+    </button>
+  </div>
+</header>
+<main id="app"></main>
+<script type="module" src="/core.js"></script>
+</body>
+</html>
