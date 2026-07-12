@@ -1,11 +1,9 @@
 import json
-import time
 
 import pytest
-import redis
 
 from broker.launcher import run_analysis_job
-from broker.queue import Job, RedisJobQueue
+from broker.queue import Job
 
 
 @pytest.mark.integration

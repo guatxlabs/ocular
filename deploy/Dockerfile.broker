@@ -11,7 +11,6 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY engine/ ./engine/
 COPY broker/ ./broker/
-COPY runner_analysis/ ./runner_analysis/
 
 RUN pip install --no-cache-dir redis pydantic
 
