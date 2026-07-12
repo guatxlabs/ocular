@@ -56,11 +56,15 @@ export function renderJobs(app) {
       catch (ex) {
         if (ex instanceof Unauthorized) { stop(); return; }
         done.add(id);
-        replaceStatus(rows.get(id), el('span.pending-pill', { style: 'color:var(--bad);border-color:color-mix(in srgb,var(--bad) 38%,transparent);background:color-mix(in srgb,var(--bad) 12%,transparent)' }, 'échec'));
+        replaceStatus(rows.get(id), errorPill());
         return;
       }
       if (res && res.status === 'pending') return; // toujours en cours
       done.add(id);
+      if (res && res.status === 'error') {
+        replaceStatus(rows.get(id), errorPill(res.error));
+        return;
+      }
       const v = (res && res.verdict) || 'unknown';
       replaceStatus(rows.get(id), verdictPill(v));
     }));
@@ -72,6 +76,15 @@ export function renderJobs(app) {
   tick();
   timer = setInterval(tick, 3000);
   return stop; // cleanup au changement de route
+}
+
+// Badge « Échec » : job réellement en erreur côté broker (pas un simple verdict
+// "unknown"). Le label est un textNode (via el()) ; le message d'erreur complet
+// (potentiellement issu de stderr) n'est posé qu'en attribut `title` (échappé
+// nativement par setAttribute) — jamais en innerHTML. Le détail complet en
+// textNode est affiché sur la page de détail (detail.js).
+function errorPill(message) {
+  return el('span.pending-pill.sev-err', { title: message || '' }, 'échec');
 }
 
 function verdictPill(v) {
