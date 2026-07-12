@@ -406,9 +406,17 @@ run_analysis_job = run_job  # rétro-compat pour les tests/imports existants
 
 ---
 
-### Task 5: web/models + submit + broker route capture
+### Task 5: web/models + submit + **garde SSRF** + broker route capture
 
-**Files:** Modify `web/models.py`, `web/app.py` ; Modify `tests/test_web_api.py`.
+**Files:** Modify `web/models.py`, `web/app.py` ; Create `engine/ssrf.py`, `tests/test_ssrf.py` ; Modify `tests/test_web_api.py`.
+
+**GARDE SSRF (sécu, demande user « pas de failles »)** : le profil capture fait fetcher une URL par le runner (réseau ON) → SSRF possible vers `file://`, `http://169.254.169.254/` (metadata cloud), `http://localhost`/IP privées. `engine/ssrf.py::validate_capture_url(url) -> None` (lève `ValueError`) :
+- scheme **allowlist** `{http, https}` uniquement (rejette `file/gopher/ftp/data/…`).
+- résout le host (`socket.getaddrinfo`) et **rejette** si une IP résout en **loopback / privée (RFC1918) / link-local (169.254.0.0/16, fe80::) / metadata / réservée / multicast** (via `ipaddress.ip_address(...).is_private/is_loopback/is_link_local/is_reserved/is_multicast`).
+- rejette host vide.
+- **Limite connue documentée** : DNS-rebinding (la résolution au submit peut différer de celle du runner) — mitigation complète = filtrage egress réseau (hors scope 3a) ; on fait le best-effort au submit + on note.
+`submit_job` (capture) appelle `validate_capture_url(req.url)` → `HTTPException(400, "url interdite")` si `ValueError`.
+Tests `test_ssrf.py` : `file://x` rejeté ; `http://127.0.0.1` rejeté ; `http://169.254.169.254/` rejeté ; `http://10.0.0.1` rejeté ; `https://example.com` accepté (host public).
 
 - [ ] **Step 1: Test qui échoue** — ajouter à `tests/test_web_api.py`
 ```python
