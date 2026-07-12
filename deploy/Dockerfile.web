@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY pyproject.toml ./
-COPY ocular_settings.py ocular_logging.py ./
+COPY saved_store.py ocular_settings.py ocular_logging.py ./
 COPY engine/ ./engine/
 COPY bus/ ./bus/
 COPY web/ ./web/
