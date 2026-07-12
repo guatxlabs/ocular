@@ -5,3 +5,5 @@ node_modules/
 runner-*/browser-cache/
 logs/
 .superpowers/
+.venv/
+*.egg-info/
