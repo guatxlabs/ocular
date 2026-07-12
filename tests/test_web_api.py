@@ -56,6 +56,24 @@ def test_oversized_url_rejected(monkeypatch):
     assert r.status_code == 422
 
 
+def test_capture_requires_url(monkeypatch):
+    c = _client(monkeypatch)[0]
+    assert c.post("/jobs", json={"profile": "capture"}).status_code == 422
+    r = c.post("/jobs", json={"profile": "capture", "url": "https://example.com"})
+    assert r.status_code == 200
+
+
+def test_analysis_requires_html(monkeypatch):
+    c = _client(monkeypatch)[0]
+    assert c.post("/jobs", json={"profile": "analysis"}).status_code == 422
+
+
+def test_capture_ssrf_url_rejected(monkeypatch):
+    c = _client(monkeypatch)[0]
+    r = c.post("/jobs", json={"profile": "capture", "url": "http://127.0.0.1"})
+    assert r.status_code == 400
+
+
 def test_web_package_never_imports_docker():
     import pathlib
     for f in pathlib.Path("web").rglob("*.py"):

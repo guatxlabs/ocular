@@ -14,6 +14,7 @@ from starlette.responses import JSONResponse
 import saved_store
 from bus.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
+from engine.ssrf import validate_capture_url
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path
 from web.models import JobRequest, JobResponse
@@ -79,6 +80,15 @@ def get_queue() -> RedisJobQueue:
 def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> JobResponse:
     if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
         raise HTTPException(status_code=422, detail="html trop volumineux")
+    if req.profile == "capture":
+        if not req.url:
+            raise HTTPException(status_code=422, detail="url requis pour capture")
+        try:
+            validate_capture_url(req.url)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="url interdite")
+    if req.profile == "analysis" and not req.html:
+        raise HTTPException(status_code=422, detail="html requis pour analysis")
     job_id = "job-" + uuid.uuid4().hex[:12]
     queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url))
     log.info("job submitted job_id=%s profile=%s html_bytes=%d",
