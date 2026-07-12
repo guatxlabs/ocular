@@ -15,6 +15,8 @@ services:
     security_opt: ["no-new-privileges:true"]
     user: "10002:10002"
     ports: ["8000:8000"]
+    mem_limit: 1g
+    cpus: "1.0"
     volumes:
       - ocular-artifacts:/artifacts:ro   # web LIT les artefacts
     depends_on: [redis]
@@ -25,6 +27,8 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
+    mem_limit: 1g
+    cpus: "1.0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock  # SEUL le broker parle à Docker
       - ../schemas:/app/schemas:ro

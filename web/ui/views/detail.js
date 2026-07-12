@@ -197,7 +197,7 @@ export function renderDetail(app, id) {
           const b = e.currentTarget; b.disabled = true;
           try {
             const url = await artifactObjectUrl(id, artifacts.dom_html_ref);
-            const a = el('a', { href: url, download: id + '-dom.html' });
+            const a = el('a', { href: url, download: id + '-dom.txt' });
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 4000);
           } catch (ex) { if (!(ex instanceof Unauthorized)) b.textContent = 'Téléchargement indisponible'; }
