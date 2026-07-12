@@ -80,3 +80,11 @@ class OcularResult(BaseModel):
     dynamic_steps: list[DynamicStep] = Field(default_factory=list)
     stealth: Optional[StealthInfo] = None
     artifacts: Artifacts = Field(default_factory=Artifacts)
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        schema = super().model_json_schema(*args, **kwargs)
+        required = set(schema.get("required", []))
+        required.add("schema_version")
+        schema["required"] = sorted(required)
+        return schema

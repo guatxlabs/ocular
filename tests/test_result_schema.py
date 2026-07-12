@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 
 import jsonschema
+import pytest
+from pydantic import ValidationError
 
 from engine.result import OcularResult
 
@@ -33,16 +35,13 @@ def test_ocularresult_accepts_minimal_payload():
 def test_generated_schema_validates_payload_and_is_written():
     schema = OcularResult.model_json_schema()
     jsonschema.validate(_minimal_payload(), schema)  # ne lève pas
-    # le fichier de contrat existe et correspond au modèle
+    # le fichier de contrat existe et correspond strictement au modèle
     on_disk = json.loads(Path("schemas/result.schema.json").read_text())
-    assert on_disk["properties"]["schema_version"]  # présent
+    assert on_disk == OcularResult.model_json_schema()
 
 
 def test_invalid_severity_is_rejected():
     bad = _minimal_payload()
     bad["static_findings"][0]["severity"] = "spicy"
-    try:
+    with pytest.raises(ValidationError):
         OcularResult.model_validate(bad)
-        assert False, "should reject invalid severity"
-    except Exception:
-        pass
