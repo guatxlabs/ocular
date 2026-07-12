@@ -17,3 +17,4 @@ def test_static_assets_served():
     c = TestClient(app)
     assert c.get("/style.css").status_code == 200
     assert c.get("/api.js").status_code == 200
+    assert c.get("/boot.js").status_code == 200
