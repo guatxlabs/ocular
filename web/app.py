@@ -47,7 +47,10 @@ async def _csp(request, call_next):
     # (JSON, image/png, text/plain) pour lesquelles cet en-tête n'a pas de sens.
     response = await call_next(request)
     if not request.url.path.startswith("/jobs"):
-        response.headers["Content-Security-Policy"] = "default-src 'self'"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' blob: data:; object-src 'none'; base-uri 'self'"
+        )
     return response
 
 

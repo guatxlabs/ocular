@@ -34,3 +34,11 @@ def test_200_with_correct_bearer(monkeypatch):
     c = _client(monkeypatch, "s3cret")
     r = c.get("/jobs/x", headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200  # {"status":"pending"}
+
+
+def test_non_ascii_auth_header_is_401_not_500(monkeypatch):
+    c = _client(monkeypatch, "s3cret")
+    # httpx refuse d'encoder un header str non-ASCII en ASCII -> on passe les octets
+    # UTF-8 bruts directement (comme le ferait un client HTTP qui n'échappe pas la valeur).
+    r = c.get("/jobs/x", headers={"Authorization": "Bearer café".encode("utf-8")})
+    assert r.status_code == 401

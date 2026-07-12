@@ -8,9 +8,13 @@ from bus.queue import RedisJobQueue
 def _client(tmp_path, monkeypatch):
     monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path))
     monkeypatch.setenv("OCULAR_TOKEN", "t")
-    app.dependency_overrides[get_queue] = lambda: RedisJobQueue(fakeredis.FakeStrictRedis())
+    # instance unique partagée entre le dependency_override et les tests qui ont besoin
+    # d'écrire directement dans la fakeredis (ex: résultat corrompu) -> exposée via client.queue
+    q = RedisJobQueue(fakeredis.FakeStrictRedis())
+    app.dependency_overrides[get_queue] = lambda: q
     client = TestClient(app)
     client.headers.update({"Authorization": "Bearer t"})
+    client.queue = q
     return client
 
 
@@ -55,3 +59,11 @@ def test_invalid_ref_reaches_400_branch(tmp_path, monkeypatch):
     # ref SANS slash (donc atteint le handler, pas le 404 de routage) mais invalide -> 400
     r = c.get("/jobs/j/artifact/sha256:" + "A" * 64)  # majuscules -> fullmatch échoue
     assert r.status_code == 400
+
+
+def test_get_job_corrupt_json_returns_500(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    # même fakeredis que le client (instance exposée par _client via c.queue)
+    c.queue.set_result("bad", "{not json")
+    r = c.get("/jobs/bad")
+    assert r.status_code == 500
