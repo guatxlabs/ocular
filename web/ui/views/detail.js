@@ -1,14 +1,42 @@
-// detail.js — résultat d'un job. Le VERDICT est le héros de la vue. Screenshot et
-// DOM chargés en blob (fetch + Bearer) car un <img src> nu n'envoie pas l'en-tête.
+// detail.js — résultat d'une analyse. Le VERDICT est le héros de la vue. Screenshot
+// et DOM chargés en blob (fetch + Bearer) car un <img src> nu n'envoie pas l'en-tête.
 // Le DOM (potentiellement hostile) n'est JAMAIS rendu inline : lien de téléchargement.
+//
+// Deux sources partagent le même rendu (paramétré par `src`) :
+//   - job   : GET /jobs/{id}      (polling des "pending" + panneau « Sauvegarder »)
+//   - saved : GET /saved/{id}/... (analyse figée en base, pas de polling ni de save)
 import { el, iconNode, esc } from '../core.js';
-import { getJob, artifactObjectUrl, Unauthorized } from '../api.js';
+import {
+  getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
+  saveAnalysis, Unauthorized,
+} from '../api.js';
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
 const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
 const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
 
+// ---- points d'entrée : une source « job », une source « saved » ----
 export function renderDetail(app, id) {
+  return mount(app, id, {
+    getResult: () => getJob(id),
+    artifactUrl: (ref) => artifactObjectUrl(id, ref),
+    back: { href: '#/jobs', label: 'Jobs' },
+    poll: true,
+    saveable: true,
+  });
+}
+
+export function renderSavedDetail(app, sid) {
+  return mount(app, sid, {
+    getResult: () => getSavedResult(sid),
+    artifactUrl: (ref) => savedArtifactObjectUrl(sid, ref),
+    back: { href: '#/saved', label: 'Sauvegardes' },
+    poll: false,
+    saveable: false,
+  });
+}
+
+function mount(app, id, src) {
   let timer = null;
   const urls = []; // objectURLs à révoquer au départ
   const stop = () => {
@@ -16,14 +44,14 @@ export function renderDetail(app, id) {
     urls.forEach((u) => URL.revokeObjectURL(u));
   };
 
-  app.appendChild(el('a.backlink', { href: '#/jobs' }, [iconNode('chevleft'), 'Jobs']));
+  app.appendChild(el('a.backlink', { href: src.back.href }, [iconNode('chevleft'), src.back.label]));
   const body = el('div');
   app.appendChild(body);
   body.appendChild(el('div.card', {}, [el('div.emptyview', {}, [el('p', {}, 'chargement…')])]));
 
   async function load() {
     let res;
-    try { res = await getJob(id); }
+    try { res = await src.getResult(); }
     catch (ex) {
       if (ex instanceof Unauthorized) { stop(); return; }
       body.replaceChildren(el('div.card', {}, [
@@ -32,7 +60,7 @@ export function renderDetail(app, id) {
       ]));
       return;
     }
-    if (res && res.status === 'pending') {
+    if (src.poll && res && res.status === 'pending') {
       body.replaceChildren(el('div.card', {}, [
         el('div.emptyview', {}, [
           el('span.pending-pill', {}, [el('span.spin'), 'en attente']),
@@ -75,6 +103,9 @@ export function renderDetail(app, id) {
       el('div.finding-count', {}, [el('b', {}, String(findings.length)), 'détections']),
     ]));
 
+    // ---- panneau « Sauvegarder » (source job uniquement) ----
+    if (src.saveable) frag.appendChild(buildSavePanel(r));
+
     // ---- screenshot (blob) ----
     frag.appendChild(buildScreenshot(r));
 
@@ -93,16 +124,56 @@ export function renderDetail(app, id) {
     body.replaceChildren(frag);
   }
 
+  // Panneau de sauvegarde : label optionnel + bouton. Succès -> « sauvegardée ✓ »
+  // + lien vers la vue Sauvegardes. 409 -> artefacts GC côté serveur : relancer.
+  function buildSavePanel(r) {
+    const sec = el('div.savepanel');
+    const label = el('input', {
+      type: 'text', maxlength: '120', 'aria-label': 'Étiquette (optionnelle)',
+      placeholder: 'étiquette (optionnelle)',
+    });
+    const err = el('div.errbox', { role: 'alert', hidden: 'hidden' });
+    const btn = el('button.btn-primary', { type: 'button' }, [iconNode('bookmark'), 'Sauvegarder']);
+    const done = (savedId) => {
+      sec.replaceChildren(
+        el('span.savedok', {}, [iconNode('check'), 'Analyse sauvegardée']),
+        el('a.savedlink', { href: '#/saved/' + savedId }, 'Voir dans Sauvegardes'),
+      );
+    };
+    btn.addEventListener('click', async () => {
+      err.hidden = true;
+      btn.disabled = true;
+      try {
+        const out = await saveAnalysis(id, label.value.trim());
+        done(out.id);
+      } catch (ex) {
+        if (ex instanceof Unauthorized) return;
+        btn.disabled = false;
+        err.textContent = ex && ex.expired
+          ? 'Artefacts expirés — relance l\'analyse avant de sauvegarder.'
+          : String(ex.message || ex);
+        err.hidden = false;
+      }
+    });
+    sec.appendChild(el('div.saverow', {}, [
+      el('span.savelead', {}, [iconNode('bookmark'), 'Conserver cette analyse']),
+      label,
+      btn,
+    ]));
+    sec.appendChild(err);
+    return sec;
+  }
+
   function buildScreenshot(r) {
     const sec = el('div.shot-wrap');
     const shots = r.screenshots || [];
     if (!shots.length) {
-      sec.appendChild(el('div.shot-ph', {}, 'Aucune capture pour ce job.'));
+      sec.appendChild(el('div.shot-ph', {}, 'Aucune capture pour cette analyse.'));
       return sec;
     }
     const ph = el('div.shot-ph', {}, 'chargement de la capture…');
     sec.appendChild(ph);
-    artifactObjectUrl(id, shots[0].image_ref).then((url) => {
+    src.artifactUrl(shots[0].image_ref).then((url) => {
       urls.push(url);
       const img = el('img', { alt: 'Capture d\'écran de la page analysée' });
       img.src = url;
@@ -196,7 +267,7 @@ export function renderDetail(app, id) {
         onclick: async (e) => {
           const b = e.currentTarget; b.disabled = true;
           try {
-            const url = await artifactObjectUrl(id, artifacts.dom_html_ref);
+            const url = await src.artifactUrl(artifacts.dom_html_ref);
             const a = el('a', { href: url, download: id + '-dom.txt' });
             document.body.appendChild(a); a.click(); a.remove();
             setTimeout(() => URL.revokeObjectURL(url), 4000);

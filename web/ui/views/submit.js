@@ -1,8 +1,16 @@
 // submit.js — textarea HTML + upload .eml + champ URL désactivé (phase 3).
-// POST /jobs {profile:"analysis", html} puis navigation vers le détail du job.
-import { el, iconNode } from '../core.js';
+// Avant POST /jobs : dédup. On calcule le hash du HTML (identique à l'input_hash
+// du moteur) et on interroge /saved/{hash} ; si une analyse existe déjà, une modale
+// propose de la revoir plutôt que de relancer. Sinon POST /jobs -> détail du job.
+import { el, iconNode, openModal } from '../core.js';
 import { addJob } from '../state.js';
-import { submitJob, Unauthorized } from '../api.js';
+import { submitJob, sha256Hex, lookupSaved, Unauthorized } from '../api.js';
+
+function fmtIso(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
 
 export function renderSubmit(app) {
   const err = el('div.errbox', { role: 'alert', hidden: 'hidden' });
@@ -27,6 +35,49 @@ export function renderSubmit(app) {
 
   const btn = el('button.btn-primary', { type: 'submit' }, [iconNode('flask'), 'Lancer l\'analyse']);
   const showErr = (msg) => { err.textContent = msg; err.hidden = false; };
+  const resetBtn = () => {
+    btn.disabled = false;
+    btn.replaceChildren(iconNode('flask'), document.createTextNode('Lancer l\'analyse'));
+  };
+
+  // POST /jobs puis navigation vers le détail (chemin commun aux deux issues de dédup).
+  async function doSubmit(html) {
+    err.hidden = true;
+    btn.disabled = true;
+    btn.replaceChildren(document.createElement('span'), document.createTextNode('Analyse en cours…'));
+    btn.firstChild.className = 'spin';
+    try {
+      const { job_id } = await submitJob(html);
+      const m = html.match(/<title[^>]*>([^<]{0,80})/i);
+      const target = (m && m[1].trim()) || (html.slice(0, 60).replace(/\s+/g, ' ').trim() + '…');
+      addJob({ id: job_id, target, ts: Date.now() });
+      location.hash = '#/job/' + job_id;
+    } catch (ex) {
+      if (!(ex instanceof Unauthorized)) showErr(String(ex.message || ex));
+      resetBtn();
+    }
+  }
+
+  // Modale de dédup : analyse déjà sauvegardée pour ce HTML.
+  function showDedupModal(meta, html) {
+    const modal = el('div.modal', {}, [
+      el('h3', {}, 'Analyse déjà sauvegardée'),
+      el('p.modal-msg', {}, 'Ce HTML a déjà été analysé et conservé. Tu peux la revoir sans relancer le moteur.'),
+      el('dl.dedup-meta', {}, [
+        el('dt', {}, 'Verdict'), el('dd', {}, meta.verdict || 'unknown'),
+        el('dt', {}, 'Sauvegardée'), el('dd', {}, fmtIso(meta.saved_at)),
+        el('dt', {}, 'Étiquette'), el('dd', {}, meta.label || '(sans étiquette)'),
+      ]),
+    ]);
+    const cancel = el('button.m-cancel', { type: 'button' }, 'Annuler');
+    const again = el('button.m-cancel', { type: 'button' }, 'Analyser quand même');
+    const view = el('button.m-ok', { type: 'button' }, [iconNode('eye'), 'Voir']);
+    modal.appendChild(el('div.modal-act', {}, [cancel, again, view]));
+    const close = openModal(modal);
+    cancel.addEventListener('click', () => { close(); resetBtn(); });
+    again.addEventListener('click', () => { close(); doSubmit(html); });
+    view.addEventListener('click', () => { close(); location.hash = '#/saved/' + meta.id; });
+  }
 
   const form = el('form', {
     onsubmit: async (e) => {
@@ -35,20 +86,17 @@ export function renderSubmit(app) {
       if (!html) { showErr('Ajoute du HTML ou charge un .eml avant de lancer.'); return; }
       err.hidden = true;
       btn.disabled = true;
-      btn.replaceChildren(document.createElement('span'), document.createTextNode('Analyse en cours…'));
-      btn.firstChild.className = 'spin';
+      // dédup best-effort : en cas d'échec du lookup, on n'empêche pas l'analyse.
+      let meta = null;
       try {
-        const { job_id } = await submitJob(html);
-        // libellé de cible : titre <title> si présent, sinon extrait
-        const m = html.match(/<title[^>]*>([^<]{0,80})/i);
-        const target = (m && m[1].trim()) || (html.slice(0, 60).replace(/\s+/g, ' ').trim() + '…');
-        addJob({ id: job_id, target, ts: Date.now() });
-        location.hash = '#/job/' + job_id;
+        const h = await sha256Hex(html);
+        meta = await lookupSaved(h);
       } catch (ex) {
-        if (!(ex instanceof Unauthorized)) showErr(String(ex.message || ex));
-        btn.disabled = false;
-        btn.replaceChildren(iconNode('flask'), document.createTextNode('Lancer l\'analyse'));
+        if (ex instanceof Unauthorized) { return; }
+        meta = null; // lookup indisponible -> on soumet directement
       }
+      if (meta) { showDedupModal(meta, html); return; }
+      doSubmit(html);
     },
   }, [
     err,

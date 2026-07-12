@@ -1092,10 +1092,45 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .emptyview p{margin:0 0 16px;font-size:14px}
 .errbox{background:color-mix(in srgb,var(--bad) 10%,transparent);border:1px solid color-mix(in srgb,var(--bad) 38%,transparent);color:var(--bad);border-radius:9px;padding:10px 14px;font-size:13px;margin-bottom:14px}
 
+/* ---- feature « analyses sauvegardées » (T7) ---- */
+/* panneau « Sauvegarder » sur le détail d'un job : bande accent discrète sous le héros */
+.savepanel{margin:0 0 18px;padding:14px 16px;border:1px solid var(--bd);border-left:3px solid var(--acc);border-radius:var(--radius);background:color-mix(in srgb,var(--acc) 6%,var(--card))}
+.saverow{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.savelead{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--hd)}
+.savelead .ic{width:16px;height:16px;color:var(--acc)}
+.saverow input{flex:1 1 200px;min-width:140px;background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:9px 12px;font-size:13px}
+.saverow input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.savepanel .errbox{margin:12px 0 0}
+.savedok{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--ok)}
+.savedok .ic{width:18px;height:18px;color:var(--ok)}
+.savepanel .savedlink{margin-left:14px;font-size:13px;color:var(--acc);text-decoration:none;border-bottom:1px dashed color-mix(in srgb,var(--acc) 45%,transparent)}
+.savepanel .savedlink:hover{color:var(--hd)}
+/* hash tronqué (liste Sauvegardes / Admin) */
+.savedhash{font-family:var(--font-mono);font-size:11px;color:var(--mut);flex:0 0 auto}
+/* Admin : registre « privilégié / destructif » signalé par l'accent danger */
+.admtoken{border-left:3px solid var(--bad);margin-bottom:16px}
+.admlead{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--hd);margin-bottom:6px}
+.admlead .ic{width:17px;height:17px;color:var(--bad)}
+.admtoken p.muted{margin:0 0 10px}
+.admtoken input{width:100%;background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:10px 12px;font-size:13px;font-family:var(--font-mono)}
+.admtoken input:focus{outline:none;border-color:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 22%,transparent)}
+.admbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.admcount{font-family:var(--font-mono);font-size:12px;color:var(--mut)}
+.admrow{gap:12px}
+.admdel:hover:not(:disabled){border-color:var(--bad);color:var(--bad)}
+.btn-danger{display:inline-flex;align-items:center;gap:8px;background:transparent;color:var(--bad);border:1px solid color-mix(in srgb,var(--bad) 45%,var(--bd));border-radius:9px;padding:8px 14px;cursor:pointer;font-size:13px;font-weight:600}
+.btn-danger:hover{background:var(--bad);color:#fff;border-color:var(--bad)}
+.btn-danger .ic{width:15px;height:15px}
+/* méta de la modale de dédup */
+.dedup-meta{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;margin:0 0 4px;font-size:13px}
+.dedup-meta dt{color:var(--mut);font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;align-self:center}
+.dedup-meta dd{margin:0;color:var(--hd);font-weight:600;word-break:break-word}
+
 /* responsive */
 @media (max-width:560px){
   main#app{padding:18px 14px 48px}
   .verdict-hero{padding:16px}
   .finding-count{margin-left:0;text-align:left}
   header h1 .brand-sub{display:none}
+  .saverow input{flex-basis:100%}
 }
