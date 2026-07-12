@@ -40,3 +40,18 @@ def test_invalid_ref_400(tmp_path, monkeypatch):
 def test_missing_artifact_404(tmp_path, monkeypatch):
     c = _client(tmp_path, monkeypatch)
     assert c.get(f"/jobs/j/artifact/sha256:{'e'*64}").status_code == 404
+
+
+def test_artifact_has_nosniff(tmp_path, monkeypatch):
+    ref = "sha256:" + "a" * 64
+    (tmp_path / ("sha256_" + "a" * 64)).write_bytes(b"\x89PNG\r\n\x1a\nX")
+    c = _client(tmp_path, monkeypatch)
+    r = c.get(f"/jobs/j/artifact/{ref}")
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+def test_invalid_ref_reaches_400_branch(tmp_path, monkeypatch):
+    c = _client(tmp_path, monkeypatch)
+    # ref SANS slash (donc atteint le handler, pas le 404 de routage) mais invalide -> 400
+    r = c.get("/jobs/j/artifact/sha256:" + "A" * 64)  # majuscules -> fullmatch échoue
+    assert r.status_code == 400

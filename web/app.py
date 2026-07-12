@@ -32,11 +32,23 @@ async def _auth(request, call_next):
             return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
         expected = f"Bearer {token}"
         provided = request.headers.get("authorization", "")
-        if not secrets.compare_digest(provided, expected):
+        if not secrets.compare_digest(
+            provided.encode("utf-8", "ignore"), expected.encode()
+        ):
             # jamais le header/token dans les logs, seulement path + status
             log.warning("auth rejected path=%s status=%d", request.url.path, 401)
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _csp(request, call_next):
+    # CSP posée sur l'app shell (UI statique) ; /jobs* renvoie des réponses API/artefacts
+    # (JSON, image/png, text/plain) pour lesquelles cet en-tête n'a pas de sens.
+    response = await call_next(request)
+    if not request.url.path.startswith("/jobs"):
+        response.headers["Content-Security-Policy"] = "default-src 'self'"
+    return response
 
 
 @lru_cache(maxsize=1)
@@ -64,7 +76,10 @@ def get_job(job_id: str, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     result = queue.get_result(job_id)
     if result is None:
         return {"status": "pending"}
-    return json.loads(result)
+    try:
+        return json.loads(result)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="résultat corrompu")
 
 
 @app.get("/jobs/{job_id}/artifact/{ref}")
@@ -80,12 +95,19 @@ def get_artifact(job_id: str, ref: str) -> Response:
     with open(path, "rb") as fh:
         data = fh.read()
     if data[:8] == _PNG_MAGIC:
-        return Response(content=data, media_type="image/png")
+        return Response(
+            content=data,
+            media_type="image/png",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
     # DOM hostile : JAMAIS servi en text/html inline
     return Response(
         content=data,
         media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{fname}.html"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}.txt"',
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 
