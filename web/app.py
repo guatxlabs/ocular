@@ -10,7 +10,7 @@ from fastapi import Depends, FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
 
-from broker.queue import Job, RedisJobQueue
+from bus.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
 from web.models import JobRequest, JobResponse
 

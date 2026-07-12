@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 
-from broker.queue import Job
+from bus.queue import Job
 from engine.artifacts import ref_to_filename
 
 _IMAGE = "ocular-runner-analysis:latest"
