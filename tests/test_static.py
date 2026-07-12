@@ -7,6 +7,9 @@ def test_detects_eval_and_atob_as_critical():
     assert "Dynamic code evaluation" in rules
     assert "Base64 decode" in rules
     assert all(f.line >= 1 for f in findings)
+    by_rule = {f.rule: f.severity for f in findings}
+    assert by_rule["Dynamic code evaluation"] == "critical"
+    assert by_rule["Base64 decode"] == "critical"
 
 
 def test_detects_password_field_critical():
