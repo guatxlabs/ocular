@@ -22,6 +22,21 @@ const I18N_EN = {
   'URL à analyser': 'URL to analyze', 'analyse d\'URL live': 'live URL analysis',
   'Lancer l\'analyse': 'Run analysis', 'Analyse en cours…': 'Analyzing…',
   'Ajoute du HTML ou charge un .eml avant de lancer.': 'Add HTML or load an .eml before running.',
+  // submit — toggle profil + capture URL
+  'Colle du HTML, dépose un .eml, ou capture une URL live.': 'Paste HTML, drop an .eml, or capture a live URL.',
+  'Analyser HTML': 'Analyze HTML', 'Analyser URL': 'Analyze URL',
+  'Profil d\'analyse': 'Analysis profile',
+  'capture live via moteur furtif (Camoufox) — Turnstile géré':
+    'live capture via stealth engine (Camoufox) — Turnstile handled',
+  'Renseigne une URL avant de lancer.': 'Enter a URL before running.',
+  'URL manquante — renseigne une URL avant de lancer.': 'URL missing — enter a URL before running.',
+  'URL invalide — vérifie le format (ex. https://exemple.com).':
+    'Invalid URL — check the format (e.g. https://example.com).',
+  'URL interdite : cible non publique (IP exposée / SSRF). Utilise une URL publique.':
+    'Forbidden URL: non-public target (exposed IP / SSRF). Use a public URL.',
+  'HTML manquant ou trop volumineux.': 'HTML missing or too large.',
+  'Cette URL a déjà été capturée et conservée. Tu peux la revoir sans relancer le moteur.':
+    'This URL has already been captured and saved. You can review it without rerunning the engine.',
   // jobs
   'Mes analyses': 'My analyses', 'Les jobs soumis depuis ce navigateur.': 'Jobs submitted from this browser.',
   'Aucune analyse pour l\'instant.': 'No analysis yet.', 'Lancer une analyse': 'Run an analysis',
@@ -37,6 +52,12 @@ const I18N_EN = {
   'Job introuvable ou expiré.': 'Job not found or expired.',
   'Analyse en attente — actualisation automatique…': 'Analysis pending — auto-refreshing…',
   'Aucune capture pour cette analyse.': 'No screenshot for this analysis.',
+  'Capture indisponible.': 'Screenshot unavailable.',
+  // detail — furtivité / capture (profil capture)
+  'Moteur furtif': 'Stealth engine', 'Turnstile passé': 'Turnstile solved',
+  'Capture initiale': 'Initial capture', 'Après Turnstile': 'After Turnstile',
+  'Capture finale': 'Final capture', 'Capture': 'Capture',
+  'IP exposée': 'Exposed IP', 'URL interdite': 'Forbidden URL',
   // sauvegarde (panneau détail)
   'Conserver cette analyse': 'Keep this analysis', 'Sauvegarder': 'Save',
   'étiquette (optionnelle)': 'label (optional)', 'Analyse sauvegardée': 'Analysis saved',
