@@ -14,7 +14,24 @@ log = get_logger("broker.launcher")
 
 _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
+_RECON_IMAGE = "ocular-runner-recon:latest"
+_RECON_SECCOMP = "schemas/seccomp-recon.json"
 _ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+
+_ANALYSIS_TIMEOUT = 60
+_CAPTURE_TIMEOUT = 90
+_ANALYSIS_MEMORY = "2g"
+_ANALYSIS_PIDS_LIMIT = "256"
+_CAPTURE_MEMORY = "4g"
+_CAPTURE_PIDS_LIMIT = "512"
+
+
+def _proxy_env() -> list[str]:
+    out: list[str] = []
+    for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        if os.environ.get(k):
+            out += ["-e", f"{k}={os.environ[k]}"]
+    return out
 
 
 def _store_blobs(blobs: dict, artifacts_dir: str) -> None:
@@ -34,35 +51,66 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
-def build_docker_args(job: Job) -> list[str]:
-    if job.profile != "analysis":
-        raise ValueError("build_docker_args ne gère que le profil analysis")
+def _base_hardening(job_id: str) -> list[str]:
+    """Flags de durcissement communs aux deux profils (analysis + capture) :
+    conteneur jetable nommé, aucune capability, no-new-privileges, rootfs
+    read-only, utilisateur non-root. Les specifics (network/seccomp/mémoire/
+    tmpfs/proxy/image/args) restent composés par `build_docker_args`."""
     return [
-        "docker", "run", "--rm", "-i",
-        "--name", f"ocular-job-{job.job_id}",
-        "--network", "none",
+        "--rm",
+        "--name", f"ocular-job-{job_id}",
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
-        "--security-opt", f"seccomp={_SECCOMP}",
         "--read-only",
-        "--tmpfs", "/work:size=256m,mode=1777",
         "--user", "10001:10001",
-        "--memory", "2g",
-        "--pids-limit", "256",
-        _IMAGE,
-        "--job-id", job.job_id,
     ]
 
 
-def run_analysis_job(job: Job) -> str:
-    log.info("runner launch job_id=%s", job.job_id)
+def build_docker_args(job: Job) -> list[str]:
+    if job.profile == "analysis":
+        return [
+            "docker", "run", "-i",
+            *_base_hardening(job.job_id),
+            "--network", "none",
+            "--security-opt", f"seccomp={_SECCOMP}",
+            "--tmpfs", "/work:size=256m,mode=1777",
+            "--memory", _ANALYSIS_MEMORY,
+            "--pids-limit", _ANALYSIS_PIDS_LIMIT,
+            _IMAGE,
+            "--job-id", job.job_id,
+        ]
+    if job.profile == "capture":
+        # Réseau ON (recon a besoin d'Internet) mais durci : pas de docker.sock,
+        # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
+        return [
+            "docker", "run",
+            *_base_hardening(job.job_id),
+            "--security-opt", f"seccomp={_RECON_SECCOMP}",
+            "--tmpfs", "/work:size=512m,mode=1777",
+            "--tmpfs", "/tmp:size=64m,mode=1777",
+            "--memory", _CAPTURE_MEMORY,
+            "--pids-limit", _CAPTURE_PIDS_LIMIT,
+            *_proxy_env(),
+            _RECON_IMAGE,
+            "--url", job.url or "",
+        ]
+    raise ValueError(f"profil non géré: {job.profile}")
+
+
+def run_job(job: Job) -> str:
+    log.info("runner launch job_id=%s profile=%s", job.job_id, job.profile)
+    if job.profile == "capture":
+        log.warning("capture job job_id=%s : IP exposée (proxy=%s)",
+                    job.job_id, bool(_proxy_env()))
     started = time.monotonic()
+    stdin = (job.html or "").encode() if job.profile == "analysis" else None
+    timeout = _ANALYSIS_TIMEOUT if job.profile == "analysis" else _CAPTURE_TIMEOUT
     try:
         proc = subprocess.run(
             build_docker_args(job),
-            input=(job.html or "").encode(),
+            input=stdin,
             capture_output=True,
-            timeout=60,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         subprocess.run(["docker", "kill", f"ocular-job-{job.job_id}"],
@@ -76,3 +124,6 @@ def run_analysis_job(job: Job) -> str:
         raise RuntimeError(f"runner a échoué: {proc.stderr.decode()[:500]}")
     log.info("runner done job_id=%s duration_ms=%d", job.job_id, duration_ms)
     return _parse_and_store(proc.stdout.decode(), _ARTIFACTS_DIR)
+
+
+run_analysis_job = run_job  # rétro-compat pour les tests/imports existants

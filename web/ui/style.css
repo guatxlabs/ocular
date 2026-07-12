@@ -1002,7 +1002,6 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .oc-field input:focus,.oc-field textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .oc-field input:disabled{opacity:.5;cursor:not-allowed;background:var(--card2)}
 .oc-field .hint{font-size:11px;color:var(--mut)}
-.oc-field.disabled label{opacity:.6}
 .field-row{display:flex;gap:10px;align-items:center}
 .field-row input{flex:1}
 
@@ -1016,8 +1015,14 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .filepick{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mut)}
 .filepick .btn-ghost{padding:7px 13px}
 
-/* upload « bientôt » : le champ URL grisé (phase 3) — réutilise .soon-badge de plume */
-.oc-field.disabled label .soon-badge{margin-left:8px;vertical-align:middle}
+/* toggle segmenté de profil (Analyser HTML / Analyser URL) — radios stylés */
+.profile-toggle{display:inline-flex;gap:4px;padding:4px;margin:0 0 16px;background:var(--card2);border:1px solid var(--bd);border-radius:12px}
+.profile-toggle .seg{position:relative;display:inline-flex;align-items:center;gap:7px;padding:8px 16px;border-radius:9px;cursor:pointer;font-size:13px;font-weight:600;color:var(--mut);user-select:none;transition:color .15s,background .15s}
+.profile-toggle .seg .ic{width:16px;height:16px}
+.profile-toggle .seg:hover{color:var(--hd)}
+.profile-toggle .seg-input{position:absolute;opacity:0;width:0;height:0;pointer-events:none}
+.profile-toggle .seg:has(.seg-input:checked){background:var(--acc);color:var(--acc-ink)}
+.profile-toggle .seg:has(.seg-input:focus-visible){box-shadow:0 0 0 3px var(--acc-soft)}
 
 /* liste de jobs — lignes cliquables (grammaire proche de .caserow) */
 .joblist{display:flex;flex-direction:column;gap:8px}
@@ -1056,8 +1061,19 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .finding-count{margin-left:auto;text-align:right;font-family:var(--font-mono);font-size:12px;color:var(--mut)}
 .finding-count b{display:block;font-size:26px;font-weight:800;color:var(--acc);letter-spacing:-.02em}
 
-/* screenshot chargé en blob */
-.shot-wrap{margin:0 0 18px}
+/* barre de furtivité (profil capture) : moteur + statut Turnstile */
+.stealth-bar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 16px}
+.stealth-bar span{display:inline-flex;align-items:center;gap:7px;padding:6px 13px;border-radius:var(--pill);font-size:12px;font-weight:600;border:1px solid var(--bd)}
+.stealth-bar .ic{width:15px;height:15px}
+.stealth-engine{color:var(--mut);background:var(--card2)}
+.stealth-engine b{color:var(--hd);font-family:var(--font-mono);text-transform:capitalize}
+.turnstile-ok{color:var(--ok,#1a9d5a);background:color-mix(in srgb,var(--ok,#1a9d5a) 12%,transparent);border-color:color-mix(in srgb,var(--ok,#1a9d5a) 30%,transparent)}
+.turnstile-pending{color:var(--acc);background:var(--acc-bg);border-color:color-mix(in srgb,var(--acc) 30%,transparent)}
+
+/* screenshot(s) chargé(s) en blob — figure par étape (capture initiale / post-turnstile) */
+.shot-wrap{margin:0 0 18px;display:flex;flex-direction:column;gap:12px}
+.shot-fig{margin:0}
+.shot-cap{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 6px}
 .shot-wrap img{width:100%;max-width:100%;display:block;border:1px solid var(--bd);border-radius:var(--radius);background:var(--card2)}
 .shot-ph{padding:40px;text-align:center;color:var(--mut);border:1px dashed var(--bd);border-radius:var(--radius);background:var(--card2);font-size:13px}
 
