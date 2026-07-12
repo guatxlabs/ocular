@@ -4,7 +4,7 @@
 // Toutes les données affichées passent en textNode/attribut (jamais innerHTML).
 import { el, iconNode, openModal } from '../core.js';
 import { listSaved, deleteSaved, flushSaved, Unauthorized } from '../api.js';
-import { verdictPill } from './saved.js';
+import { verdictPill, fmtIso } from './saved.js';
 
 // Session en mémoire : survit aux changements de route (module importé une fois),
 // perdu au rechargement de la page. NON persisté -> pas de fuite dans le stockage.
@@ -81,7 +81,7 @@ export function renderAdmin(app) {
         verdictPill(m.verdict),
         el('span.jobtarget', { title: m.label || '' }, m.label || '(sans étiquette)'),
         el('span.savedhash', { title: m.input_hash || '' }, shortHash(m.input_hash)),
-        el('time', {}, ''),
+        el('time', {}, fmtIso(m.saved_at)),
         del,
       ]));
     });
