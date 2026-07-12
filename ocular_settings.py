@@ -61,3 +61,10 @@ def session_idle() -> int:
 
 def reaper_interval() -> int:
     return int(os.environ.get("OCULAR_REAPER_INTERVAL", "60"))
+
+
+def session_ready_timeout() -> float:
+    """Délai global (secondes) laissé au broker pour lancer le conteneur de
+    session + au session_server pour répondre `/health`, avant de renvoyer
+    504 côté web."""
+    return float(os.environ.get("OCULAR_SESSION_READY_TIMEOUT", "30"))
