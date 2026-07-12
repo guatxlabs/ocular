@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
 _PREFIX = "ocular:session:"
+_CMD_QUEUE_KEY = "ocular:session-cmds"
 
 
 def _iso_to_epoch(iso: str) -> float:
@@ -100,3 +102,30 @@ class SessionRegistry:
             return False
         stored = sess.get("token", "")
         return secrets.compare_digest(stored.encode(), token.encode())
+
+
+class SessionCmdQueue:
+    """File Redis `ocular:session-cmds` : le web (sans Docker) enqueue des
+    demandes `launch`/`stop`, le broker (seul à avoir accès à Docker) les
+    consomme dans sa boucle et exécute `launch_session`/`stop_session` +
+    tient le registre à jour. Symétrique à `RedisJobQueue` (bus/queue.py)."""
+
+    def __init__(self, client) -> None:
+        self._r = client
+
+    def enqueue_cmd(self, action: str, session_id: str, **fields) -> None:
+        payload = {"action": action, "session_id": session_id, **fields}
+        self._r.rpush(_CMD_QUEUE_KEY, json.dumps(payload))
+
+    def dequeue_cmd(self, timeout: int = 0) -> Optional[dict]:
+        try:
+            item = self._r.blpop([_CMD_QUEUE_KEY], timeout=timeout)
+        except Exception:  # noqa: BLE001
+            # timeout/déconnexion redis transitoire : ne pas tuer le broker,
+            # même effet volontairement étroit que RedisJobQueue.dequeue.
+            return None
+        if item is None:
+            return None
+        _, raw = item
+        raw = raw.decode() if isinstance(raw, bytes) else raw
+        return json.loads(raw)

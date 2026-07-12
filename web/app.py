@@ -3,27 +3,31 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
+import urllib.error
+import urllib.request
 import uuid
 from functools import lru_cache
 
 import redis
-from fastapi import Depends, FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
 
 import saved_store
 from bus.queue import Job, RedisJobQueue
+from bus.sessions import SessionCmdQueue, SessionRegistry
 from engine.artifacts import ref_to_filename
 from engine.ssrf import validate_capture_url
 from ocular_logging import get_logger
-from ocular_settings import max_html_bytes, redis_url, saved_db_path
-from web.models import JobRequest, JobResponse
+from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
+from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
 log = get_logger("web")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-_PROTECTED = ("/jobs", "/saved")
+_PROTECTED = ("/jobs", "/saved", "/sessions")
 
 
 @app.middleware("http")
@@ -56,8 +60,9 @@ async def _auth(request, call_next):
 
 @app.middleware("http")
 async def _csp(request, call_next):
-    # CSP posée sur l'app shell (UI statique) ; /jobs* et /saved* renvoient des réponses
-    # API/artefacts (JSON, image/png, text/plain) pour lesquelles cet en-tête n'a pas de sens.
+    # CSP posée sur l'app shell (UI statique) ; /jobs*, /saved* et /sessions* renvoient
+    # des réponses API/artefacts (JSON, image/png, text/plain) pour lesquelles cet
+    # en-tête n'a pas de sens (skip via le même tuple `_PROTECTED` que l'auth).
     response = await call_next(request)
     if not request.url.path.startswith(_PROTECTED):
         response.headers["Content-Security-Policy"] = (
@@ -74,6 +79,14 @@ def _redis_client():
 
 def get_queue() -> RedisJobQueue:
     return RedisJobQueue(_redis_client())
+
+
+def get_session_registry() -> SessionRegistry:
+    return SessionRegistry(_redis_client())
+
+
+def get_cmd_queue() -> SessionCmdQueue:
+    return SessionCmdQueue(_redis_client())
 
 
 @app.post("/jobs", response_model=JobResponse)
@@ -138,6 +151,129 @@ def get_artifact(job_id: str, ref: str) -> Response:
     with open(path, "rb") as fh:
         data = fh.read()
     return _serve_artifact_bytes(data, fname)
+
+
+def _session_host(session_id: str) -> str:
+    """Nom réseau interne du conteneur de session — jamais de port hôte, le
+    web parle au conteneur uniquement via le réseau applicatif interne."""
+    return f"ocular-sess-{session_id}"
+
+
+def _internal_get_ok(url: str, timeout: float = 2.0) -> bool:
+    """GET interne (health) via la bibliothèque standard uniquement — pas de
+    nouvelle dépendance, pas d'accès au moteur de conteneurs (le web reste
+    sans accès conteneur, seul le broker en dispose)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _internal_post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+_SESSION_POLL_INTERVAL = 0.5
+
+
+def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
+    """Poll d'abord le registre (écrit par le broker une fois le conteneur
+    lancé) puis le `/health` du session_server via le réseau interne, jusqu'à
+    `deadline` (epoch monotonic). Extrait pour être monkeypatchable en test
+    sans dépendre d'un vrai conteneur."""
+    while time.monotonic() < deadline:
+        sess = registry.get(session_id)
+        if sess and sess.get("container"):
+            break
+        time.sleep(_SESSION_POLL_INTERVAL)
+    else:
+        return False
+
+    health_url = f"http://{_session_host(session_id)}:8090/health"
+    while time.monotonic() < deadline:
+        if _internal_get_ok(health_url):
+            return True
+        time.sleep(_SESSION_POLL_INTERVAL)
+    return False
+
+
+@app.post("/sessions", response_model=SessionResponse)
+def create_session(
+    req: SessionRequest,
+    request: Request,
+    registry: SessionRegistry = Depends(get_session_registry),
+    cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
+) -> SessionResponse:
+    if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
+        raise HTTPException(status_code=422, detail="html trop volumineux")
+    if not req.url and not req.html:
+        raise HTTPException(status_code=422, detail="url ou html requis")
+    if req.url:
+        try:
+            validate_capture_url(req.url)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="url interdite")
+
+    session_id = "sess-" + uuid.uuid4().hex[:12]
+    token = secrets.token_urlsafe(32)
+    target = req.url if req.url else "inline-html"
+    cmd_queue.enqueue_cmd("launch", session_id, token=token, target=target)
+
+    client_ip = request.client.host if request.client else "?"
+    # Avertissement délibéré : une session interactive expose l'IP du serveur
+    # au site cible (URL live) et/ou rend du contenu potentiellement hostile
+    # dans le conteneur — jamais le token dans ce log.
+    log.warning(
+        "session create session_id=%s client_ip=%s kind=%s",
+        session_id, client_ip, "url" if req.url else "html",
+    )
+
+    deadline = time.monotonic() + session_ready_timeout()
+    if not _wait_session_ready(registry, session_id, deadline):
+        cmd_queue.enqueue_cmd("stop", session_id)
+        log.warning("session start timeout session_id=%s", session_id)
+        raise HTTPException(status_code=504, detail="session non prête")
+
+    host = _session_host(session_id)
+    if req.url:
+        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": req.url})
+    else:
+        ok = _internal_post_json(f"http://{host}:8090/load", {"html": req.html})
+    if not ok:
+        log.warning("session goto/load failed session_id=%s", session_id)
+
+    return SessionResponse(session_id=session_id, token=token)
+
+
+@app.get("/sessions")
+def list_sessions(registry: SessionRegistry = Depends(get_session_registry)) -> list:
+    # Anti-fuite (note sécu T2) : le token capability WS n'est JAMAIS renvoyé
+    # dans une liste — seul un GET/DELETE ciblé côté serveur y a accès.
+    return [
+        {k: v for k, v in sess.items() if k != "token"}
+        for sess in registry.list_active()
+    ]
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+    cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
+) -> dict:
+    cmd_queue.enqueue_cmd("stop", session_id)
+    registry.delete(session_id)
+    log.info("session delete session_id=%s", session_id)
+    return {"deleted": session_id}
 
 
 def _saved_conn():
@@ -274,8 +410,8 @@ def flush_saved() -> dict:
 
 
 # UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
-# pas les masquer. Le middleware auth couvre /jobs* et /saved* ; l'UI statique
-# montée sur / reste publique.
+# pas les masquer. Le middleware auth couvre /jobs*, /saved* et /sessions* ; l'UI
+# statique montée sur / reste publique.
 app.mount(
     "/",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "ui"), html=True),
