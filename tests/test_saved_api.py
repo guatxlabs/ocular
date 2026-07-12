@@ -53,3 +53,14 @@ def test_save_expired_artifact_409(tmp_path, monkeypatch):
     q.set_result("jy", json.dumps({"input_hash": "sha256:" + "d" * 64, "verdict": "benign",
                  "screenshots": [{"image_ref": "sha256:" + "e" * 64}], "artifacts": {}}))
     assert c.post("/saved", json={"job_id": "jy"}).status_code == 409
+
+
+def test_saved_artifact_nosniff_and_dom_attachment(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    ref = _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx"}).json()["id"]
+    r = c.get(f"/saved/{sid}/artifact/{ref}")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert r.headers["x-content-type-options"] == "nosniff"
+    assert c.get(f"/saved/{sid}/artifact/sha256:{'A'*64}").status_code == 400  # anti-traversal
+    assert c.get(f"/saved/{sid}/artifact/sha256:{'f'*64}").status_code == 404  # absent
