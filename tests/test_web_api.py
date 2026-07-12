@@ -25,9 +25,18 @@ def test_get_pending_job():
     assert r.json()["status"] == "pending"
 
 
+def test_get_completed_job_returns_stored_result():
+    client, q = _client()
+    q.set_result("job-done", '{"job_id": "job-done", "verdict": "malicious"}')
+    r = client.get("/jobs/job-done")
+    assert r.status_code == 200
+    assert r.json()["verdict"] == "malicious"
+
+
 def test_web_package_never_imports_docker():
     import pathlib
-    src = pathlib.Path("web").rglob("*.py")
-    for f in src:
+    for f in pathlib.Path("web").rglob("*.py"):
         text = f.read_text()
         assert "docker" not in text.lower(), f"{f} ne doit pas référencer docker"
+        assert "broker.launcher" not in text, f"{f} ne doit pas importer broker.launcher"
+        assert "subprocess" not in text, f"{f} ne doit pas utiliser subprocess"
