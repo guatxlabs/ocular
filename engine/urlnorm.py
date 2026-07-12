@@ -7,10 +7,11 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def normalize_url(url: str) -> str:
-    """Normalise une URL de façon à MATCHER `new URL(url)` en JS (pour que la dédup
-    client/serveur coïncide) : scheme https par défaut si absent, scheme+host en
-    minuscules, port par défaut retiré, path vide -> '/', fragment retiré.
-    (Limite connue : l'IDN/punycode n'est pas appliqué — rare pour ce cas d'usage.)"""
+    """Normaliseur URL CANONIQUE unique (utilisé pour le hash de dédup /jobs ET
+    /saved/lookup) : scheme https par défaut si absent, scheme+host en minuscules,
+    port par défaut retiré, path vide -> '/', fragment retiré. La dédup URL se fait
+    entièrement côté serveur — aucun parseur URL client (JS) ne doit reproduire cette
+    logique, pour éviter toute divergence (IPv6, IDN/punycode, percent-encoding du path)."""
     url = url.strip()
     if "://" not in url:
         url = "https://" + url

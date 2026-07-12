@@ -182,6 +182,22 @@ def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     return {"id": sid, "input_hash": result.get("input_hash")}
 
 
+@app.post("/saved/lookup")
+def lookup_saved_url(body: dict) -> dict:
+    from engine.urlnorm import url_input_hash
+    url = body.get("url")
+    if not url:
+        raise HTTPException(status_code=422, detail="url requis")
+    conn = _saved_conn()
+    try:
+        meta = saved_store.get_by_hash(conn, url_input_hash(url))
+    finally:
+        conn.close()
+    if not meta:
+        raise HTTPException(status_code=404, detail="aucune sauvegarde")
+    return meta
+
+
 @app.get("/saved/{ref_or_id}")
 def get_saved(ref_or_id: str) -> dict:
     conn = _saved_conn()

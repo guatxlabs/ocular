@@ -82,6 +82,21 @@ export async function lookupSaved(hash) {
   return res.json();
 }
 
+// POST /saved/lookup {url} -> méta {id,input_hash,verdict,label,saved_at} ; null si 404.
+// La normalisation + le hash sont calculés côté serveur (normaliseur Python canonique) :
+// évite la divergence avec un parseur URL JS (new URL()) qui gère différemment IPv6,
+// IDN/punycode et le percent-encoding du path.
+export async function lookupSavedByUrl(url) {
+  const res = await authFetch('/saved/lookup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
 // GET /saved -> liste des métas (id desc).
 export async function listSaved() {
   const res = await authFetch('/saved');
@@ -129,20 +144,6 @@ function adminError(res) {
   const e = new Error(String(res.status));
   e.status = res.status; // 403 / 503 -> message clair côté vue admin
   return e;
-}
-
-// Normalisation d'URL MIROIR de engine/urlnorm.normalize_url : préfixe https://
-// si le scheme manque, scheme+host en minuscules, port par défaut (80/443) retiré,
-// path vide -> '/', fragment retiré. `new URL(...)` fait nativement port-défaut,
-// pathname='/' et host minuscule ; on reconstruit SANS le hash pour matcher Python.
-// La dédup capture s'appuie sur sha256Hex(normalizeUrlClient(url)) == url_input_hash côté serveur.
-export function normalizeUrlClient(raw) {
-  let s = String(raw || '').trim();
-  if (!s.includes('://')) s = 'https://' + s;
-  const u = new URL(s);
-  const scheme = u.protocol.replace(':', '').toLowerCase();
-  const portPart = u.port ? ':' + u.port : '';
-  return `${scheme}://${u.hostname}${portPart}${u.pathname}${u.search}`;
 }
 
 // Hash d'entrée pour la dédup : "sha256:" + hex du HTML en UTF-8. Doit reproduire

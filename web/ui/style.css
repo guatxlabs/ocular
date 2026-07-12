@@ -1002,7 +1002,6 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .oc-field input:focus,.oc-field textarea:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .oc-field input:disabled{opacity:.5;cursor:not-allowed;background:var(--card2)}
 .oc-field .hint{font-size:11px;color:var(--mut)}
-.oc-field.disabled label{opacity:.6}
 .field-row{display:flex;gap:10px;align-items:center}
 .field-row input{flex:1}
 
@@ -1015,9 +1014,6 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .formactions{display:flex;gap:10px;align-items:center;margin-top:6px}
 .filepick{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--mut)}
 .filepick .btn-ghost{padding:7px 13px}
-
-/* upload « bientôt » : le champ URL grisé (phase 3) — réutilise .soon-badge de plume */
-.oc-field.disabled label .soon-badge{margin-left:8px;vertical-align:middle}
 
 /* toggle segmenté de profil (Analyser HTML / Analyser URL) — radios stylés */
 .profile-toggle{display:inline-flex;gap:4px;padding:4px;margin:0 0 16px;background:var(--card2);border:1px solid var(--bd);border-radius:12px}
