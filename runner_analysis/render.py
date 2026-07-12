@@ -19,6 +19,7 @@ from engine.result import (
     StealthInfo,
 )
 from engine.static import analyze_html
+from engine.verdict import compute_verdict
 
 
 def _sha256_ref(data: bytes) -> str:
@@ -101,6 +102,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
         console=console,
         dom=dom,
         static_findings=static_findings,
+        verdict=compute_verdict(static_findings),
         stealth=StealthInfo(engine="chromium"),
         artifacts=artifacts,
     )
