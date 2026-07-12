@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 
 from bus.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
-from ocular_settings import redis_url
+from ocular_settings import max_html_bytes, redis_url
 from web.models import JobRequest, JobResponse
 
 app = FastAPI(title="Ocular")
@@ -45,6 +45,8 @@ def get_queue() -> RedisJobQueue:
 
 @app.post("/jobs", response_model=JobResponse)
 def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> JobResponse:
+    if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
+        raise HTTPException(status_code=422, detail="html trop volumineux")
     job_id = "job-" + uuid.uuid4().hex[:12]
     queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url))
     return JobResponse(job_id=job_id)
