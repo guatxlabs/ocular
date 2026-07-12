@@ -13,10 +13,12 @@ from starlette.responses import JSONResponse
 
 from bus.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
+from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url
 from web.models import JobRequest, JobResponse
 
 app = FastAPI(title="Ocular")
+log = get_logger("web")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
@@ -26,10 +28,13 @@ async def _auth(request, call_next):
     if request.url.path.startswith("/jobs"):
         token = os.environ.get("OCULAR_TOKEN")
         if not token:                              # fail-closed : jamais ouvert par défaut
+            log.warning("auth rejected path=%s status=%d", request.url.path, 503)
             return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
         expected = f"Bearer {token}"
         provided = request.headers.get("authorization", "")
         if not secrets.compare_digest(provided, expected):
+            # jamais le header/token dans les logs, seulement path + status
+            log.warning("auth rejected path=%s status=%d", request.url.path, 401)
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
     return await call_next(request)
 
@@ -49,6 +54,8 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
         raise HTTPException(status_code=422, detail="html trop volumineux")
     job_id = "job-" + uuid.uuid4().hex[:12]
     queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url))
+    log.info("job submitted job_id=%s profile=%s html_bytes=%d",
+              job_id, req.profile, len(req.html or ""))
     return JobResponse(job_id=job_id)
 
 

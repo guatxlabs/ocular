@@ -9,6 +9,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
+COPY ocular_settings.py ocular_logging.py ./
 COPY engine/ ./engine/
 COPY bus/ ./bus/
 COPY broker/ ./broker/
