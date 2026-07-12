@@ -19,9 +19,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # jamais). `playwright==1.49.1` (contemporain de ce build Camoufox) résout le
 # handshake -- testé empiriquement : navigation + capture OK.
 RUN pip install --no-cache-dir camoufox[geoip] opencv-python-headless numpy "playwright==1.49.1" pydantic
-# Patch Playwright coreBundle (survie erreurs JS CF/Auth0)
-RUN CB=$(python3 -c "import playwright,os;print(os.path.join(os.path.dirname(playwright.__file__),'driver/package/lib/coreBundle.js'))") \
-    && sed -i 's/const pageError = { error, location: location2 };/const pageError = { error, location: location2 || { url: "", lineNumber: 0, columnNumber: 0 } };/' "$CB" || true
+# Pas de patch coreBundle.js ici : avec playwright==1.49.1 le fichier
+# driver/package/lib/coreBundle.js visé par l'ancien sed n'existe plus (le
+# sed tournait donc en no-op silencieux, masqué par le `|| true`). La
+# résilience aux pages hostiles (Cloudflare/Auth0) qui font mourir le
+# driver/navigateur en cours de route est désormais assurée côté
+# applicatif : runner_recon/capture.py encaisse toute exception dans
+# `main()` et émet quand même un wrapper `OcularResult` valide sur stdout.
 
 # --- Binaire Camoufox : DOIT vivre dans une couche IMAGE en lecture seule, pas
 # dans /work (tmpfs éphémère monté au runtime). Au runtime le conteneur tourne
