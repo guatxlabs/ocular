@@ -399,6 +399,7 @@
   "required": [
     "job_id",
     "profile",
+    "schema_version",
     "target",
     "timestamp"
   ],
