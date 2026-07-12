@@ -328,6 +328,18 @@
       "title": "Target",
       "type": "string"
     },
+    "input_hash": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Hash"
+    },
     "timestamp": {
       "title": "Timestamp",
       "type": "string"
