@@ -6,9 +6,8 @@ import time
 
 import redis
 
-from broker.queue import _RESULT_PREFIX
-
-_ARTIFACT_NAME_RE = re.compile(r"^sha256_[0-9a-f]{64}$")
+from bus.queue import RESULT_PREFIX
+from engine.artifacts import filename_to_ref
 
 
 def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
@@ -18,7 +17,7 @@ def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
     dans Redis) ; (2) ne touche QUE les fichiers au format `sha256_<64hex>`.
     Retourne le nombre de fichiers supprimés."""
     referenced: set[str] = set()
-    for key in client.scan_iter(match=f"{_RESULT_PREFIX}*"):
+    for key in client.scan_iter(match=f"{RESULT_PREFIX}*"):
         raw = client.get(key)
         if raw:
             referenced.update(_refs_in(raw.decode() if isinstance(raw, bytes) else raw))
@@ -27,12 +26,13 @@ def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
     now = time.time()
     removed = 0
     for fname in os.listdir(artifacts_dir):
-        if not _ARTIFACT_NAME_RE.match(fname):
+        try:
+            ref = filename_to_ref(fname)
+        except ValueError:
             continue                                   # ignore les fichiers étrangers
         path = os.path.join(artifacts_dir, fname)
         if now - os.path.getmtime(path) < min_age_seconds:
             continue                                   # période de grâce : job possiblement en cours
-        ref = fname.replace("sha256_", "sha256:", 1)
         if ref not in referenced:
             os.remove(path)
             removed += 1

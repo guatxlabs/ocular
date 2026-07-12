@@ -3,7 +3,7 @@ import json
 import pytest
 
 from broker.launcher import run_analysis_job
-from broker.queue import Job
+from bus.queue import Job
 
 
 @pytest.mark.integration

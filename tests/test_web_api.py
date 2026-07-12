@@ -2,7 +2,7 @@ import fakeredis
 from fastapi.testclient import TestClient
 
 from web.app import app, get_queue
-from broker.queue import RedisJobQueue
+from bus.queue import RedisJobQueue
 
 
 def _client(monkeypatch):
@@ -34,6 +34,26 @@ def test_get_completed_job_returns_stored_result(monkeypatch):
     r = client.get("/jobs/job-done")
     assert r.status_code == 200
     assert r.json()["verdict"] == "malicious"
+
+
+def test_oversized_html_rejected(monkeypatch):
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
+    monkeypatch.setenv("OCULAR_MAX_HTML_BYTES", "100")
+    client = _client(monkeypatch)[0]
+    r = client.post("/jobs", json={"profile": "analysis", "html": "x" * 200})
+    assert r.status_code == 422
+
+
+def test_invalid_profile_rejected(monkeypatch):
+    client = _client(monkeypatch)[0]
+    r = client.post("/jobs", json={"profile": "capture", "html": "x"})
+    assert r.status_code == 422
+
+
+def test_oversized_url_rejected(monkeypatch):
+    client = _client(monkeypatch)[0]
+    r = client.post("/jobs", json={"profile": "analysis", "url": "x" * 5000})
+    assert r.status_code == 422
 
 
 def test_web_package_never_imports_docker():
