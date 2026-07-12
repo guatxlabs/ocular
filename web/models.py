@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
 
 class JobRequest(BaseModel):
-    profile: str
+    profile: Literal["analysis"] = "analysis"
     html: Optional[str] = None
     url: Optional[str] = None
 
