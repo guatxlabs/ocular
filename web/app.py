@@ -87,18 +87,7 @@ def get_job(job_id: str, queue: RedisJobQueue = Depends(get_queue)) -> dict:
         raise HTTPException(status_code=500, detail="résultat corrompu")
 
 
-@app.get("/jobs/{job_id}/artifact/{ref}")
-def get_artifact(job_id: str, ref: str) -> Response:
-    try:
-        fname = ref_to_filename(ref)  # valide ^sha256:[0-9a-f]{64}$ (anti-traversal)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="ref invalide")
-    artifacts_dir = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
-    path = os.path.join(artifacts_dir, fname)
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="artefact absent")
-    with open(path, "rb") as fh:
-        data = fh.read()
+def _serve_artifact_bytes(data: bytes, fname: str) -> Response:
     if data[:8] == _PNG_MAGIC:
         return Response(
             content=data,
@@ -114,6 +103,21 @@ def get_artifact(job_id: str, ref: str) -> Response:
             "X-Content-Type-Options": "nosniff",
         },
     )
+
+
+@app.get("/jobs/{job_id}/artifact/{ref}")
+def get_artifact(job_id: str, ref: str) -> Response:
+    try:
+        fname = ref_to_filename(ref)  # valide ^sha256:[0-9a-f]{64}$ (anti-traversal)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ref invalide")
+    artifacts_dir = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+    path = os.path.join(artifacts_dir, fname)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="artefact absent")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return _serve_artifact_bytes(data, fname)
 
 
 def _saved_conn():
@@ -191,6 +195,22 @@ def get_saved_result(sid: int) -> dict:
         return res
     finally:
         conn.close()
+
+
+@app.get("/saved/{sid}/artifact/{ref}")
+def get_saved_artifact(sid: int, ref: str) -> Response:
+    try:
+        fname = ref_to_filename(ref)  # valide ^sha256:[0-9a-f]{64}$ (anti-traversal)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ref invalide")
+    conn = _saved_conn()
+    try:
+        data = saved_store.get_artifact(conn, sid, ref)
+    finally:
+        conn.close()
+    if data is None:
+        raise HTTPException(status_code=404, detail="artefact absent")
+    return _serve_artifact_bytes(data, fname)
 
 
 # UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
