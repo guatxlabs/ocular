@@ -19,15 +19,17 @@ async function authFetch(path, opts = {}) {
   return res;
 }
 
-// POST /jobs {profile, html} -> {job_id}. Sert aussi de vérification du token
-// à la connexion (401 rejeté par authFetch, 503 = token serveur absent).
-export async function submitJob(html) {
+// POST /jobs -> {job_id}. `body` porte le profil et sa charge utile :
+//   { profile: 'analysis', html }  ou  { profile: 'capture', url }.
+// L'erreur applicative garde le status (400 url interdite, 422 payload manquant)
+// pour un message clair côté vue.
+export async function submitJob(body) {
   const res = await authFetch('/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ profile: 'analysis', html }),
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
   return res.json();
 }
 
@@ -127,6 +129,20 @@ function adminError(res) {
   const e = new Error(String(res.status));
   e.status = res.status; // 403 / 503 -> message clair côté vue admin
   return e;
+}
+
+// Normalisation d'URL MIROIR de engine/urlnorm.normalize_url : préfixe https://
+// si le scheme manque, scheme+host en minuscules, port par défaut (80/443) retiré,
+// path vide -> '/', fragment retiré. `new URL(...)` fait nativement port-défaut,
+// pathname='/' et host minuscule ; on reconstruit SANS le hash pour matcher Python.
+// La dédup capture s'appuie sur sha256Hex(normalizeUrlClient(url)) == url_input_hash côté serveur.
+export function normalizeUrlClient(raw) {
+  let s = String(raw || '').trim();
+  if (!s.includes('://')) s = 'https://' + s;
+  const u = new URL(s);
+  const scheme = u.protocol.replace(':', '').toLowerCase();
+  const portPart = u.port ? ':' + u.port : '';
+  return `${scheme}://${u.hostname}${portPart}${u.pathname}${u.search}`;
 }
 
 // Hash d'entrée pour la dédup : "sha256:" + hex du HTML en UTF-8. Doit reproduire
