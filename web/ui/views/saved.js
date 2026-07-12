@@ -18,7 +18,7 @@ export function verdictPill(v) {
 }
 
 // ISO -> horodatage local lisible (fallback : la chaîne brute si non parsable).
-function fmtIso(iso) {
+export function fmtIso(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   return isNaN(d) ? iso : d.toLocaleString();
