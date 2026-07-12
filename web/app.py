@@ -149,9 +149,11 @@ def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
             raise HTTPException(status_code=409, detail="artefacts expirés, relancer l'analyse")
         blobs[ref] = data
     conn = _saved_conn()
-    sid = saved_store.save(conn, result, blobs, body.get("label"),
-                           datetime.now(timezone.utc).isoformat())
-    conn.close()
+    try:
+        sid = saved_store.save(conn, result, blobs, body.get("label"),
+                               datetime.now(timezone.utc).isoformat())
+    finally:
+        conn.close()
     log.info("saved job_id=%s id=%s verdict=%s", job_id, sid, result.get("verdict"))
     return {"id": sid, "input_hash": result.get("input_hash")}
 
@@ -192,7 +194,8 @@ def get_saved_result(sid: int) -> dict:
 
 
 # UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
-# pas les masquer. Le middleware auth ne touche que /jobs* -> l'UI reste publique.
+# pas les masquer. Le middleware auth couvre /jobs* et /saved* ; l'UI statique
+# montée sur / reste publique.
 app.mount(
     "/",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "ui"), html=True),
