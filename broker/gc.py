@@ -1,33 +1,45 @@
 from __future__ import annotations
 
 import os
+import re
+import time
 
 import redis
 
-from broker.queue import _RESULT_PREFIX  # noqa: F401  (documentaire)
+from broker.queue import _RESULT_PREFIX
+
+_ARTIFACT_NAME_RE = re.compile(r"^sha256_[0-9a-f]{64}$")
 
 
-def collect(artifacts_dir: str, client) -> int:
-    """Supprime les fichiers d'artefacts dont plus aucun résultat Redis ne référence le ref.
+def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
+    """Supprime les artefacts orphelins (aucun résultat Redis ne référence leur ref).
+    Garde-fous : (1) période de grâce — un fichier plus récent que min_age_seconds n'est
+    jamais supprimé (évite d'effacer les artefacts d'un job écrit mais pas encore stocké
+    dans Redis) ; (2) ne touche QUE les fichiers au format `sha256_<64hex>`.
     Retourne le nombre de fichiers supprimés."""
     referenced: set[str] = set()
-    for key in client.scan_iter(match="ocular:result:*"):
+    for key in client.scan_iter(match=f"{_RESULT_PREFIX}*"):
         raw = client.get(key)
         if raw:
             referenced.update(_refs_in(raw.decode() if isinstance(raw, bytes) else raw))
-    removed = 0
     if not os.path.isdir(artifacts_dir):
         return 0
+    now = time.time()
+    removed = 0
     for fname in os.listdir(artifacts_dir):
+        if not _ARTIFACT_NAME_RE.match(fname):
+            continue                                   # ignore les fichiers étrangers
+        path = os.path.join(artifacts_dir, fname)
+        if now - os.path.getmtime(path) < min_age_seconds:
+            continue                                   # période de grâce : job possiblement en cours
         ref = fname.replace("sha256_", "sha256:", 1)
         if ref not in referenced:
-            os.remove(os.path.join(artifacts_dir, fname))
+            os.remove(path)
             removed += 1
     return removed
 
 
 def _refs_in(result_json: str) -> set[str]:
-    import re
     return set(re.findall(r"sha256:[0-9a-f]{64}", result_json))
 
 

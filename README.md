@@ -47,7 +47,9 @@ Sur un VPS :
 2. `make up` — construit automatiquement l'image runner (`build-runner` en dépendance) puis
    démarre `redis`, `web` et `broker` via `docker compose`.
 3. `make down` pour arrêter ; `make gc` pour nettoyer les artefacts orphelins (fichiers du
-   volume `ocular-artifacts` dont plus aucun résultat Redis ne référence le ref).
+   volume `ocular-artifacts` dont plus aucun résultat Redis ne référence le ref). `make gc`
+   s'exécute dans le conteneur `broker` (via `docker compose exec`, qui a accès au bon Redis
+   et au volume partagé) — la stack doit être démarrée (`make up`) au préalable.
 
 Le tier `web` n'a jamais accès à `docker.sock` (seul `broker` y accède) et lit les artefacts en
 lecture seule depuis le volume partagé `ocular-artifacts`. Il est recommandé de mettre un
