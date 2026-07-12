@@ -13,4 +13,4 @@ test:
 test-int:
 	. .venv/bin/activate && pytest -m integration -q
 gc:
-	. .venv/bin/activate && python -m broker.gc
+	docker compose -f deploy/docker-compose.yml exec -T broker python -m broker.gc
