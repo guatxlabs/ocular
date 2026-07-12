@@ -5,28 +5,31 @@ from web.app import app, get_queue
 from broker.queue import RedisJobQueue
 
 
-def _client():
+def _client(monkeypatch):
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
     q = RedisJobQueue(fakeredis.FakeStrictRedis())
     app.dependency_overrides[get_queue] = lambda: q
-    return TestClient(app), q
+    client = TestClient(app)
+    client.headers.update({"Authorization": "Bearer t"})
+    return client, q
 
 
-def test_post_job_returns_job_id_and_enqueues():
-    client, q = _client()
+def test_post_job_returns_job_id_and_enqueues(monkeypatch):
+    client, q = _client(monkeypatch)
     r = client.post("/jobs", json={"profile": "analysis", "html": "<h1>x</h1>"})
     assert r.status_code == 200
     job_id = r.json()["job_id"]
     assert q.dequeue(timeout=1).job_id == job_id
 
 
-def test_get_pending_job():
-    client, _ = _client()
+def test_get_pending_job(monkeypatch):
+    client, _ = _client(monkeypatch)
     r = client.get("/jobs/unknown-id")
     assert r.json()["status"] == "pending"
 
 
-def test_get_completed_job_returns_stored_result():
-    client, q = _client()
+def test_get_completed_job_returns_stored_result(monkeypatch):
+    client, q = _client(monkeypatch)
     q.set_result("job-done", '{"job_id": "job-done", "verdict": "malicious"}')
     r = client.get("/jobs/job-done")
     assert r.status_code == 200
