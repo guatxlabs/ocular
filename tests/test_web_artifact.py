@@ -7,9 +7,11 @@ from broker.queue import RedisJobQueue
 
 def _client(tmp_path, monkeypatch):
     monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path))
-    monkeypatch.setenv("OCULAR_TOKEN", "")  # auth désactivée pour ce test (task 6 l'ajoute)
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
     app.dependency_overrides[get_queue] = lambda: RedisJobQueue(fakeredis.FakeStrictRedis())
-    return TestClient(app)
+    client = TestClient(app)
+    client.headers.update({"Authorization": "Bearer t"})
+    return client
 
 
 def test_serves_png_as_image(tmp_path, monkeypatch):

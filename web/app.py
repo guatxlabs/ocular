@@ -6,6 +6,7 @@ import uuid
 
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Response
+from starlette.responses import JSONResponse
 
 from broker.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
@@ -14,6 +15,17 @@ from web.models import JobRequest, JobResponse
 app = FastAPI(title="Ocular")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+@app.middleware("http")
+async def _auth(request, call_next):
+    if request.url.path.startswith("/jobs"):
+        token = os.environ.get("OCULAR_TOKEN")
+        if not token:                              # fail-closed : jamais ouvert par défaut
+            return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
+        if request.headers.get("authorization", "") != f"Bearer {token}":
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 def get_queue() -> RedisJobQueue:
