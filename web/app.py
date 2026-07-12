@@ -4,6 +4,7 @@ import json
 import os
 import secrets
 import uuid
+from functools import lru_cache
 
 import redis
 from fastapi import Depends, FastAPI, HTTPException, Response
@@ -12,6 +13,7 @@ from starlette.responses import JSONResponse
 
 from bus.queue import Job, RedisJobQueue
 from engine.artifacts import ref_to_filename
+from ocular_settings import redis_url
 from web.models import JobRequest, JobResponse
 
 app = FastAPI(title="Ocular")
@@ -32,8 +34,13 @@ async def _auth(request, call_next):
     return await call_next(request)
 
 
+@lru_cache(maxsize=1)
+def _redis_client():
+    return redis.Redis.from_url(redis_url())
+
+
 def get_queue() -> RedisJobQueue:
-    return RedisJobQueue(redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379")))
+    return RedisJobQueue(_redis_client())
 
 
 @app.post("/jobs", response_model=JobResponse)
