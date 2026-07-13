@@ -20,7 +20,9 @@ def _session_name(session_id: str) -> str:
     return f"ocular-sess-{session_id}"
 
 
-def build_session_args(session_id: str, image: str = _SESSION_IMAGE) -> list[str]:
+def build_session_args(
+    session_id: str, secret: str = "", image: str = _SESSION_IMAGE
+) -> list[str]:
     """docker run **détaché** (`-d`, jamais `--rm -i` : le conteneur est
     persistant, son cycle de vie géré explicitement via `stop_session`) pour
     une session interactive (noVNC). Réseau `ocular-sessions` ON (egress
@@ -38,19 +40,26 @@ def build_session_args(session_id: str, image: str = _SESSION_IMAGE) -> list[str
         "--tmpfs", "/tmp:size=64m,mode=1777",
         "--memory", CAPTURE_MEMORY,
         "--pids-limit", CAPTURE_PIDS_LIMIT,
+        # Secret de session à la frontière conteneur (défense-en-profondeur
+        # F1/F2) : le session_server exige ce secret sur /goto,/load,/capture.
+        # SEUL le web le connaît ; jamais publié, jamais loggé. Fail-closed côté
+        # conteneur (secret absent/vide => 403).
+        "-e", f"OCULAR_SESSION_SECRET={secret}",
         image,
     ]
 
 
-def launch_session(session_id: str) -> str:
+def launch_session(session_id: str, secret: str = "") -> str:
     """Lance un conteneur de session détaché et retourne son nom
     (`ocular-sess-{session_id}`). Seul le broker (jamais le web) exécute
     ceci : le web n'a pas accès à Docker. Le nom est toujours retourné même
     si `docker run` échoue (returncode != 0) : c'est le poll de santé aval
     qui décide de l'état réel de la session — on logue juste un warning ici."""
     name = _session_name(session_id)
-    log.info("session launch session_id=%s", session_id)
-    proc = subprocess.run(build_session_args(session_id), capture_output=True, check=False)
+    log.info("session launch session_id=%s", session_id)  # jamais le secret ici
+    proc = subprocess.run(
+        build_session_args(session_id, secret=secret), capture_output=True, check=False
+    )
     if proc.returncode != 0:
         log.warning(
             "session launch failed session_id=%s returncode=%s stderr=%s",

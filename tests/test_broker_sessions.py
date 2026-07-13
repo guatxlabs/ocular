@@ -47,6 +47,27 @@ def test_build_session_args_never_publishes_a_port():
     assert "-p" not in a and "--publish" not in a
 
 
+def test_build_session_args_passes_session_secret_env():
+    a = build_session_args("s1", secret="my-sess-secret")
+    # le secret est injecté dans le conteneur via -e (frontière conteneur)
+    assert "-e" in a
+    assert "OCULAR_SESSION_SECRET=my-sess-secret" in a
+
+
+def test_launch_session_threads_secret_to_docker_run(monkeypatch):
+    calls = {}
+
+    def fake_run(args, capture_output=None, check=None):
+        calls["args"] = args
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+
+    launch_session("s1", secret="threaded-secret")
+
+    assert "OCULAR_SESSION_SECRET=threaded-secret" in calls["args"]
+
+
 def test_build_session_args_never_touches_docker_socket_or_host_net_or_privileged():
     j = " ".join(build_session_args("s1"))
     a = build_session_args("s1")

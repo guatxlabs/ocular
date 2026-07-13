@@ -23,9 +23,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import secrets
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 from engine.result import DomInfo, OcularResult, StealthInfo
@@ -35,6 +37,24 @@ from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, sha256_ref  # noqa: F401  (sha256_ref réutilisé ici)
 
 app = FastAPI()
+
+
+def require_session_secret(
+    x_session_secret: Optional[str] = Header(default=None),
+) -> None:
+    """Auth à la frontière conteneur (défense-en-profondeur F1/F2) : les
+    endpoints qui pilotent le navigateur (`/goto`, `/load`, `/capture` — PAS
+    `/health`) exigent le header `X-Session-Secret` == `OCULAR_SESSION_SECRET`
+    (injecté par le broker au `docker run`, connu du seul web). Comparaison en
+    **temps constant**. **Fail-closed** : si le secret n'est pas configuré côté
+    conteneur, on refuse TOUJOURS (jamais ouvert par défaut). Le secret n'est
+    jamais loggé — aucune trace ici."""
+    expected = os.environ.get("OCULAR_SESSION_SECRET")
+    provided = x_session_secret or ""
+    if not expected or not secrets.compare_digest(
+        provided.encode("utf-8", "ignore"), expected.encode()
+    ):
+        raise HTTPException(status_code=403, detail="forbidden")
 
 # État de session unique (un conteneur = une session interactive = une page
 # Camoufox vivante). Pas de multi-session dans cette tâche : le broker lance
@@ -104,7 +124,7 @@ async def health() -> dict[str, bool]:
     return {"ok": True}
 
 
-@app.post("/goto")
+@app.post("/goto", dependencies=[Depends(require_session_secret)])
 async def goto(body: dict[str, Any]) -> dict[str, Any]:
     await _ensure_browser()
     _state["target"], _state["kind"] = body["url"], "url"
@@ -115,7 +135,7 @@ async def goto(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
-@app.post("/load")
+@app.post("/load", dependencies=[Depends(require_session_secret)])
 async def load(body: dict[str, Any]) -> dict[str, Any]:
     await _ensure_browser()
     _state["target"], _state["kind"] = "inline-html", "html"
@@ -127,7 +147,7 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
-@app.post("/capture")
+@app.post("/capture", dependencies=[Depends(require_session_secret)])
 async def capture(body: dict[str, Any]) -> dict[str, Any]:
     page, cap = _state["page"], _state["cap"]
     if page is None:
