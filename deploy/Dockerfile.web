@@ -10,7 +10,7 @@ COPY web/ ./web/
 
 # Le tier web n'a besoin ni de docker CLI ni de broker/launcher.py :
 # il ne parle qu'à Redis (via bus.queue), jamais à Docker.
-RUN pip install --no-cache-dir fastapi uvicorn redis pydantic
+RUN pip install --no-cache-dir fastapi uvicorn redis pydantic websockets
 
 RUN useradd -u 10002 -m ocular-web
 # /saved est un volume nommé rw : le créer possédé par l'uid non-root ici garantit
