@@ -2,6 +2,7 @@
 Partagé par le web (validation à la soumission) et le runner (re-validation
 défensive avant exécution) — source unique, jamais deux implémentations.
 Aucun JS arbitraire, aucun eval : verbes en allowlist stricte."""
+import copy
 import re
 from engine.ssrf import validate_capture_url
 
@@ -61,7 +62,7 @@ def _one(step):
             return {"wait": {"selector": _sel(arg["selector"])}}
         raise StepValidationError("wait: ms int ou {selector}")
     if verb == "press":
-        if arg not in ALLOWED_PRESS_KEYS:
+        if not isinstance(arg, str) or arg not in ALLOWED_PRESS_KEYS:
             raise StepValidationError(f"press hors allowlist: {arg!r}")
         return {"press": arg}
     if verb == "capture":
@@ -80,7 +81,11 @@ def _one(step):
 def validate_steps(raw):
     if not isinstance(raw, list):
         raise StepValidationError("steps doit être une liste")
-    if len(raw) > MAX_STEPS:
+    # La borne porte sur les steps utilisateur ; la capture finale auto
+    # (ajoutée par une validation antérieure) est exemptée pour garantir
+    # l'idempotence — le web normalise puis le runner re-valide la sortie.
+    effective = raw[:-1] if (raw and isinstance(raw[-1], dict) and set(raw[-1]) == {"capture"}) else raw
+    if len(effective) > MAX_STEPS:
         raise StepValidationError(f"trop de steps (max {MAX_STEPS})")
     out = [_one(s) for s in raw]
     # capture final implicite : garantit un screenshot d'état de fin,
@@ -93,4 +98,4 @@ def validate_steps(raw):
 def redact_step(step):
     if set(step) == {"fill"}:
         return {"fill": {"sel": step["fill"]["sel"], "value": "***"}}
-    return dict(step)
+    return copy.deepcopy(step)
