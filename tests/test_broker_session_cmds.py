@@ -7,13 +7,14 @@ class _FakeRegistry:
         self.created = []
         self.deleted = []
 
-    def create(self, session_id, container, kind, target, token, now_iso):
+    def create(self, session_id, container, kind, target, token, now_iso, secret=""):
         self.created.append({
             "session_id": session_id,
             "container": container,
             "kind": kind,
             "target": target,
             "token": token,
+            "secret": secret,
             "now_iso": now_iso,
         })
 
@@ -22,11 +23,18 @@ class _FakeRegistry:
 
 
 def test_launch_cmd_launches_container_and_creates_registry_entry(monkeypatch):
-    monkeypatch.setattr(main_mod, "launch_session", lambda sid: f"ocular-sess-{sid}")
+    launched = {}
+
+    def fake_launch(sid, secret=""):
+        launched["secret"] = secret
+        return f"ocular-sess-{sid}"
+
+    monkeypatch.setattr(main_mod, "launch_session", fake_launch)
     registry = _FakeRegistry()
 
     process_session_cmd(
-        {"action": "launch", "session_id": "s1", "token": "tok-abc", "target": "https://example.com"},
+        {"action": "launch", "session_id": "s1", "token": "tok-abc",
+         "target": "https://example.com", "secret": "sekret-123"},
         registry,
     )
 
@@ -37,11 +45,14 @@ def test_launch_cmd_launches_container_and_creates_registry_entry(monkeypatch):
     assert entry["kind"] == "recon-vnc"
     assert entry["target"] == "https://example.com"
     assert entry["token"] == "tok-abc"
+    assert entry["secret"] == "sekret-123"
     assert entry["now_iso"]  # horodatage non vide
+    # le secret est bien transmis au conteneur via launch_session
+    assert launched["secret"] == "sekret-123"
 
 
 def test_launch_cmd_defaults_missing_token_and_target(monkeypatch):
-    monkeypatch.setattr(main_mod, "launch_session", lambda sid: f"ocular-sess-{sid}")
+    monkeypatch.setattr(main_mod, "launch_session", lambda sid, secret="": f"ocular-sess-{sid}")
     registry = _FakeRegistry()
 
     process_session_cmd({"action": "launch", "session_id": "s1"}, registry)
@@ -49,6 +60,7 @@ def test_launch_cmd_defaults_missing_token_and_target(monkeypatch):
     entry = registry.created[0]
     assert entry["token"] == ""
     assert entry["target"] == ""
+    assert entry["secret"] == ""
 
 
 def test_stop_cmd_stops_container_by_deterministic_name_and_deletes(monkeypatch):

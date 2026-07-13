@@ -46,6 +46,7 @@ class SessionRegistry:
         target: str,
         token: str,
         now_iso: str,
+        secret: str = "",
     ) -> None:
         epoch = _iso_to_epoch(now_iso)
         self._r.hset(
@@ -56,6 +57,7 @@ class SessionRegistry:
                 "kind": kind,
                 "target": target,
                 "token": token,
+                "secret": secret,
                 "created_at": epoch,
                 "last_activity": epoch,
             },
@@ -73,12 +75,26 @@ class SessionRegistry:
             return  # session inconnue/expirée déjà supprimée : no-op
         self._r.hset(key, "last_activity", _iso_to_epoch(now_iso))
 
+    def get_secret(self, session_id: str) -> Optional[str]:
+        """Secret de session (frontière conteneur) que SEUL le web connaît, pour
+        signer ses appels internes `/goto`/`/load`/`/capture` (header
+        `X-Session-Secret`). Distinct du token WS. Jamais renvoyé par
+        `list_active` ni loggé. Retourne None si la session est inconnue."""
+        raw = self._r.hget(self._key(session_id), "secret")
+        if raw is None:
+            return None
+        return raw.decode() if isinstance(raw, bytes) else raw
+
     def list_active(self) -> list[dict]:
         out = []
         for key in self._r.scan_iter(match=f"{_PREFIX}*"):
             raw = self._r.hgetall(key)
             if raw:
-                out.append(_decode(raw))
+                sess = _decode(raw)
+                # anti-fuite frontière conteneur : le secret n'est JAMAIS
+                # renvoyé dans une liste (comme le token WS filtré côté web).
+                sess.pop("secret", None)
+                out.append(sess)
         return out
 
     def delete(self, session_id: str) -> None:

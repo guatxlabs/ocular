@@ -59,19 +59,33 @@ def test_create_session_oversized_html_rejected(monkeypatch):
 def test_create_session_success_url_returns_token_and_enqueues_launch(monkeypatch):
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
-    monkeypatch.setattr(app_mod, "_internal_post_json", lambda url, payload, timeout=5.0: True)
+    seen = {}
+
+    def fake_post(url, payload, secret, timeout=5.0):
+        seen["secret"] = secret
+        return True
+
+    monkeypatch.setattr(app_mod, "_internal_post_json", fake_post)
 
     r = client.post("/sessions", json={"url": "https://example.com"})
     assert r.status_code == 200
     body = r.json()
     assert body["session_id"].startswith("sess-")
     assert isinstance(body["token"], str) and len(body["token"]) > 20
+    # le secret de session n'est JAMAIS renvoyé (comme le token WS l'est mais
+    # pas le secret conteneur) — anti-fuite frontière conteneur
+    assert "secret" not in body
+    assert "session_secret" not in r.text
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd["action"] == "launch"
     assert cmd["session_id"] == body["session_id"]
     assert cmd["token"] == body["token"]
     assert cmd["target"] == "https://example.com"
+    # un secret conteneur, distinct du token WS, est enqueue vers le broker
+    assert cmd["secret"] and cmd["secret"] != body["token"]
+    # et le web signe son appel /goto interne avec CE secret
+    assert seen["secret"] == cmd["secret"]
 
 
 def test_create_session_html_uses_load_endpoint(monkeypatch):
@@ -79,8 +93,8 @@ def test_create_session_html_uses_load_endpoint(monkeypatch):
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda *a, **k: True)
     calls = []
 
-    def fake_post(url, payload, timeout=5.0):
-        calls.append((url, payload))
+    def fake_post(url, payload, secret, timeout=5.0):
+        calls.append((url, payload, secret))
         return True
 
     monkeypatch.setattr(app_mod, "_internal_post_json", fake_post)
@@ -93,6 +107,8 @@ def test_create_session_html_uses_load_endpoint(monkeypatch):
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd["target"] == "inline-html"
+    # le secret enqueue est bien celui utilisé pour signer /load
+    assert calls[0][2] == cmd["secret"]
 
 
 def test_create_session_timeout_returns_504_and_enqueues_stop(monkeypatch):
@@ -112,14 +128,17 @@ def test_list_sessions_excludes_token(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
-        token="super-secret-token", now_iso="2026-07-13T10:00:00+00:00",
+        token="super-secret-token", secret="super-secret-container",
+        now_iso="2026-07-13T10:00:00+00:00",
     )
     r = client.get("/sessions")
     assert r.status_code == 200
     body = r.json()
     assert len(body) == 1
     assert "token" not in body[0]
+    assert "secret" not in body[0]
     assert "super-secret-token" not in r.text
+    assert "super-secret-container" not in r.text
     assert body[0]["session_id"] == "s1"
     assert body[0]["container"] == "ocular-sess-s1"
 
@@ -162,7 +181,7 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
-        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
     ref = "sha256:" + "e" * 64
     wrapper = {
@@ -173,15 +192,16 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     }
     calls = []
 
-    def fake_capture(url, timeout=30.0):
-        calls.append(url)
+    def fake_capture(url, secret, timeout=30.0):
+        calls.append((url, secret))
         return wrapper
 
     monkeypatch.setattr(app_mod, "_internal_capture", fake_capture)
 
     r = client.post("/sessions/s1/capture")
     assert r.status_code == 200
-    assert calls == ["http://ocular-sess-s1:8090/capture"]
+    # le web signe /capture avec le secret conteneur lu dans le registre
+    assert calls == [("http://ocular-sess-s1:8090/capture", "cap-secret")]
 
     body = r.json()
     assert "blobs" not in body
@@ -210,7 +230,7 @@ def test_capture_session_server_error_returns_502(monkeypatch):
         token="tok", now_iso="2026-07-13T10:00:00+00:00",
     )
 
-    def boom(url, timeout=30.0):
+    def boom(url, secret, timeout=30.0):
         raise app_mod._CaptureError("boom")
 
     monkeypatch.setattr(app_mod, "_internal_capture", boom)

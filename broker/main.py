@@ -58,13 +58,18 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
         log.warning("session cmd sans session_id ignorée action=%s", action)
         return
     if action == "launch":
-        container = launch_session(session_id)
+        # secret conteneur (défense-en-profondeur F1/F2) : threadé de la cmd
+        # jusqu'à `docker run -e OCULAR_SESSION_SECRET=…` ET stocké au registre
+        # pour que le web signe ses appels internes. Jamais loggé.
+        secret = cmd.get("secret", "")
+        container = launch_session(session_id, secret=secret)
         registry.create(
             session_id,
             container=container,
             kind="recon-vnc",
             target=cmd.get("target", ""),
             token=cmd.get("token", ""),
+            secret=secret,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
         log.info("session cmd launch session_id=%s container=%s", session_id, container)

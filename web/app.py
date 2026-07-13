@@ -175,10 +175,15 @@ def _internal_get_ok(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
-def _internal_post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
+def _internal_post_json(url: str, payload: dict, secret: str, timeout: float = 5.0) -> bool:
     data = json.dumps(payload).encode("utf-8")
+    # X-Session-Secret : auth à la frontière conteneur (le session_server exige
+    # ce secret sur /goto,/load). Jamais loggé.
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
@@ -192,14 +197,18 @@ class _CaptureError(Exception):
     `session_server` — traduit systématiquement en 502 côté route."""
 
 
-def _internal_capture(url: str, timeout: float = 30.0) -> dict:
+def _internal_capture(url: str, secret: str, timeout: float = 30.0) -> dict:
     """POST interne (corps vide) vers `/capture` du `session_server`, via la
     bibliothèque standard uniquement (pas de nouvelle dépendance, pas
-    d'accès au moteur de conteneurs — seul le broker en dispose). Renvoie le
+    d'accès au moteur de conteneurs — seul le broker en dispose). Signe l'appel
+    avec `X-Session-Secret` (auth frontière conteneur, jamais loggé). Renvoie le
     wrapper `{result, blobs}` désérialisé ; lève `_CaptureError` sur tout
     échec réseau/HTTP/JSON."""
     req = urllib.request.Request(
-        url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+        url,
+        data=b"{}",
+        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
+        method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
@@ -255,8 +264,14 @@ def create_session(
 
     session_id = "sess-" + uuid.uuid4().hex[:12]
     token = secrets.token_urlsafe(32)
+    # Secret de session à la frontière conteneur (défense-en-profondeur F1/F2),
+    # DISTINCT du token WS : le session_server l'exige sur /goto,/load,/capture.
+    # SEUL le web le connaît — jamais renvoyé dans les réponses, jamais loggé.
+    session_secret = secrets.token_urlsafe(24)
     target = req.url if req.url else "inline-html"
-    cmd_queue.enqueue_cmd("launch", session_id, token=token, target=target)
+    cmd_queue.enqueue_cmd(
+        "launch", session_id, token=token, target=target, secret=session_secret
+    )
 
     client_ip = request.client.host if request.client else "?"
     # Avertissement délibéré : une session interactive expose l'IP du serveur
@@ -275,9 +290,9 @@ def create_session(
 
     host = _session_host(session_id)
     if req.url:
-        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": req.url})
+        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": req.url}, session_secret)
     else:
-        ok = _internal_post_json(f"http://{host}:8090/load", {"html": req.html})
+        ok = _internal_post_json(f"http://{host}:8090/load", {"html": req.html}, session_secret)
     if not ok:
         log.warning("session goto/load failed session_id=%s", session_id)
 
@@ -324,8 +339,11 @@ def capture_session(
         raise HTTPException(status_code=404, detail="session inconnue")
 
     url = f"http://{_session_host(session_id)}:8090/capture"
+    # secret conteneur lu au registre pour signer l'appel /capture (le web ne
+    # regénère pas : c'est le broker qui l'a injecté au conteneur).
+    secret = registry.get_secret(session_id) or ""
     try:
-        wrapper = _internal_capture(url)
+        wrapper = _internal_capture(url, secret)
     except _CaptureError:
         log.warning("session capture failed session_id=%s", session_id)
         raise HTTPException(status_code=502, detail="capture échouée")

@@ -137,6 +137,30 @@ def test_valid_token_false_for_missing_session():
     assert reg.valid_token("ghost", "anything") is False
 
 
+def test_create_stores_secret_and_get_secret_returns_it():
+    reg = _registry()
+    reg.create(
+        "s1", container="c1", kind="recon-vnc", target="t", token="tok",
+        secret="sess-secret-xyz", now_iso="2026-07-13T10:00:00+00:00",
+    )
+    assert reg.get_secret("s1") == "sess-secret-xyz"
+
+
+def test_get_secret_missing_session_returns_none():
+    reg = _registry()
+    assert reg.get_secret("ghost") is None
+
+
+def test_list_active_never_leaks_secret():
+    reg = _registry()
+    reg.create(
+        "s1", container="c1", kind="recon-vnc", target="t", token="tok",
+        secret="super-secret", now_iso="2026-07-13T10:00:00+00:00",
+    )
+    for sess in reg.list_active():
+        assert "secret" not in sess
+
+
 def test_valid_token_uses_constant_time_compare(monkeypatch):
     reg = _registry()
     reg.create(
