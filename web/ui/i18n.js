@@ -37,6 +37,12 @@ const I18N_EN = {
   'HTML manquant ou trop volumineux.': 'HTML missing or too large.',
   'Cette URL a déjà été capturée et conservée. Tu peux la revoir sans relancer le moteur.':
     'This URL has already been captured and saved. You can review it without rerunning the engine.',
+  // submit — champ script (tier dynamique scripté 3c)
+  'Script (JSON, optionnel)': 'Script (JSON, optional)',
+  'Rejoue une séquence d\'actions (fill/click/wait/press/capture/scroll) après le chargement — DSL borné, aucun JS arbitraire.':
+    'Replays a sequence of actions (fill/click/wait/press/capture/scroll) after loading — bounded DSL, no arbitrary JS.',
+  'Exemple : accepter les cookies': 'Example: accept cookies',
+  'Exemple : remplir un formulaire': 'Example: fill a form',
   // jobs
   'Mes analyses': 'My analyses', 'Les jobs soumis depuis ce navigateur.': 'Jobs submitted from this browser.',
   'Aucune analyse pour l\'instant.': 'No analysis yet.', 'Lancer une analyse': 'Run an analysis',
@@ -53,6 +59,8 @@ const I18N_EN = {
   'Analyse en attente — actualisation automatique…': 'Analysis pending — auto-refreshing…',
   'Aucune capture pour cette analyse.': 'No screenshot for this analysis.',
   'Capture indisponible.': 'Screenshot unavailable.',
+  // detail — journal d'actions (tier dynamique scripté 3c)
+  'Journal d\'actions': 'Action log', 'ok': 'ok',
   // detail — furtivité / capture (profil capture)
   'Moteur furtif': 'Stealth engine', 'Turnstile passé': 'Turnstile solved',
   'Capture initiale': 'Initial capture', 'Après Turnstile': 'After Turnstile',
