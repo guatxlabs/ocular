@@ -1005,6 +1005,10 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .field-row{display:flex;gap:10px;align-items:center}
 .field-row input{flex:1}
 
+/* champ script (tier dynamique scripté 3c) : exemples insérables sous la textarea */
+.sc-field .examples{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+.sc-field .examples .btn-ghost{padding:7px 13px;font-size:12px}
+
 /* bouton primaire accent (miroir de #run/.rf-actions submit de plume) */
 .btn-primary{background:var(--acc);color:var(--acc-ink);border:0;border-radius:9px;padding:10px 20px;cursor:pointer;font-size:14px;font-weight:700;display:inline-flex;align-items:center;gap:8px;text-decoration:none}
 .btn-primary:hover{filter:brightness(1.08)}
@@ -1096,6 +1100,18 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .consline .lvl{text-transform:uppercase;font-size:10px;letter-spacing:.04em;color:var(--mut)}
 .consline .lvl.error{color:var(--bad)} .consline .lvl.warning,.consline .lvl.warn{color:var(--warn)}
 .consline .ctext{color:var(--fg);word-break:break-word;white-space:pre-wrap}
+
+/* journal d'actions (tier dynamique scripté 3c) : une ligne par step rejoué */
+.actionlist{display:flex;flex-direction:column}
+.action-row{display:grid;grid-template-columns:24px 1fr 56px 64px;gap:10px;padding:6px 0;border-bottom:1px solid var(--bd);font-family:var(--font-mono);font-size:12px;align-items:baseline}
+.action-row:last-child{border:0}
+.action-idx{color:var(--mut);text-align:right}
+.action-verb{color:var(--fg);word-break:break-all}
+.action-status{text-transform:uppercase;font-size:10px;letter-spacing:.04em;font-weight:700}
+.action-row.action-ok .action-status{color:var(--ok)}
+.action-row.action-fail .action-status{color:var(--bad)}
+.action-ms{color:var(--mut);text-align:right}
+.action-err{grid-column:1/-1;color:var(--bad);font-size:11px;white-space:pre-wrap;word-break:break-word}
 
 /* lien de téléchargement DOM (jamais rendu inline) */
 .domdl{display:inline-flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--bd);border-radius:9px;padding:9px 14px;color:var(--acc);cursor:pointer;font-size:13px;font-weight:600}

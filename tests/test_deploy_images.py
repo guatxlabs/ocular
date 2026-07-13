@@ -20,8 +20,12 @@ Ce test aurait attrapé :
     `/proc/*/cmdline` (jamais `ps aux`, qui tronque la ligne de commande dans
     un conteneur minimal et donnerait un faux négatif).
 
-Marqué `integration` : nécessite un daemon Docker. Exclu par défaut
-(addopts = "-m 'not integration'").
+Les tests qui construisent/lancent des conteneurs sont marqués `integration`
+au cas par cas (nécessitent un daemon Docker, exclus par défaut via
+`addopts = "-m 'not integration'"`). Les gardes ci-dessous sur le Makefile/
+README (phase 3c) sont volontairement **non-integration** : elles n'ont pas
+besoin de Docker et confirment, sans lancer de build, que le tier dynamique
+scripté (3c) ne fait QUE réutiliser `ocular-runner-recon` (aucune 6e image).
 """
 from __future__ import annotations
 
@@ -32,8 +36,6 @@ import time
 from pathlib import Path
 
 import pytest
-
-pytestmark = pytest.mark.integration
 
 _ROOT = Path(__file__).resolve().parent.parent
 
@@ -64,6 +66,7 @@ def _run(tag: str, script: str) -> subprocess.CompletedProcess:
     )
 
 
+@pytest.mark.integration
 def test_web_image_imports_app_and_saved_store():
     tag = "ocular-web-guard:test"
     _build("deploy/Dockerfile.web", tag)
@@ -74,6 +77,7 @@ def test_web_image_imports_app_and_saved_store():
         subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
 
 
+@pytest.mark.integration
 def test_broker_image_has_docker_cli_and_imports_main():
     tag = "ocular-broker-guard:test"
     _build("deploy/Dockerfile.broker", tag)
@@ -86,12 +90,14 @@ def test_broker_image_has_docker_cli_and_imports_main():
         subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
 
 
+@pytest.mark.integration
 def test_runner_image_builds():
     tag = "ocular-runner-guard:test"
     _build("runner_analysis/Dockerfile", tag)
     subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
 
 
+@pytest.mark.integration
 def test_runner_recon_image_builds_and_navigates():
     """4e image (recon) : rebuild à neuf (jamais de cache implicite d'une
     image obsolète) puis navigation réelle avec le profil sécurité de
@@ -128,6 +134,7 @@ def test_runner_recon_image_builds_and_navigates():
         subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
 
 
+@pytest.mark.integration
 def test_runner_recon_vnc_image_builds_and_smokes():
     """5e image (session interactif, phase 3b) : `runner_recon_vnc/Dockerfile`
     dérive de `ocular-runner-recon:latest` (FROM, cf. Makefile::build-runner
@@ -218,3 +225,36 @@ def test_runner_recon_vnc_image_builds_and_smokes():
     finally:
         subprocess.run([_docker(), "rm", "-f", name], capture_output=True)
         subprocess.run([_docker(), "rmi", "-f", tag], capture_output=True)
+
+
+def test_makefile_has_script_target():
+    """3c : `make script URL=... STEPS=...` doit exister et soumettre le job
+    scripté via POST /jobs (même mécanisme/jeton que `analyze`)."""
+    makefile = (_ROOT / "Makefile").read_text()
+    assert "\nscript:" in makefile
+    assert "/jobs" in makefile
+    assert "STEPS" in makefile
+
+
+def test_readme_documents_3c():
+    """3c doit être documenté (usage, DSL, garanties de sécurité)."""
+    readme = (_ROOT / "README.md").read_text().lower()
+    assert "scripté" in readme
+    assert "steps" in readme
+    assert "make script" in readme
+
+
+def test_build_runner_still_builds_exactly_three_images():
+    """3c réutilise `ocular-runner-recon` (le conteneur `capture` 3a) : il ne
+    doit PAS y avoir de 6e image. `build-runner` construit toujours les 3
+    images runner (analysis, recon, recon-vnc) ; web/broker sont construites
+    par `deploy/docker-compose.yml` — total 5 images inchangé depuis 3b."""
+    makefile = (_ROOT / "Makefile").read_text()
+    build_runner_block = makefile.split("build-runner:", 1)[1].split("\nup:", 1)[0]
+    assert build_runner_block.count("docker build") == 3
+    for image in (
+        "ocular-runner-analysis",
+        "ocular-runner-recon",
+        "ocular-runner-recon-vnc",
+    ):
+        assert image in build_runner_block

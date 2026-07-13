@@ -20,16 +20,26 @@ async function authFetch(path, opts = {}) {
 }
 
 // POST /jobs -> {job_id}. `body` porte le profil et sa charge utile :
-//   { profile: 'analysis', html }  ou  { profile: 'capture', url }.
-// L'erreur applicative garde le status (400 url interdite, 422 payload manquant)
-// pour un message clair côté vue.
+//   { profile: 'analysis', html }  ou  { profile: 'capture', url, steps? }.
+// L'erreur applicative garde le status (400 url interdite, 422 payload manquant
+// ou script invalide) et, quand la réponse est un JSON {detail}, ce motif exact
+// dans `e.detail` — le motif de `StepValidationError` remonté par le serveur,
+// exploitable tel quel côté vue (pas de re-parsing dans la vue).
 export async function submitJob(body) {
   const res = await authFetch('/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    let detail = '';
+    try { detail = JSON.parse(text).detail || ''; } catch { /* réponse non-JSON */ }
+    const e = new Error(res.status + (detail ? ' ' + detail : (text ? ' ' + text.slice(0, 160) : '')));
+    e.status = res.status;
+    e.detail = detail || null;
+    throw e;
+  }
   return res.json();
 }
 

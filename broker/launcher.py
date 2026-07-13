@@ -20,6 +20,17 @@ _ARTIFACTS_DIR = artifacts_dir()
 
 _ANALYSIS_TIMEOUT = 60
 _CAPTURE_TIMEOUT = 90
+# Job scripté (3c, `job.steps` non vide) : le runner applique son propre
+# budget wall-clock TOTAL de 120s (`runner_recon/capture.py:SCRIPTED_EXEC_TIMEOUT_S`)
+# et émet un résultat PARTIEL (journal + screenshots déjà pris) avant de
+# rendre la main. Le timeout conteneur ici doit donc être STRICTEMENT
+# supérieur à ce budget (marge de démarrage Camoufox + extraction DOM finale
+# après l'arrêt du budget), sinon le broker `docker kill` le conteneur avant
+# que le runner n'ait eu la chance d'émettre ce résultat partiel — perte
+# totale (aucun stdout) au lieu d'un résultat dégradé mais exploitable.
+# Constante DÉDIÉE, séparée de `_CAPTURE_TIMEOUT` (3a, capture sans steps,
+# strictement inchangé à 90s).
+_SCRIPTED_TIMEOUT = 180
 _ANALYSIS_MEMORY = "2g"
 _ANALYSIS_PIDS_LIMIT = "256"
 CAPTURE_MEMORY = "4g"
@@ -84,8 +95,14 @@ def build_docker_args(job: Job) -> list[str]:
     if job.profile == "capture":
         # Réseau ON (recon a besoin d'Internet) mais durci : pas de docker.sock,
         # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
+        # Chemin scripté (3c) : job.steps non vide -> stdin interactif (-i) requis
+        # pour que le conteneur lise {url, steps} sur stdin (cf. scripted_stdin) ;
+        # les steps ne sont JAMAIS ajoutés aux args (donc absents de docker inspect).
+        # Sans steps -> chemin 3a strictement inchangé (pas de -i).
+        scripted = bool(job.steps)
         return [
             "docker", "run",
+            *(["-i"] if scripted else []),
             *base_hardening(f"ocular-job-{job.job_id}"),
             "--security-opt", f"seccomp={RECON_SECCOMP}",
             "--tmpfs", "/work:size=512m,mode=1777",
@@ -99,14 +116,32 @@ def build_docker_args(job: Job) -> list[str]:
     raise ValueError(f"profil non géré: {job.profile}")
 
 
+def scripted_stdin(job: Job) -> bytes:
+    """Payload stdin JSON du chemin capture scripté (3c) : {url, steps}.
+    Jamais passé par env/argument CLI (pas de fuite dans `docker inspect`)."""
+    return json.dumps({"url": job.url or "", "steps": job.steps}).encode()
+
+
 def run_job(job: Job) -> str:
     log.info("runner launch job_id=%s profile=%s", job.job_id, job.profile)
     if job.profile == "capture":
         log.warning("capture job job_id=%s : IP exposée (proxy=%s)",
                     job.job_id, bool(_proxy_env()))
     started = time.monotonic()
-    stdin = (job.html or "").encode() if job.profile == "analysis" else None
-    timeout = _ANALYSIS_TIMEOUT if job.profile == "analysis" else _CAPTURE_TIMEOUT
+    if job.profile == "analysis":
+        stdin = (job.html or "").encode()
+    elif job.profile == "capture" and job.steps:
+        stdin = scripted_stdin(job)
+    else:
+        stdin = None
+    if job.profile == "analysis":
+        timeout = _ANALYSIS_TIMEOUT
+    elif job.profile == "capture" and job.steps:
+        # Chemin scripté (3c) : cf. docstring de `_SCRIPTED_TIMEOUT`.
+        timeout = _SCRIPTED_TIMEOUT
+    else:
+        # Chemin capture 3a (sans steps) : strictement inchangé.
+        timeout = _CAPTURE_TIMEOUT
     try:
         proc = subprocess.run(
             build_docker_args(job),

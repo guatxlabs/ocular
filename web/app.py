@@ -23,6 +23,7 @@ from bus.queue import Job, RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
 from engine.artifacts import ref_to_filename, store_blobs
 from engine.ssrf import validate_capture_url
+from engine.steps import StepValidationError, validate_steps
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
 from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
@@ -77,6 +78,41 @@ async def _csp(request, call_next):
     return response
 
 
+# Plafond de taille de corps de requête (audit 3c, FIX2 — garde anti-OOM).
+# Les endpoints POST (/jobs, /sessions, /saved) acceptent du JSON dont la
+# taille légitime est bornée par `max_html_bytes()` (contenu `html`, déjà
+# vérifié explicitement dans les routes ci-dessous) ; on ajoute une marge de
+# 2 Mo pour couvrir l'enveloppe JSON (échappement des guillemets/retours à
+# la ligne dans `html`, champ `steps`, autres clés). Sans cette garde, un
+# appelant authentifié pourrait poster un corps `steps` de plusieurs
+# dizaines de Mo : Pydantic désérialiserait la totalité en mémoire AVANT que
+# `validate_steps` (qui borne à MAX_STEPS) ne s'exécute — OOM possible côté
+# conteneur web. Ce middleware rejette en 413 sur la seule base du header
+# `Content-Length`, sans lire le corps, donc avant toute désérialisation.
+# Limite connue : un corps envoyé en `Transfer-Encoding: chunked` (donc sans
+# `Content-Length`) n'est PAS couvert par cette garde — un plafond réseau/
+# proxy en amont (nginx/ingress `client_max_body_size` ou équivalent) reste
+# nécessaire pour une couverture complète ; hors scope ici.
+_MAX_BODY_BYTES = max_html_bytes() + 2_000_000
+
+
+@app.middleware("http")
+async def _body_size_guard(request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > _MAX_BODY_BYTES:
+            log.warning(
+                "body rejected path=%s content_length=%d limit=%d",
+                request.url.path, declared, _MAX_BODY_BYTES,
+            )
+            return JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413)
+    return await call_next(request)
+
+
 @lru_cache(maxsize=1)
 def _redis_client():
     return redis.Redis.from_url(redis_url())
@@ -98,6 +134,8 @@ def get_cmd_queue() -> SessionCmdQueue:
 def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> JobResponse:
     if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
         raise HTTPException(status_code=422, detail="html trop volumineux")
+    if req.steps is not None and req.profile != "capture":
+        raise HTTPException(status_code=422, detail="steps réservé au profil capture")
     if req.profile == "capture":
         if not req.url:
             raise HTTPException(status_code=422, detail="url requis pour capture")
@@ -107,8 +145,14 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
             raise HTTPException(status_code=400, detail="url interdite")
     if req.profile == "analysis" and not req.html:
         raise HTTPException(status_code=422, detail="html requis pour analysis")
+    steps = None
+    if req.steps is not None:
+        try:
+            steps = validate_steps(req.steps)
+        except StepValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
     job_id = "job-" + uuid.uuid4().hex[:12]
-    queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url))
+    queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url, steps=steps))
     log.info("job submitted job_id=%s profile=%s html_bytes=%d",
               job_id, req.profile, len(req.html or ""))
     return JobResponse(job_id=job_id)

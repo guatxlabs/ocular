@@ -44,6 +44,13 @@ class DynamicStep(BaseModel):
     action: str
     screenshot_ref: Optional[str] = None
     triggered_requests: list[str] = Field(default_factory=list)
+    # Champs 3c (mode scripté) : issue d'exécution d'un step rejoué par
+    # runner_recon/steps_exec.py::run_steps. Optionnels + valeurs par défaut
+    # rétro-compatibles : un `DynamicStep` 3a existant (sans ces champs) reste
+    # un payload valide (`ok` défaut à True, les deux autres à None).
+    ok: bool = True
+    duration_ms: Optional[int] = None
+    error: Optional[str] = None
 
 
 class DomInfo(BaseModel):

@@ -109,7 +109,12 @@ function mount(app, id, src) {
     // ---- panneau « Sauvegarder » (source job uniquement) ----
     if (src.saveable) frag.appendChild(buildSavePanel(r));
 
-    // ---- screenshot(s) (blob) ----
+    // ---- journal d'actions (tier scripté 3c) : rejoué SEULEMENT si `steps`
+    // a été soumis. Chaque entrée vient de `dynamic_steps` (action déjà
+    // redigée côté runner — jamais de valeur `fill` en clair) ----
+    if (r.dynamic_steps && r.dynamic_steps.length) frag.appendChild(buildDynamicSteps(r.dynamic_steps));
+
+    // ---- screenshot(s) (blob) — inclut aussi les `capture` du script (même liste) ----
     frag.appendChild(buildScreenshot(r));
 
     // ---- détections statiques groupées par sévérité ----
@@ -185,6 +190,29 @@ function mount(app, id, src) {
     } else if (st.challenge) {
       sec.appendChild(el('span.turnstile-pending', {}, [iconNode('warn'), 'Challenge : ' + st.challenge]));
     }
+    return sec;
+  }
+
+  // Journal d'actions (tier scripté 3c) : une ligne par step rejoué, dans l'ordre.
+  // `action`/`error` proviennent du runner (contenu potentiellement hostile, même
+  // redigé côté serveur) : posés en textNode via `el(...)` — JAMAIS `.innerHTML`.
+  function buildDynamicSteps(steps) {
+    const sec = el('div.detsec', {}, [
+      el('h3', {}, ['Journal d\'actions ', el('span.cnt', {}, String(steps.length))]),
+    ]);
+    const list = el('div.actionlist');
+    steps.forEach((s, i) => {
+      const ok = s.ok !== false;
+      const row = el('div', { class: 'action-row ' + (ok ? 'action-ok' : 'action-fail') }, [
+        el('span.action-idx', {}, String(i + 1)),
+        el('span.action-verb', {}, s.action || ''), // textContent — jamais innerHTML
+        el('span.action-status', {}, ok ? 'ok' : 'échec'),
+        el('span.action-ms', {}, s.duration_ms != null ? s.duration_ms + ' ms' : '—'),
+      ]);
+      if (s.error) row.appendChild(el('span.action-err', {}, s.error)); // textContent — jamais innerHTML
+      list.appendChild(row);
+    });
+    sec.appendChild(el('div.card', {}, [list]));
     return sec;
   }
 

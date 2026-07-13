@@ -13,6 +13,7 @@ class Job(BaseModel):
     profile: str
     html: Optional[str] = None
     url: Optional[str] = None
+    steps: Optional[list] = None
 
 
 class RedisJobQueue:
