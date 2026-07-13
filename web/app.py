@@ -1,29 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import secrets
+import time
+import urllib.error
+import urllib.request
 import uuid
+from datetime import datetime, timezone
 from functools import lru_cache
 
 import redis
-from fastapi import Depends, FastAPI, HTTPException, Response
+import websockets
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocketState
 
 import saved_store
 from bus.queue import Job, RedisJobQueue
-from engine.artifacts import ref_to_filename
+from bus.sessions import SessionCmdQueue, SessionRegistry
+from engine.artifacts import ref_to_filename, store_blobs
 from engine.ssrf import validate_capture_url
 from ocular_logging import get_logger
-from ocular_settings import max_html_bytes, redis_url, saved_db_path
-from web.models import JobRequest, JobResponse
+from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
+from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
 log = get_logger("web")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-_PROTECTED = ("/jobs", "/saved")
+_PROTECTED = ("/jobs", "/saved", "/sessions")
 
 
 @app.middleware("http")
@@ -56,13 +64,15 @@ async def _auth(request, call_next):
 
 @app.middleware("http")
 async def _csp(request, call_next):
-    # CSP posée sur l'app shell (UI statique) ; /jobs* et /saved* renvoient des réponses
-    # API/artefacts (JSON, image/png, text/plain) pour lesquelles cet en-tête n'a pas de sens.
+    # CSP posée sur l'app shell (UI statique) ; /jobs*, /saved* et /sessions* renvoient
+    # des réponses API/artefacts (JSON, image/png, text/plain) pour lesquelles cet
+    # en-tête n'a pas de sens (skip via le même tuple `_PROTECTED` que l'auth).
     response = await call_next(request)
     if not request.url.path.startswith(_PROTECTED):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' blob: data:; object-src 'none'; base-uri 'self'"
+            "img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'self'"
         )
     return response
 
@@ -74,6 +84,14 @@ def _redis_client():
 
 def get_queue() -> RedisJobQueue:
     return RedisJobQueue(_redis_client())
+
+
+def get_session_registry() -> SessionRegistry:
+    return SessionRegistry(_redis_client())
+
+
+def get_cmd_queue() -> SessionCmdQueue:
+    return SessionCmdQueue(_redis_client())
 
 
 @app.post("/jobs", response_model=JobResponse)
@@ -138,6 +156,312 @@ def get_artifact(job_id: str, ref: str) -> Response:
     with open(path, "rb") as fh:
         data = fh.read()
     return _serve_artifact_bytes(data, fname)
+
+
+def _session_host(session_id: str) -> str:
+    """Nom réseau interne du conteneur de session — jamais de port hôte, le
+    web parle au conteneur uniquement via le réseau applicatif interne."""
+    return f"ocular-sess-{session_id}"
+
+
+def _internal_get_ok(url: str, timeout: float = 2.0) -> bool:
+    """GET interne (health) via la bibliothèque standard uniquement — pas de
+    nouvelle dépendance, pas d'accès au moteur de conteneurs (le web reste
+    sans accès conteneur, seul le broker en dispose)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def _internal_post_json(url: str, payload: dict, secret: str, timeout: float = 5.0) -> bool:
+    data = json.dumps(payload).encode("utf-8")
+    # X-Session-Secret : auth à la frontière conteneur (le session_server exige
+    # ce secret sur /goto,/load). Jamais loggé.
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+class _CaptureError(Exception):
+    """Échec (réseau, HTTP non-2xx, ou JSON invalide) de l'appel interne au
+    `session_server` — traduit systématiquement en 502 côté route."""
+
+
+def _internal_capture(url: str, secret: str, timeout: float = 30.0) -> dict:
+    """POST interne (corps vide) vers `/capture` du `session_server`, via la
+    bibliothèque standard uniquement (pas de nouvelle dépendance, pas
+    d'accès au moteur de conteneurs — seul le broker en dispose). Signe l'appel
+    avec `X-Session-Secret` (auth frontière conteneur, jamais loggé). Renvoie le
+    wrapper `{result, blobs}` désérialisé ; lève `_CaptureError` sur tout
+    échec réseau/HTTP/JSON."""
+    req = urllib.request.Request(
+        url,
+        data=b"{}",
+        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            body = resp.read()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise _CaptureError(str(exc)) from exc
+    try:
+        return json.loads(body)
+    except (ValueError, TypeError) as exc:
+        raise _CaptureError("réponse capture invalide") from exc
+
+
+_SESSION_POLL_INTERVAL = 0.5
+
+
+def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
+    """Poll d'abord le registre (écrit par le broker une fois le conteneur
+    lancé) puis le `/health` du session_server via le réseau interne, jusqu'à
+    `deadline` (epoch monotonic). Extrait pour être monkeypatchable en test
+    sans dépendre d'un vrai conteneur."""
+    while time.monotonic() < deadline:
+        sess = registry.get(session_id)
+        if sess and sess.get("container"):
+            break
+        time.sleep(_SESSION_POLL_INTERVAL)
+    else:
+        return False
+
+    health_url = f"http://{_session_host(session_id)}:8090/health"
+    while time.monotonic() < deadline:
+        if _internal_get_ok(health_url):
+            return True
+        time.sleep(_SESSION_POLL_INTERVAL)
+    return False
+
+
+@app.post("/sessions", response_model=SessionResponse)
+def create_session(
+    req: SessionRequest,
+    request: Request,
+    registry: SessionRegistry = Depends(get_session_registry),
+    cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
+) -> SessionResponse:
+    if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
+        raise HTTPException(status_code=422, detail="html trop volumineux")
+    if not req.url and not req.html:
+        raise HTTPException(status_code=422, detail="url ou html requis")
+    if req.url:
+        try:
+            validate_capture_url(req.url)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="url interdite")
+
+    session_id = "sess-" + uuid.uuid4().hex[:12]
+    token = secrets.token_urlsafe(32)
+    # Secret de session à la frontière conteneur (défense-en-profondeur F1/F2),
+    # DISTINCT du token WS : le session_server l'exige sur /goto,/load,/capture.
+    # SEUL le web le connaît — jamais renvoyé dans les réponses, jamais loggé.
+    session_secret = secrets.token_urlsafe(24)
+    target = req.url if req.url else "inline-html"
+    cmd_queue.enqueue_cmd(
+        "launch", session_id, token=token, target=target, secret=session_secret
+    )
+
+    client_ip = request.client.host if request.client else "?"
+    # Avertissement délibéré : une session interactive expose l'IP du serveur
+    # au site cible (URL live) et/ou rend du contenu potentiellement hostile
+    # dans le conteneur — jamais le token dans ce log.
+    log.warning(
+        "session create session_id=%s client_ip=%s kind=%s",
+        session_id, client_ip, "url" if req.url else "html",
+    )
+
+    deadline = time.monotonic() + session_ready_timeout()
+    if not _wait_session_ready(registry, session_id, deadline):
+        cmd_queue.enqueue_cmd("stop", session_id)
+        log.warning("session start timeout session_id=%s", session_id)
+        raise HTTPException(status_code=504, detail="session non prête")
+
+    host = _session_host(session_id)
+    if req.url:
+        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": req.url}, session_secret)
+    else:
+        ok = _internal_post_json(f"http://{host}:8090/load", {"html": req.html}, session_secret)
+    if not ok:
+        log.warning("session goto/load failed session_id=%s", session_id)
+
+    return SessionResponse(session_id=session_id, token=token)
+
+
+@app.get("/sessions")
+def list_sessions(registry: SessionRegistry = Depends(get_session_registry)) -> list:
+    # Anti-fuite (note sécu T2) : le token capability WS n'est JAMAIS renvoyé
+    # dans une liste — seul un GET/DELETE ciblé côté serveur y a accès.
+    return [
+        {k: v for k, v in sess.items() if k != "token"}
+        for sess in registry.list_active()
+    ]
+
+
+@app.delete("/sessions/{session_id}")
+def delete_session(
+    session_id: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+    cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
+) -> dict:
+    cmd_queue.enqueue_cmd("stop", session_id)
+    registry.delete(session_id)
+    log.info("session delete session_id=%s", session_id)
+    return {"deleted": session_id}
+
+
+@app.post("/sessions/{session_id}/capture")
+def capture_session(
+    session_id: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+    queue: RedisJobQueue = Depends(get_queue),
+) -> dict:
+    """Capture l'état courant d'une session interactive : appelle le
+    `session_server` du conteneur (réseau interne uniquement — le web n'a
+    aucun accès au moteur de conteneurs, seul le broker en dispose), stocke
+    les artefacts renvoyés via `store_blobs` (même logique anti-traversal
+    que le broker, factorisée dans `engine.artifacts`) et le résultat léger
+    dans Redis comme un job normal (récupérable ensuite via
+    `GET /jobs/{job_id}`), puis renvoie ce résultat."""
+    sess = registry.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session inconnue")
+
+    url = f"http://{_session_host(session_id)}:8090/capture"
+    # secret conteneur lu au registre pour signer l'appel /capture (le web ne
+    # regénère pas : c'est le broker qui l'a injecté au conteneur).
+    secret = registry.get_secret(session_id) or ""
+    try:
+        wrapper = _internal_capture(url, secret)
+    except _CaptureError:
+        log.warning("session capture failed session_id=%s", session_id)
+        raise HTTPException(status_code=502, detail="capture échouée")
+
+    store_blobs(wrapper.get("blobs", {}), os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts"))
+
+    result = wrapper.get("result", {})
+    result_id = "sesscap-" + session_id + "-" + uuid.uuid4().hex[:8]
+    result["job_id"] = result_id                  # aligné sur GET /jobs/{job_id}
+    queue.set_result(result_id, json.dumps(result))
+    registry.touch(session_id, datetime.now(timezone.utc).isoformat())
+    log.info("session capture session_id=%s result_id=%s", session_id, result_id)
+    return result
+
+
+_WS_SUBPROTOCOL_PREFIX = "ocular.session."
+_WS_TOUCH_INTERVAL = 5.0
+
+
+def _extract_ws_token(websocket: WebSocket) -> str | None:
+    """Extrait le token capability du sous-protocole WebSocket, JAMAIS de
+    l'URL (anti-fuite logs/referrer). Le client envoie
+    `Sec-WebSocket-Protocol: binary, ocular.session.<token>` ; on lit le 2e
+    élément portant le préfixe `ocular.session.`. Ne jamais logger le résultat
+    ni l'en-tête brut."""
+    raw = websocket.headers.get("sec-websocket-protocol", "")
+    if not raw:
+        return None
+    for part in (p.strip() for p in raw.split(",")):
+        if part.startswith(_WS_SUBPROTOCOL_PREFIX):
+            return part[len(_WS_SUBPROTOCOL_PREFIX):]
+    return None
+
+
+async def _ws_pump(websocket: WebSocket, upstream, registry: SessionRegistry, sid: str) -> None:
+    """Pompe bidirectionnelle d'octets bruts (RFB) entre l'analyste et le
+    websockify du conteneur de session. `registry.touch` est rafraîchi au
+    plus une fois toutes les `_WS_TOUCH_INTERVAL` secondes, dès qu'il y a du
+    trafic dans un sens ou dans l'autre — jamais le contenu des trames ni le
+    token ne sont journalisés ici."""
+    last_touch = 0.0
+
+    def _maybe_touch() -> None:
+        nonlocal last_touch
+        now = time.monotonic()
+        if now - last_touch >= _WS_TOUCH_INTERVAL:
+            registry.touch(sid, datetime.now(timezone.utc).isoformat())
+            last_touch = now
+
+    async def client_to_upstream() -> None:
+        async for msg in websocket.iter_bytes():
+            await upstream.send(msg)
+            _maybe_touch()
+
+    async def upstream_to_client() -> None:
+        async for msg in upstream:
+            await websocket.send_bytes(msg)
+            _maybe_touch()
+
+    tasks = [asyncio.create_task(client_to_upstream()), asyncio.create_task(upstream_to_client())]
+    try:
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # cette coroutine elle-même peut être annulée pendant le nettoyage
+            # (arrêt serveur, déconnexion brutale déjà en cours) : les deux
+            # sous-tâches ont déjà été cancel()-ées ci-dessus, rien de plus à
+            # faire — ne jamais faire fuiter cette annulation plus loin
+            # empêcherait le nettoyage best-effort du websocket appelant.
+            pass
+
+
+@app.websocket("/sessions/{sid}/ws")
+async def session_ws_proxy(
+    websocket: WebSocket,
+    sid: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+) -> None:
+    """Proxy websocket noVNC : relaie le RFB entre l'analyste et le conteneur
+    de session (réseau interne), sur l'origine web. Sécu critique : auth par
+    sous-protocole (token HORS URL), fail-closed AVANT accept(), et le
+    sous-protocole renvoyé au client est TOUJOURS "binary" seul — jamais le
+    token. Rien de ceci n'est journalisé (ni token, ni en-tête)."""
+    token = _extract_ws_token(websocket)
+    if not token or not registry.valid_token(sid, token):
+        await websocket.close(code=1008)
+        return
+
+    sess = registry.get(sid)
+    if not sess or not sess.get("container"):
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept(subprotocol="binary")
+
+    upstream_url = f"ws://{sess['container']}:6080/websockify"
+    try:
+        async with websockets.connect(upstream_url, subprotocols=["binary"]) as upstream:
+            await _ws_pump(websocket, upstream, registry, sid)
+    except asyncio.CancelledError:
+        # annulation de cette tâche pendant le nettoyage (arrêt serveur ou
+        # déconnexion brutale déjà traitée par _ws_pump) : fermeture best-effort
+        # ci-dessous, jamais de détail sensible loggé, ne pas re-propager pour
+        # ne pas casser la fermeture propre du websocket appelant.
+        pass
+    except Exception:  # noqa: BLE001 - erreurs réseau/upstream : jamais de détail sensible loggé
+        pass
+    finally:
+        if websocket.client_state != WebSocketState.DISCONNECTED:
+            try:
+                await websocket.close()
+            except (RuntimeError, asyncio.CancelledError):
+                pass  # déjà fermé côté ASGI, ou annulation en cours
 
 
 def _saved_conn():
@@ -274,8 +598,8 @@ def flush_saved() -> dict:
 
 
 # UI web statique (PWA vanilla-JS) montée sur "/" APRÈS les routes /jobs* pour ne
-# pas les masquer. Le middleware auth couvre /jobs* et /saved* ; l'UI statique
-# montée sur / reste publique.
+# pas les masquer. Le middleware auth couvre /jobs*, /saved* et /sessions* ; l'UI
+# statique montée sur / reste publique.
 app.mount(
     "/",
     StaticFiles(directory=os.path.join(os.path.dirname(__file__), "ui"), html=True),

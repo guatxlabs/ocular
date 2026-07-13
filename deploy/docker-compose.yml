@@ -21,9 +21,19 @@ services:
     mem_limit: 1g
     cpus: "1.0"
     volumes:
-      - ocular-artifacts:/artifacts:ro   # web LIT les artefacts
+      # rw (pas :ro) : le web ÉCRIT aussi les artefacts de capture de session
+      # interactive (POST /sessions/{id}/capture -> engine.artifacts.store_blobs).
+      # Sûr malgré rootfs read_only=true + rw sur ce seul volume : store_blobs
+      # vérifie que ref == sha256(contenu) avant tout write, donc un web
+      # compromis ne peut poser QUE des blobs sous leur propre nom de hash —
+      # aucun empoisonnement possible du store content-addressé partagé avec
+      # le broker.
+      - ocular-artifacts:/artifacts
       - ocular-saved:/saved              # web LIT/ÉCRIT les analyses sauvegardées
     depends_on: [redis]
+    networks:
+      - default          # redis
+      - ocular-sessions  # web -> conteneurs de session (proxy interactif)
     # PAS de docker.sock — contrainte de sécurité
 
   broker:
@@ -39,7 +49,21 @@ services:
       - ../schemas:/app/schemas:ro
       - ocular-artifacts:/artifacts                # broker ÉCRIT les artefacts
     depends_on: [redis]
+    networks:
+      - default          # redis
+      - ocular-sessions  # broker lance les sessions avec --network ocular-sessions
+    # Le broker lance les conteneurs de session avec `--network ocular-sessions`
+    # (broker/sessions.py::_SESSION_NETWORK, en dur, nom non préfixé). Le réseau
+    # doit donc exister sous ce nom stable — voir `networks.ocular-sessions.name`
+    # ci-dessous. `docker compose up` le crée automatiquement.
 
 volumes:
   ocular-artifacts:
   ocular-saved:
+
+networks:
+  default: {}
+  ocular-sessions:
+    name: ocular-sessions  # nom stable, non préfixé par le projet compose,
+    # cohérent avec broker/sessions.py::_SESSION_NETWORK. PAS internal: true —
+    # les conteneurs de session ont besoin d'egress Internet (navigation/appels).

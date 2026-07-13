@@ -1,6 +1,6 @@
 import fakeredis
 
-from bus.queue import Job, RedisJobQueue, RESULT_PREFIX
+from bus.queue import RedisJobQueue, RESULT_PREFIX
 
 
 def test_set_result_with_ttl_sets_expiry():

@@ -5,6 +5,7 @@ import { getToken, clearToken, LANG, setLang, getTheme, setTheme } from './state
 import { i18nWalk } from './i18n.js';
 import { renderLogin } from './views/login.js';
 import { renderSubmit } from './views/submit.js';
+import { renderInteractive } from './views/interactive.js';
 import { renderJobs } from './views/jobs.js';
 import { renderDetail, renderSavedDetail } from './views/detail.js';
 import { renderSaved } from './views/saved.js';
@@ -118,6 +119,7 @@ function route() {
   app.replaceChildren();
   if (view === 'login') cleanup = renderLogin(app);
   else if (view === 'submit') cleanup = renderSubmit(app);
+  else if (view === 'interactive') cleanup = renderInteractive(app);
   else if (view === 'jobs') cleanup = renderJobs(app);
   else if (view === 'job') cleanup = renderDetail(app, parts[1]);
   else if (view === 'saved' && parts[1]) cleanup = renderSavedDetail(app, parts[1]);

@@ -10,13 +10,23 @@ COPY web/ ./web/
 
 # Le tier web n'a besoin ni de docker CLI ni de broker/launcher.py :
 # il ne parle qu'à Redis (via bus.queue), jamais à Docker.
-RUN pip install --no-cache-dir fastapi uvicorn redis pydantic
+RUN pip install --no-cache-dir fastapi uvicorn redis pydantic websockets
 
 RUN useradd -u 10002 -m ocular-web
 # /saved est un volume nommé rw : le créer possédé par l'uid non-root ici garantit
 # qu'un volume frais hérite de cette propriété (sinon Docker le crée root -> SQLite
 # ne peut pas ouvrir la base sous user 10002).
 RUN mkdir -p /saved && chown 10002:10002 /saved
+# /artifacts est un volume nommé rw partagé avec le broker (root) : le web
+# (uid 10002, capture de session interactive) ET le broker (root, jobs jetables)
+# doivent tous deux pouvoir y écrire. Docker peuple un volume nommé neuf à
+# partir du chemin correspondant de la PREMIÈRE image qui le monte (course
+# possible entre web et broker au démarrage) : les deux Dockerfiles pré-créent
+# donc ce chemin avec le MÊME mode 0777, pour un résultat déterministe quel
+# que soit le gagnant. L'intégrité du store reste garantie par la vérif
+# sha256(contenu) == ref dans engine.artifacts.store_blobs, pas par les
+# permissions du filesystem.
+RUN mkdir -p /artifacts && chmod 0777 /artifacts
 USER 10002:10002
 
 EXPOSE 8000

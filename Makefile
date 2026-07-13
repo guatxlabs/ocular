@@ -2,6 +2,7 @@
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
+	docker build -f runner_recon_vnc/Dockerfile -t ocular-runner-recon-vnc:latest .
 up: build-runner
 	docker compose -f deploy/docker-compose.yml up -d --build
 down:
