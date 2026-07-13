@@ -1,29 +1,29 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import subprocess
 import time
 
 from bus.queue import Job
-from engine.artifacts import ref_to_filename
+from engine.artifacts import store_blobs
 from ocular_logging import get_logger
+from ocular_settings import artifacts_dir
 
 log = get_logger("broker.launcher")
 
 _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
 _RECON_IMAGE = "ocular-runner-recon:latest"
-_RECON_SECCOMP = "schemas/seccomp-recon.json"
-_ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+RECON_SECCOMP = "schemas/seccomp-recon.json"
+_ARTIFACTS_DIR = artifacts_dir()
 
 _ANALYSIS_TIMEOUT = 60
 _CAPTURE_TIMEOUT = 90
 _ANALYSIS_MEMORY = "2g"
 _ANALYSIS_PIDS_LIMIT = "256"
-_CAPTURE_MEMORY = "4g"
-_CAPTURE_PIDS_LIMIT = "512"
+CAPTURE_MEMORY = "4g"
+CAPTURE_PIDS_LIMIT = "512"
 
 
 def _proxy_env() -> list[str]:
@@ -34,15 +34,11 @@ def _proxy_env() -> list[str]:
     return out
 
 
-def _store_blobs(blobs: dict, artifacts_dir: str) -> None:
-    os.makedirs(artifacts_dir, exist_ok=True)
-    for ref, b64 in blobs.items():
-        try:
-            fname = ref_to_filename(ref)          # lève ValueError si ref non conforme (anti-traversal)
-        except ValueError:
-            continue
-        with open(os.path.join(artifacts_dir, fname), "wb") as fh:
-            fh.write(base64.b64decode(b64))
+# Alias rétro-compat : le stockage d'artefacts vit désormais dans
+# `engine.artifacts.store_blobs` (module neutre, sans Docker/subprocess),
+# réutilisé tel quel par `web.app` pour la capture de session interactive —
+# aucune duplication de la logique anti-traversal entre broker et web.
+_store_blobs = store_blobs
 
 
 def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
@@ -51,26 +47,32 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     return json.dumps(wrapper["result"])          # résultat léger, sans blobs
 
 
-def _base_hardening(job_id: str) -> list[str]:
-    """Flags de durcissement communs aux deux profils (analysis + capture) :
-    conteneur jetable nommé, aucune capability, no-new-privileges, rootfs
-    read-only, utilisateur non-root. Les specifics (network/seccomp/mémoire/
-    tmpfs/proxy/image/args) restent composés par `build_docker_args`."""
-    return [
-        "--rm",
-        "--name", f"ocular-job-{job_id}",
+def base_hardening(name: str, rm: bool = True) -> list[str]:
+    """Flags de durcissement communs à tous les conteneurs lancés par le
+    broker (jobs jetables ET sessions interactives détachées) : nommage,
+    aucune capability, no-new-privileges, rootfs read-only, utilisateur
+    non-root. `rm=False` pour les conteneurs détachés persistants (sessions),
+    dont le cycle de vie est géré explicitement (kill puis rm -f). Les
+    specifics (network/seccomp/mémoire/tmpfs/proxy/image/args) restent
+    composés par les appelants (`build_docker_args`, `build_session_args`)."""
+    flags: list[str] = []
+    if rm:
+        flags.append("--rm")
+    flags += [
+        "--name", name,
         "--cap-drop", "ALL",
         "--security-opt", "no-new-privileges:true",
         "--read-only",
         "--user", "10001:10001",
     ]
+    return flags
 
 
 def build_docker_args(job: Job) -> list[str]:
     if job.profile == "analysis":
         return [
             "docker", "run", "-i",
-            *_base_hardening(job.job_id),
+            *base_hardening(f"ocular-job-{job.job_id}"),
             "--network", "none",
             "--security-opt", f"seccomp={_SECCOMP}",
             "--tmpfs", "/work:size=256m,mode=1777",
@@ -84,12 +86,12 @@ def build_docker_args(job: Job) -> list[str]:
         # pas de host-network, non-root, cap-drop ALL, seccomp dédié, read-only+tmpfs.
         return [
             "docker", "run",
-            *_base_hardening(job.job_id),
-            "--security-opt", f"seccomp={_RECON_SECCOMP}",
+            *base_hardening(f"ocular-job-{job.job_id}"),
+            "--security-opt", f"seccomp={RECON_SECCOMP}",
             "--tmpfs", "/work:size=512m,mode=1777",
             "--tmpfs", "/tmp:size=64m,mode=1777",
-            "--memory", _CAPTURE_MEMORY,
-            "--pids-limit", _CAPTURE_PIDS_LIMIT,
+            "--memory", CAPTURE_MEMORY,
+            "--pids-limit", CAPTURE_PIDS_LIMIT,
             *_proxy_env(),
             _RECON_IMAGE,
             "--url", job.url or "",

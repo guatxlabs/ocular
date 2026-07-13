@@ -13,3 +13,13 @@ class JobRequest(BaseModel):
 
 class JobResponse(BaseModel):
     job_id: str
+
+
+class SessionRequest(BaseModel):
+    url: Optional[str] = Field(default=None, max_length=2048)
+    html: Optional[str] = None
+
+
+class SessionResponse(BaseModel):
+    session_id: str
+    token: str

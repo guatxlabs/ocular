@@ -86,6 +86,28 @@ const I18N_EN = {
   'Token admin refusé — vérifie la valeur.': 'Admin token rejected — check the value.',
   'Administration désactivée : le serveur n\'a pas de OCULAR_ADMIN_TOKEN.':
     'Administration disabled: the server has no OCULAR_ADMIN_TOKEN.',
+  // interactif (sessions live — T8)
+  'Interactif': 'Interactive', 'Session interactive': 'Interactive session',
+  'Ouvre une page live et pilote son rendu dans le conteneur isolé.':
+    'Open a live page and drive its rendering in the isolated container.',
+  'IP exposée · contenu rendu côté conteneur.': 'Exposed IP · content rendered in the container.',
+  'Ouvrir une URL': 'Open a URL', 'Rendre du HTML': 'Render HTML',
+  'URL à ouvrir': 'URL to open', 'HTML à rendre': 'HTML to render',
+  'colle ici le HTML à rendre': 'paste the HTML to render here',
+  'chargement live dans le conteneur (moteur furtif)': 'live loading in the container (stealth engine)',
+  'Ouvrir la session': 'Open the session', 'Ouverture de la session…': 'Opening the session…',
+  'Renseigne une URL avant d\'ouvrir.': 'Enter a URL before opening.',
+  'Ajoute du HTML avant d\'ouvrir.': 'Add HTML before opening.',
+  'Session non prête — le conteneur n\'a pas démarré à temps.':
+    'Session not ready — the container did not start in time.',
+  'Requête invalide (URL/HTML manquant ou trop volumineux).':
+    'Invalid request (URL/HTML missing or too large).',
+  'connexion…': 'connecting…', 'connecté': 'connected', 'déconnecté': 'disconnected',
+  'connexion perdue': 'connection lost', 'accès refusé': 'access denied',
+  'noVNC introuvable': 'noVNC not found',
+  'Capturer': 'Capture', 'capture…': 'capturing…', 'Fermer': 'Close',
+  'Capture enregistrée': 'Capture saved', 'Voir l\'analyse': 'View the analysis',
+  'Capture échouée — la session ne répond pas.': 'Capture failed — the session is not responding.',
   // sévérités
   'critical': 'critical', 'high': 'high', 'medium': 'medium', 'low': 'low',
   // verdicts

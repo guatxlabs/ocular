@@ -8,6 +8,7 @@ import redis
 
 from bus.queue import RESULT_PREFIX
 from engine.artifacts import filename_to_ref
+from ocular_settings import artifacts_dir
 
 
 def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
@@ -45,5 +46,5 @@ def _refs_in(result_json: str) -> set[str]:
 
 if __name__ == "__main__":
     c = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
-    n = collect(os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts"), c)
+    n = collect(artifacts_dir(), c)
     print(f"gc: {n} artefacts supprimés")

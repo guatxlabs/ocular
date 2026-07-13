@@ -27,3 +27,27 @@ def test_saved_and_admin_views_served():
         r = c.get(path)
         assert r.status_code == 200, path
         assert "javascript" in r.headers.get("content-type", "").lower(), path
+
+
+def test_interactive_view_served():
+    # La vue interactive (T8) est servie en statique.
+    c = TestClient(app)
+    r = c.get("/views/interactive.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers.get("content-type", "").lower()
+
+
+def test_novnc_rfb_embedded_and_served():
+    # noVNC est EMBARQUÉ localement (aucun CDN -> CSP) : le module ES rfb.js doit
+    # être servi en 200 depuis le même origine.
+    c = TestClient(app)
+    r = c.get("/vendor/novnc/core/rfb.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers.get("content-type", "").lower()
+
+
+def test_csp_allows_same_origin_ws():
+    # La CSP de l'app shell doit autoriser le WebSocket same-origin (connect-src 'self').
+    c = TestClient(app)
+    csp = c.get("/").headers.get("content-security-policy", "")
+    assert "connect-src 'self'" in csp

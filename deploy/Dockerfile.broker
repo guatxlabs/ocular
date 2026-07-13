@@ -18,4 +18,10 @@ COPY broker/ ./broker/
 
 RUN pip install --no-cache-dir redis pydantic
 
+# /artifacts est un volume nommé rw partagé avec le web (uid 10002, capture de
+# session interactive) : voir le commentaire miroir dans deploy/Dockerfile.web
+# — même mode 0777 pré-créé ici pour un résultat déterministe quel que soit
+# le conteneur qui peuple le volume neuf en premier.
+RUN mkdir -p /artifacts && chmod 0777 /artifacts
+
 CMD ["python", "-m", "broker.main"]
