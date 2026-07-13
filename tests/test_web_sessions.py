@@ -1,3 +1,6 @@
+import base64
+import json
+
 import fakeredis
 from fastapi.testclient import TestClient
 
@@ -12,7 +15,10 @@ def _client(monkeypatch):
     redis_client = fakeredis.FakeStrictRedis()
     registry = SessionRegistry(redis_client)
     cmd_queue = SessionCmdQueue(redis_client)
-    app.dependency_overrides[get_queue] = lambda: RedisJobQueue(fakeredis.FakeStrictRedis())
+    # même instance redis pour queue/registry/cmd_queue (comme en prod : un seul
+    # Redis, des préfixes de clé différents) — nécessaire pour que le résultat
+    # posé par /capture reste lisible par un GET /jobs/{id} ultérieur.
+    app.dependency_overrides[get_queue] = lambda: RedisJobQueue(redis_client)
     app.dependency_overrides[get_session_registry] = lambda: registry
     app.dependency_overrides[get_cmd_queue] = lambda: cmd_queue
     client = TestClient(app)
@@ -132,6 +138,85 @@ def test_delete_session_enqueues_stop_and_removes_registry_entry(monkeypatch):
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd == {"action": "stop", "session_id": "s1"}
+
+
+def test_capture_unknown_session_returns_404(monkeypatch):
+    client, *_ = _client(monkeypatch)
+    r = client.post("/sessions/does-not-exist/capture")
+    assert r.status_code == 404
+
+
+def test_capture_requires_auth(monkeypatch):
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
+    redis_client = fakeredis.FakeStrictRedis()
+    app.dependency_overrides[get_session_registry] = lambda: SessionRegistry(redis_client)
+    app.dependency_overrides[get_cmd_queue] = lambda: SessionCmdQueue(redis_client)
+    app.dependency_overrides[get_queue] = lambda: RedisJobQueue(redis_client)
+    client = TestClient(app)
+    r = client.post("/sessions/s1/capture")
+    assert r.status_code == 401
+
+
+def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
+    monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path))
+    client, registry, _ = _client(monkeypatch)
+    registry.create(
+        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+    )
+    ref = "sha256:" + "e" * 64
+    wrapper = {
+        "result": {"job_id": "", "profile": "capture", "target": "https://example.com",
+                   "timestamp": "now", "schema_version": "1.0"},
+        "blobs": {ref: base64.b64encode(b"PNGDATA").decode(),
+                  "../evil": base64.b64encode(b"x").decode()},
+    }
+    calls = []
+
+    def fake_capture(url, timeout=30.0):
+        calls.append(url)
+        return wrapper
+
+    monkeypatch.setattr(app_mod, "_internal_capture", fake_capture)
+
+    r = client.post("/sessions/s1/capture")
+    assert r.status_code == 200
+    assert calls == ["http://ocular-sess-s1:8090/capture"]
+
+    body = r.json()
+    assert "blobs" not in body
+    assert body["target"] == "https://example.com"
+
+    # artefact stocké de façon sûre (anti-traversal : "../evil" ignoré)
+    assert (tmp_path / ("sha256_" + "e" * 64)).read_bytes() == b"PNGDATA"
+    assert list(tmp_path.iterdir()) == [tmp_path / ("sha256_" + "e" * 64)]
+
+    # résultat léger retrouvable via GET /jobs/{id} comme un job normal
+    assert body["job_id"]
+    r2 = client.get(f"/jobs/{body['job_id']}")
+    assert r2.status_code == 200
+    assert r2.json() == body
+
+    # touch : last_activity rafraîchi vers l'heure réelle de la requête,
+    # donc différent de l'horodatage figé posé à la création de la session
+    sess = registry.get("s1")
+    assert sess["last_activity"] != sess["created_at"]
+
+
+def test_capture_session_server_error_returns_502(monkeypatch):
+    client, registry, _ = _client(monkeypatch)
+    registry.create(
+        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+    )
+
+    def boom(url, timeout=30.0):
+        raise app_mod._CaptureError("boom")
+
+    monkeypatch.setattr(app_mod, "_internal_capture", boom)
+
+    r = client.post("/sessions/s1/capture")
+    assert r.status_code == 502
 
 
 def test_web_sessions_module_never_imports_docker():

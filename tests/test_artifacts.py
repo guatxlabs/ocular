@@ -1,11 +1,22 @@
+import base64
+
 import pytest
 
-from engine.artifacts import ref_to_filename
+from engine.artifacts import ref_to_filename, store_blobs
 
 
 def test_valid_ref_maps_to_safe_filename():
     ref = "sha256:" + "a" * 64
     assert ref_to_filename(ref) == "sha256_" + "a" * 64
+
+
+def test_store_blobs_writes_valid_refs_only(tmp_path):
+    ref = "sha256:" + "d" * 64
+    store_blobs({ref: base64.b64encode(b"PNGDATA").decode(),
+                 "../evil": base64.b64encode(b"x").decode()}, str(tmp_path))
+    assert (tmp_path / ("sha256_" + "d" * 64)).read_bytes() == b"PNGDATA"
+    assert not (tmp_path / "../evil").exists()
+    assert list(tmp_path.iterdir()) == [tmp_path / ("sha256_" + "d" * 64)]
 
 
 @pytest.mark.parametrize("bad", [

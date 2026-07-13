@@ -21,7 +21,7 @@ from starlette.websockets import WebSocketState
 import saved_store
 from bus.queue import Job, RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
-from engine.artifacts import ref_to_filename
+from engine.artifacts import ref_to_filename, store_blobs
 from engine.ssrf import validate_capture_url
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
@@ -186,6 +186,31 @@ def _internal_post_json(url: str, payload: dict, timeout: float = 5.0) -> bool:
         return False
 
 
+class _CaptureError(Exception):
+    """Échec (réseau, HTTP non-2xx, ou JSON invalide) de l'appel interne au
+    `session_server` — traduit systématiquement en 502 côté route."""
+
+
+def _internal_capture(url: str, timeout: float = 30.0) -> dict:
+    """POST interne (corps vide) vers `/capture` du `session_server`, via la
+    bibliothèque standard uniquement (pas de nouvelle dépendance, pas
+    d'accès au moteur de conteneurs — seul le broker en dispose). Renvoie le
+    wrapper `{result, blobs}` désérialisé ; lève `_CaptureError` sur tout
+    échec réseau/HTTP/JSON."""
+    req = urllib.request.Request(
+        url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            body = resp.read()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise _CaptureError(str(exc)) from exc
+    try:
+        return json.loads(body)
+    except (ValueError, TypeError) as exc:
+        raise _CaptureError("réponse capture invalide") from exc
+
+
 _SESSION_POLL_INTERVAL = 0.5
 
 
@@ -278,6 +303,41 @@ def delete_session(
     registry.delete(session_id)
     log.info("session delete session_id=%s", session_id)
     return {"deleted": session_id}
+
+
+@app.post("/sessions/{session_id}/capture")
+def capture_session(
+    session_id: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+    queue: RedisJobQueue = Depends(get_queue),
+) -> dict:
+    """Capture l'état courant d'une session interactive : appelle le
+    `session_server` du conteneur (réseau interne uniquement — le web n'a
+    aucun accès au moteur de conteneurs, seul le broker en dispose), stocke
+    les artefacts renvoyés via `store_blobs` (même logique anti-traversal
+    que le broker, factorisée dans `engine.artifacts`) et le résultat léger
+    dans Redis comme un job normal (récupérable ensuite via
+    `GET /jobs/{job_id}`), puis renvoie ce résultat."""
+    sess = registry.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session inconnue")
+
+    url = f"http://{_session_host(session_id)}:8090/capture"
+    try:
+        wrapper = _internal_capture(url)
+    except _CaptureError:
+        log.warning("session capture failed session_id=%s", session_id)
+        raise HTTPException(status_code=502, detail="capture échouée")
+
+    store_blobs(wrapper.get("blobs", {}), os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts"))
+
+    result = wrapper.get("result", {})
+    result_id = "sesscap-" + session_id + "-" + uuid.uuid4().hex[:8]
+    result["job_id"] = result_id                  # aligné sur GET /jobs/{job_id}
+    queue.set_result(result_id, json.dumps(result))
+    registry.touch(session_id, datetime.now(timezone.utc).isoformat())
+    log.info("session capture session_id=%s result_id=%s", session_id, result_id)
+    return result
 
 
 _WS_SUBPROTOCOL_PREFIX = "ocular.session."
