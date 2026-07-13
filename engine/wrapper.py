@@ -21,6 +21,7 @@ from engine.result import (
     Artifacts,
     ConsoleEntry,
     DomInfo,
+    DynamicStep,
     NetworkEntry,
     OcularResult,
     Screenshot,
@@ -107,6 +108,7 @@ class ResultBuilder:
         static_findings: Optional[list] = None,
         network: Optional[list[dict[str, Any]]] = None,
         console: Optional[list[dict[str, Any]]] = None,
+        dynamic_steps: Optional[list] = None,
     ) -> tuple[OcularResult, dict[str, bytes]]:
         result = OcularResult(
             job_id=job_id,
@@ -120,6 +122,13 @@ class ResultBuilder:
             console=[ConsoleEntry(**c) for c in (console or [])],
             dom=dom_info or DomInfo(),
             static_findings=static_findings or [],
+            # 3c : journal du mode scripté (déjà des `DynamicStep`, construits
+            # par runner_recon/capture.py::journal_to_dynamic_steps). Absent
+            # (None) -> liste vide, comme tout autre champ optionnel ici.
+            dynamic_steps=[
+                d if isinstance(d, DynamicStep) else DynamicStep(**d)
+                for d in (dynamic_steps or [])
+            ],
             stealth=stealth,
             artifacts=self.artifacts,
         )
