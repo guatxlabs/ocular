@@ -28,43 +28,47 @@ def test_submit_with_valid_steps_enqueues_normalized(monkeypatch):
 
 
 def test_submit_with_ssrf_goto_rejected(monkeypatch):
-    client, _ = _client(monkeypatch)
+    client, q = _client(monkeypatch)
     r = client.post(
         "/jobs",
         json={"url": "https://example.com", "profile": "capture",
               "steps": [{"goto": "http://127.0.0.1/"}]},
     )
     assert r.status_code == 422
+    assert q.dequeue(timeout=1) is None  # aucun step non validé n'atteint la file
 
 
 def test_submit_with_oversize_steps_rejected(monkeypatch):
-    client, _ = _client(monkeypatch)
+    client, q = _client(monkeypatch)
     r = client.post(
         "/jobs",
         json={"url": "https://example.com", "profile": "capture",
               "steps": [{"click": "#a"}] * 51},
     )
     assert r.status_code == 422
+    assert q.dequeue(timeout=1) is None
 
 
 def test_submit_with_forbidden_verb_rejected(monkeypatch):
-    client, _ = _client(monkeypatch)
+    client, q = _client(monkeypatch)
     r = client.post(
         "/jobs",
         json={"url": "https://example.com", "profile": "capture",
               "steps": [{"evil": "x"}]},
     )
     assert r.status_code == 422
+    assert q.dequeue(timeout=1) is None
 
 
 def test_submit_steps_with_analysis_profile_rejected(monkeypatch):
-    client, _ = _client(monkeypatch)
+    client, q = _client(monkeypatch)
     r = client.post(
         "/jobs",
         json={"html": "<h1>x</h1>", "profile": "analysis",
               "steps": [{"click": "#a"}]},
     )
     assert r.status_code == 422
+    assert q.dequeue(timeout=1) is None
 
 
 def test_submit_capture_without_steps_unchanged(monkeypatch):
