@@ -23,7 +23,14 @@ export DISPLAY=:99
 # seul websockify (même conteneur, localhost:5900 -> 0.0.0.0:6080) y accède ;
 # aucun client VNC natif ne peut se connecter directement au 5900, seul le
 # pont websocket noVNC est exposé (intra-conteneur, cf. absence de mapping de port ci-dessus).
-x11vnc -display :99 -forever -shared -rfbport 5900 -noclipboard -nosetclipboard -localhost >/dev/null 2>&1 &
+# -noshm : le conteneur tourne sous le seccomp `RECON_SECCOMP` (broker/sessions.py),
+# qui n'autorise PAS shmget/shmat (surface syscall réduite, cf. schémas
+# schemas/seccomp-recon.json) — sans -noshm, x11vnc tente MIT-SHM au démarrage,
+# shmget échoue avec EPERM et le process meurt silencieusement (observé : le
+# conteneur reste "up" via uvicorn/websockify, mais aucune session VNC n'est
+# jamais réellement servie). -noshm désactive l'extension côté x11vnc — pas de
+# syscall shm nécessaire, pas d'assouplissement du profil seccomp.
+x11vnc -display :99 -forever -shared -rfbport 5900 -noclipboard -nosetclipboard -localhost -noshm >/dev/null 2>&1 &
 
 websockify --web=/usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
