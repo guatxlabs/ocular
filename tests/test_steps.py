@@ -122,3 +122,17 @@ def test_boundary_values_accepted():
     assert validate_steps([{"scroll": MAX_SCROLL_PX}])[0] == {"scroll": MAX_SCROLL_PX}
     assert validate_steps([{"capture": "a" * MAX_LABEL}])[0] == {"capture": "a" * MAX_LABEL}
     assert len(validate_steps([{"click": "#a"}] * MAX_STEPS)) == MAX_STEPS + 1
+
+# --- Important (3c review): 422 réfléchi borné (anti-amplification) ---
+
+def test_giant_verb_error_bounded():
+    giant = "A" * 100000
+    with pytest.raises(StepValidationError) as exc:
+        validate_steps([{giant: "x"}])
+    assert len(str(exc.value)) < 200  # texte attaquant tronqué, pas réfléchi en entier
+
+def test_goto_url_too_long_rejected():
+    giant = "https://example.com/" + "a" * 100000
+    with pytest.raises(StepValidationError) as exc:
+        validate_steps([{"goto": giant}])
+    assert len(str(exc.value)) < 200  # url géante rejetée avant réflexion non bornée

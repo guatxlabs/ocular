@@ -35,8 +35,8 @@ def _one(step):
         raise StepValidationError("chaque step doit être un objet mono-clé")
     (verb, arg), = step.items()
     if verb == "goto":
-        if not isinstance(arg, str):
-            raise StepValidationError("goto: url str attendue")
+        if not isinstance(arg, str) or len(arg) > 2048:
+            raise StepValidationError("goto: url invalide ou trop longue")
         try:
             validate_capture_url(arg)
         except ValueError as e:
@@ -63,7 +63,8 @@ def _one(step):
         raise StepValidationError("wait: ms int ou {selector}")
     if verb == "press":
         if not isinstance(arg, str) or arg not in ALLOWED_PRESS_KEYS:
-            raise StepValidationError(f"press hors allowlist: {arg!r}")
+            reflected = arg[:64] if isinstance(arg, str) else arg
+            raise StepValidationError(f"press hors allowlist: {reflected!r}")
         return {"press": arg}
     if verb == "capture":
         if not isinstance(arg, str) or not _LABEL_RE.fullmatch(arg):
@@ -75,7 +76,7 @@ def _one(step):
         if isinstance(arg, int) and not isinstance(arg, bool) and 0 <= arg <= MAX_SCROLL_PX:
             return {"scroll": arg}
         raise StepValidationError("scroll: 'top'|'bottom'|px")
-    raise StepValidationError(f"verbe non autorisé: {verb!r}")
+    raise StepValidationError(f"verbe non autorisé: {verb[:64]!r}")
 
 
 def validate_steps(raw):
