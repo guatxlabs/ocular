@@ -28,7 +28,7 @@ def _analyze(dom_html: bytes) -> list:
 
 
 def journal_to_dynamic_steps(
-    journal: list[dict[str, Any]], refs_by_label: dict[str, str]
+    journal: list[dict[str, Any]], capture_refs: list[str]
 ) -> list[DynamicStep]:
     """Traduit le journal `run_steps` (déjà redigé — chaque entrée porte
     `step` passé par `engine.steps.redact_step`, jamais de valeur `fill` en
@@ -37,16 +37,23 @@ def journal_to_dynamic_steps(
     sans navigateur.
 
     `action` : libellé lisible du step (JSON compact du step redigé).
-    `screenshot_ref` : renseigné UNIQUEMENT pour un step `capture`, résolu
-    via `refs_by_label` (rempli par `screenshot_cb` au moment de l'exécution
-    réelle, cf. `capture_scripted`).
+    `screenshot_ref` : renseigné UNIQUEMENT pour un step `capture`, associé
+    PAR ORDRE (Nième `capture` du journal <-> Nième ref) et NON par label —
+    `screenshot_cb` est appelé une fois par `capture` dans l'ordre et empile
+    les refs dans une liste ordonnée (cf. `capture_scripted`). Associer par
+    label écraserait la clé pour deux captures homonymes -> les deux
+    `DynamicStep` pointeraient le même (dernier) screenshot : preuve
+    forensique mal associée. Un `capture` en échec (ex. screenshot qui lève,
+    toujours le dernier step puisque l'échec arrête la séquence) n'a produit
+    aucune ref -> `screenshot_ref=None`.
     `ok`/`duration_ms`/`error` : issus tels quels du journal.
     """
+    refs_iter = iter(capture_refs)
     out: list[DynamicStep] = []
     for entry in journal:
         step = entry["step"]
-        verb, arg = next(iter(step.items()))
-        ref = refs_by_label.get(arg) if verb == "capture" and isinstance(arg, str) else None
+        verb = next(iter(step))
+        ref = next(refs_iter, None) if verb == "capture" else None
         out.append(
             DynamicStep(
                 action=json.dumps(step, sort_keys=True, ensure_ascii=False),
@@ -170,13 +177,20 @@ async def capture_scripted(
     `url` la rejetterait à tort alors qu'elle vient déjà d'une source de
     confiance.
     """
-    from camoufox.async_api import AsyncCamoufox
+    # défense en profondeur AVANT tout lancement navigateur : des steps
+    # invalides (verbe hors allowlist, `goto` SSRF, bornes) lèvent ici, sans
+    # payer le coût d'un démarrage Camoufox — et l'exception remonte à `main()`
+    # qui émet quand même un wrapper valide (chemin résilient).
+    validated_steps = validate_steps(steps)  # cf. docstring (SSRF des `goto`)
 
-    validated_steps = validate_steps(steps)  # défense en profondeur (cf. docstring)
+    from camoufox.async_api import AsyncCamoufox
 
     capture = NetworkCapture()
     builder = ResultBuilder()
-    refs_by_label: dict[str, str] = {}
+    # refs des screenshots `capture` empilées DANS L'ORDRE des appels (une par
+    # step `capture`) — association par ordre, pas par label (cf.
+    # journal_to_dynamic_steps).
+    capture_refs: list[str] = []
     shot_idx = 0
     page = None  # affecté dans le `async with` ci-dessous, capturé par le closure
 
@@ -184,7 +198,7 @@ async def capture_scripted(
         nonlocal shot_idx
         png = await page.screenshot(full_page=False)
         ref = builder.add_screenshot(shot_idx, label, png)
-        refs_by_label[label] = ref
+        capture_refs.append(ref)
         shot_idx += 1
 
     dom_html, title, final_url = b"", "", url
@@ -223,19 +237,34 @@ async def capture_scripted(
         static_findings=findings,
         network=capture.network,
         console=capture.console,
-        dynamic_steps=journal_to_dynamic_steps(journal, refs_by_label),
+        dynamic_steps=journal_to_dynamic_steps(journal, capture_refs),
     )
 
 
 def _read_stdin_payload() -> Optional[dict[str, Any]]:
     """Lit un éventuel job scripté JSON `{"url":..., "steps":[...]}` sur
-    stdin. Retourne `None` si stdin est vide/absente/invalide — dans ce cas
-    le chemin 3a (`--url`) prend le relais, STRICTEMENT inchangé (aucun
-    step). La lecture est protégée par `try/except` : `sys.stdin.read()` peut
-    lever dans des contextes qui n'ont jamais rien à lire sur stdin (ex. la
-    capture par défaut de pytest hors `-s`) — ce n'est pas un JSON scripté
-    invalide, juste l'absence de tout stdin exploitable."""
+    stdin. Retourne `None` si stdin est vide/absente/non-scripté — dans ce cas
+    le chemin 3a (`--url`) prend le relais, STRICTEMENT inchangé (aucun step).
+
+    `sys.stdin.isatty()` : en CLI interactive (terminal), `sys.stdin.read()`
+    bloquerait sur EOF ; on saute donc la lecture et on bascule sur le chemin
+    3a argparse. Le chemin de production (broker sans `-i`, stdin fermé) n'est
+    pas un TTY -> lecture normale. La lecture reste protégée par `try/except`
+    (isatty ET read) : certains contextes n'ont aucun stdin exploitable (ex.
+    la capture par défaut de pytest hors `-s`) — ce n'est pas une erreur de
+    payload, juste l'absence de stdin.
+
+    LÈVE `ValueError` (anti double-fault) quand stdin porte CLAIREMENT un job
+    scripté (dict avec les clés `url` ET `steps`) mais avec des TYPES
+    invalides (`url` non-str, `steps` non-list). Garantit ainsi que si cette
+    fonction RETOURNE un payload, `url` est TOUJOURS un str et `steps` une
+    list — le fallback résilient de `main()` (`build_result(url=...)`) ne peut
+    donc plus re-crasher sur un `url` None (double-fault -> zéro octet stdout,
+    interdit par le contrat runner). `main()` traite ce `ValueError` comme un
+    payload scripté invalide et émet quand même un wrapper valide."""
     try:
+        if sys.stdin.isatty():
+            return None
         raw = sys.stdin.read()
     except Exception:
         return None
@@ -248,7 +277,31 @@ def _read_stdin_payload() -> Optional[dict[str, Any]]:
         return None
     if not isinstance(payload, dict) or "url" not in payload or "steps" not in payload:
         return None
+    # Dès ici stdin contient clairement un job scripté : valider les types
+    # (voir docstring — garantie "url toujours str dans le chemin scripté").
+    if not isinstance(payload["url"], str):
+        raise ValueError("scripted payload: 'url' doit être une chaîne")
+    if not isinstance(payload["steps"], list):
+        raise ValueError("scripted payload: 'steps' doit être une liste")
     return payload
+
+
+def _error_wrapper(url: str, text: str) -> tuple[OcularResult, dict[str, bytes]]:
+    """Wrapper `OcularResult` minimal mais VALIDE, émis quand la capture ne
+    peut pas produire de résultat exploitable (page hostile, driver Camoufox
+    mort, payload scripté malformé, steps invalides). Contrat runner : stdout
+    ne doit JAMAIS être vide, sinon broker/launcher.py perd tout résultat.
+    `url` DOIT être un str (garanti par les appelants ; `""` si inconnu)."""
+    return build_result(
+        url=url,
+        screenshots=[],
+        network=[],
+        console=[{"level": "error", "text": text}],
+        dom_html=b"",
+        title="",
+        final_url=url,
+        turnstile_solved=False,
+    )
 
 
 def main() -> None:
@@ -260,8 +313,18 @@ def main() -> None:
     ap.add_argument("--url", required=False, default=None)
     args = ap.parse_args()
 
-    payload = _read_stdin_payload()
+    try:
+        payload = _read_stdin_payload()
+    except ValueError as exc:
+        # stdin porte un job scripté mais malformé (types url/steps invalides).
+        # Résilience : émettre quand même un wrapper valide (jamais zéro octet,
+        # jamais de bascule à tort sur le chemin 3a). `url` inconnu -> "".
+        log.warning("scripted payload invalide err=%s", exc)
+        emit_wrapper(*_error_wrapper("", f"scripted payload invalide: {exc}"))
+        return
+
     if payload is not None:
+        # `url` garanti str, `steps` garanti list par `_read_stdin_payload`.
         url = payload["url"]
         steps = payload["steps"]
         # CRITIQUE (résilience, même contrat que le chemin 3a ci-dessous) :
@@ -273,16 +336,7 @@ def main() -> None:
             result, blobs = asyncio.run(capture_scripted(url, steps))
         except Exception as exc:
             log.warning("url=%s scripted capture failed err=%s", url, type(exc).__name__)
-            result, blobs = build_result(
-                url=url,
-                screenshots=[],
-                network=[],
-                console=[{"level": "error", "text": f"capture failed: {type(exc).__name__}"}],
-                dom_html=b"",
-                title="",
-                final_url=url,
-                turnstile_solved=False,
-            )
+            result, blobs = _error_wrapper(url, f"capture failed: {type(exc).__name__}")
         emit_wrapper(result, blobs)
         return
 
@@ -301,16 +355,7 @@ def main() -> None:
         result, blobs = asyncio.run(capture_url(args.url))
     except Exception as exc:
         log.warning("url=%s capture failed err=%s", args.url, type(exc).__name__)
-        result, blobs = build_result(
-            url=args.url,
-            screenshots=[],
-            network=[],
-            console=[{"level": "error", "text": f"capture failed: {type(exc).__name__}"}],
-            dom_html=b"",
-            title="",
-            final_url=args.url,
-            turnstile_solved=False,
-        )
+        result, blobs = _error_wrapper(args.url, f"capture failed: {type(exc).__name__}")
     emit_wrapper(result, blobs)
 
 
