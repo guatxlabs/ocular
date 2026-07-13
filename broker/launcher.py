@@ -8,6 +8,7 @@ import time
 from bus.queue import Job
 from engine.artifacts import store_blobs
 from ocular_logging import get_logger
+from ocular_settings import artifacts_dir
 
 log = get_logger("broker.launcher")
 
@@ -15,7 +16,7 @@ _IMAGE = "ocular-runner-analysis:latest"
 _SECCOMP = "schemas/seccomp-analysis.json"
 _RECON_IMAGE = "ocular-runner-recon:latest"
 RECON_SECCOMP = "schemas/seccomp-recon.json"
-_ARTIFACTS_DIR = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+_ARTIFACTS_DIR = artifacts_dir()
 
 _ANALYSIS_TIMEOUT = 60
 _CAPTURE_TIMEOUT = 90
@@ -23,12 +24,6 @@ _ANALYSIS_MEMORY = "2g"
 _ANALYSIS_PIDS_LIMIT = "256"
 CAPTURE_MEMORY = "4g"
 CAPTURE_PIDS_LIMIT = "512"
-
-# Alias rétro-compat (noms privés historiques) : gardés au cas où d'autres
-# points internes du repo s'y référeraient encore.
-_RECON_SECCOMP = RECON_SECCOMP
-_CAPTURE_MEMORY = CAPTURE_MEMORY
-_CAPTURE_PIDS_LIMIT = CAPTURE_PIDS_LIMIT
 
 
 def _proxy_env() -> list[str]:
@@ -71,9 +66,6 @@ def base_hardening(name: str, rm: bool = True) -> list[str]:
         "--user", "10001:10001",
     ]
     return flags
-
-
-_base_hardening = base_hardening  # alias rétro-compat
 
 
 def build_docker_args(job: Job) -> list[str]:

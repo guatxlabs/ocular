@@ -1,6 +1,5 @@
 import base64
 import json
-from pathlib import Path
 
 from broker.launcher import _store_blobs, _parse_and_store
 
