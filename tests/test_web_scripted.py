@@ -2,7 +2,7 @@ import fakeredis
 from fastapi.testclient import TestClient
 
 from bus.queue import RedisJobQueue
-from web.app import app, get_queue
+from web.app import _MAX_BODY_BYTES, app, get_queue
 
 
 def _client(monkeypatch):
@@ -91,3 +91,31 @@ def test_submit_analysis_without_steps_unchanged(monkeypatch):
     assert r.status_code == 200
     job = q.dequeue(timeout=1)
     assert job.steps is None
+
+
+# --- FIX2 (audit 3c) : garde de taille de corps (413), anti-OOM avant Pydantic ---
+
+def test_oversized_content_length_rejected_413(monkeypatch):
+    client, q = _client(monkeypatch)
+    # Content-Length forgé au-delà du plafond ; le corps réel reste petit —
+    # la garde rejette sur le seul header, sans jamais lire/désérialiser le
+    # corps (donc pas besoin d'envoyer réellement des dizaines de Mo ici).
+    r = client.post(
+        "/jobs",
+        json={"url": "https://example.com", "profile": "capture", "steps": [{"click": "#a"}]},
+        headers={"content-length": str(_MAX_BODY_BYTES + 1)},
+    )
+    assert r.status_code == 413
+    assert q.dequeue(timeout=1) is None  # jamais désérialisé, jamais enqueue
+
+
+def test_normal_body_unaffected_by_size_guard(monkeypatch):
+    client, q = _client(monkeypatch)
+    r = client.post(
+        "/jobs",
+        json={"url": "https://example.com", "profile": "capture",
+              "steps": [{"click": "#a"}]},
+    )
+    assert r.status_code == 200  # corps légitime, sous le plafond : non affecté
+    job = q.dequeue(timeout=1)
+    assert job.steps[0] == {"click": "#a"}

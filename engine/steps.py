@@ -24,6 +24,17 @@ class StepValidationError(ValueError):
     """Motif de rejet lisible (renvoyé tel quel au client / loggé)."""
 
 
+def _bounded_repr(value, limit=100):
+    """`repr()` borné d'une valeur utilisateur, pour toute interpolation dans
+    un message d'erreur — quel que soit le type de `value` (str, list, dict,
+    exception déjà stringifiée...). `web/app.py` renvoie `str(e)` tel quel en
+    détail 422 : sans cette borne, une valeur géante/non-str (ex. arg `press`
+    non-str, message d'exception SSRF) produirait une réponse 422 de taille
+    arbitraire (amplification). Appliqué systématiquement à toute branche de
+    `_one` qui réfléchit une valeur utilisateur (cf. audit 3c)."""
+    return repr(value)[:limit]
+
+
 def _sel(v):
     if not isinstance(v, str) or not (1 <= len(v) <= MAX_SEL):
         raise StepValidationError(f"sélecteur invalide (str, 1..{MAX_SEL})")
@@ -40,7 +51,9 @@ def _one(step):
         try:
             validate_capture_url(arg)
         except ValueError as e:
-            raise StepValidationError(f"goto SSRF/scheme: {e}")
+            # e vient de engine.ssrf (hors périmètre de ce correctif) : on ne
+            # fait pas confiance à sa longueur, on la borne ici aussi.
+            raise StepValidationError(f"goto SSRF/scheme: {_bounded_repr(str(e))}")
         return {"goto": arg}
     if verb == "fill":
         if not isinstance(arg, dict) or set(arg) != {"sel", "value"}:
@@ -63,8 +76,9 @@ def _one(step):
         raise StepValidationError("wait: ms int ou {selector}")
     if verb == "press":
         if not isinstance(arg, str) or arg not in ALLOWED_PRESS_KEYS:
-            reflected = arg[:64] if isinstance(arg, str) else arg
-            raise StepValidationError(f"press hors allowlist: {reflected!r}")
+            # arg peut être n'importe quel JSON (liste, dict, str géante...) :
+            # borner INCONDITIONNELLEMENT, indépendamment du type (cf. audit 3c).
+            raise StepValidationError(f"press hors allowlist: {_bounded_repr(arg)}")
         return {"press": arg}
     if verb == "capture":
         if not isinstance(arg, str) or not _LABEL_RE.fullmatch(arg):
