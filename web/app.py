@@ -23,6 +23,7 @@ from bus.queue import Job, RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
 from engine.artifacts import ref_to_filename, store_blobs
 from engine.ssrf import validate_capture_url
+from engine.steps import StepValidationError, validate_steps
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
 from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
@@ -98,6 +99,8 @@ def get_cmd_queue() -> SessionCmdQueue:
 def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> JobResponse:
     if req.html and len(req.html.encode("utf-8")) > max_html_bytes():
         raise HTTPException(status_code=422, detail="html trop volumineux")
+    if req.steps is not None and req.profile != "capture":
+        raise HTTPException(status_code=422, detail="steps réservé au profil capture")
     if req.profile == "capture":
         if not req.url:
             raise HTTPException(status_code=422, detail="url requis pour capture")
@@ -107,8 +110,14 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
             raise HTTPException(status_code=400, detail="url interdite")
     if req.profile == "analysis" and not req.html:
         raise HTTPException(status_code=422, detail="html requis pour analysis")
+    steps = None
+    if req.steps is not None:
+        try:
+            steps = validate_steps(req.steps)
+        except StepValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
     job_id = "job-" + uuid.uuid4().hex[:12]
-    queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url))
+    queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url, steps=steps))
     log.info("job submitted job_id=%s profile=%s html_bytes=%d",
               job_id, req.profile, len(req.html or ""))
     return JobResponse(job_id=job_id)
