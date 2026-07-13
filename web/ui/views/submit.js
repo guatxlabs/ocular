@@ -60,6 +60,41 @@ export function renderSubmit(app) {
     el('span.hint', {}, 'capture live via moteur furtif (Camoufox) — Turnstile géré'),
   ]);
 
+  // ---- champ script (profil capture, optionnel) — DSL borné rejoué après le
+  // chargement (fill/click/wait/press/capture/scroll). Aucun JS arbitraire :
+  // la textarea ne porte que du JSON, validé côté client (JSON.parse) puis
+  // revalidé côté serveur (validate_steps) avant exécution dans le conteneur.
+  const scriptTa = el('textarea', {
+    id: 'script', spellcheck: 'false', 'aria-label': 'Script (JSON, optionnel)',
+    placeholder: '[{"click": "#accept"}, {"wait": 500}, {"capture": "après"}]',
+  });
+  const EXAMPLES = [
+    {
+      label: 'Exemple : accepter les cookies',
+      steps: [{ click: '#accept' }, { wait: 500 }, { capture: 'apres-cookies' }],
+    },
+    {
+      label: 'Exemple : remplir un formulaire',
+      steps: [
+        { fill: { sel: 'input[name=email]', value: 'a@b.c' } },
+        { click: 'button[type=submit]' },
+        { wait: 1000 },
+        { capture: 'apres-envoi' },
+      ],
+    },
+  ];
+  const examplesRow = el('div.examples', {},
+    EXAMPLES.map((ex) => el('button.btn-ghost', {
+      type: 'button',
+      onclick: () => { scriptTa.value = JSON.stringify(ex.steps, null, 2); },
+    }, ex.label)));
+  const scriptField = el('div.oc-field.sc-field', { hidden: 'hidden' }, [
+    el('label', { for: 'script' }, 'Script (JSON, optionnel)'),
+    scriptTa,
+    el('span.hint', {}, 'Rejoue une séquence d\'actions (fill/click/wait/press/capture/scroll) après le chargement — DSL borné, aucun JS arbitraire.'),
+    examplesRow,
+  ]);
+
   const btn = el('button.btn-primary', { type: 'submit' }, [iconNode('flask'), 'Analyser HTML']);
   const btnIcon = { analysis: 'flask', capture: 'eye' };
   const btnLabel = { analysis: 'Analyser HTML', capture: 'Analyser URL' };
@@ -86,6 +121,7 @@ export function renderSubmit(app) {
     const isHtml = value === 'analysis';
     htmlField.hidden = !isHtml;
     urlField.hidden = isHtml;
+    scriptField.hidden = isHtml; // le script n'a de sens que pour la capture live
     resetBtn();
     setTimeout(() => (isHtml ? ta : urlInput).focus(), 20);
   }
@@ -109,11 +145,14 @@ export function renderSubmit(app) {
   }
 
   // Messages clairs pour les erreurs serveur du profil capture (garde SSRF & payload).
+  // Le 422 d'un script invalide porte le motif exact de validate_steps (ex.detail,
+  // extrait côté api.js) : on l'affiche tel quel plutôt qu'un message générique.
   function submitErrMsg(ex, prof) {
     if (ex && ex.status === 400 && prof === 'capture') {
       return 'URL interdite : cible non publique (IP exposée / SSRF). Utilise une URL publique.';
     }
     if (ex && ex.status === 422) {
+      if (ex.detail) return 'Requête refusée : ' + ex.detail;
       return prof === 'capture'
         ? 'Requête invalide (URL manquante ou trop longue).'
         : 'HTML manquant ou trop volumineux.';
@@ -154,6 +193,14 @@ export function renderSubmit(app) {
         const raw = urlInput.value.trim();
         if (!raw) { showErr('Renseigne une URL avant de lancer.'); return; }
         payload = { profile: 'capture', url: raw };
+        const rawScript = scriptTa.value.trim();
+        if (rawScript) {
+          let steps;
+          try { steps = JSON.parse(rawScript); }
+          catch (ex) { showErr('Script JSON invalide : ' + ex.message); return; }
+          if (!Array.isArray(steps)) { showErr('Script JSON invalide : une liste de steps est attendue.'); return; }
+          payload.steps = steps;
+        }
         target = raw;
       } else {
         const html = ta.value.trim();
@@ -183,6 +230,7 @@ export function renderSubmit(app) {
     toggle,
     htmlField,
     urlField,
+    scriptField,
     el('div.formactions', {}, [btn]),
   ]);
 
