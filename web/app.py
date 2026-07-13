@@ -331,7 +331,15 @@ async def _ws_pump(websocket: WebSocket, upstream, registry: SessionRegistry, si
         for t in tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # cette coroutine elle-même peut être annulée pendant le nettoyage
+            # (arrêt serveur, déconnexion brutale déjà en cours) : les deux
+            # sous-tâches ont déjà été cancel()-ées ci-dessus, rien de plus à
+            # faire — ne jamais faire fuiter cette annulation plus loin
+            # empêcherait le nettoyage best-effort du websocket appelant.
+            pass
 
 
 @app.websocket("/sessions/{sid}/ws")
@@ -361,14 +369,20 @@ async def session_ws_proxy(
     try:
         async with websockets.connect(upstream_url, subprotocols=["binary"]) as upstream:
             await _ws_pump(websocket, upstream, registry, sid)
+    except asyncio.CancelledError:
+        # annulation de cette tâche pendant le nettoyage (arrêt serveur ou
+        # déconnexion brutale déjà traitée par _ws_pump) : fermeture best-effort
+        # ci-dessous, jamais de détail sensible loggé, ne pas re-propager pour
+        # ne pas casser la fermeture propre du websocket appelant.
+        pass
     except Exception:  # noqa: BLE001 - erreurs réseau/upstream : jamais de détail sensible loggé
         pass
     finally:
         if websocket.client_state != WebSocketState.DISCONNECTED:
             try:
                 await websocket.close()
-            except RuntimeError:
-                pass  # déjà fermé côté ASGI
+            except (RuntimeError, asyncio.CancelledError):
+                pass  # déjà fermé côté ASGI, ou annulation en cours
 
 
 def _saved_conn():
