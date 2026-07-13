@@ -58,6 +58,75 @@ curl http://localhost:8000/jobs/<job_id> \
 Toutes les routes exigent `Authorization: Bearer $OCULAR_TOKEN` ; sans `OCULAR_TOKEN` configuré
 côté serveur, l'API répond `503` (fail-closed), jamais un accès sans auth.
 
+### Tier dynamique scripté (3c)
+
+Le profil `capture` seul ne voit que ce qui se charge **au chargement de la page**. Or beaucoup de
+comportements hostiles ne se déclenchent qu'**après une interaction** : formulaire de phishing
+multi-étapes (identifiants → OTP → redirection), balise de tracking posée uniquement au clic
+(« beacon »), contenu qui ne s'affiche qu'après un `scroll` ou la fermeture d'un consentement. Le
+tier scripté rejoue une **séquence d'actions déclarative** dans le même conteneur `capture`
+(`ocular-runner-recon`, aucune image supplémentaire) pendant que le trafic réseau est capturé, pour
+révéler ces appels post-interaction en un run éphémère et jetable.
+
+**Le DSL.** Une liste de *steps*, chacun un objet à une seule clé parmi les verbes en allowlist
+`goto`, `fill`, `click`, `wait`, `press`, `capture`, `scroll` :
+
+```json
+[
+  {"click": "#accept-cookies"},
+  {"fill": {"sel": "#email", "value": "victime@exemple.tld"}},
+  {"click": "#submit"},
+  {"wait": 1000},
+  {"capture": "apres-soumission"}
+]
+```
+
+`goto` navigue vers une nouvelle URL (revalidée SSRF), `fill` remplit un champ (`{sel, value}`),
+`click`/`wait`(ms ou `{selector}`)/`press` (touche en allowlist) pilotent l'interaction, `scroll`
+déplace la page (`"top"`/`"bottom"`/pixels), `capture` prend un screenshot labellisé. Un `capture`
+final est **ajouté automatiquement** si la séquence ne s'y termine pas déjà, pour toujours obtenir
+un état de fin. Bornes strictes : ≤ 50 steps, sélecteur ≤ 500 caractères, valeur `fill` ≤ 2000,
+`wait` ≤ 30000 ms, `scroll` ≤ 100000 px, label ≤ 64 caractères — tout dépassement ou verbe hors
+allowlist est rejeté avant exécution.
+
+**Garanties de sécurité.**
+
+- **Aucun JS arbitraire, aucun `eval`** : les verbes sont une allowlist stricte validée par
+  `engine.steps.validate_steps` (source unique, importée à la fois par le web et par le runner —
+  pas de seconde implémentation qui pourrait diverger) ; sélecteurs et valeurs passent par l'**API
+  locator** Playwright (`page.locator`, `page.fill`), jamais interpolés dans du code exécuté.
+- **Steps transmis par stdin, jamais par argument ni variable d'environnement** : le broker écrit
+  `{"url": ..., "steps": [...]}` sur l'entrée standard du conteneur (`docker run --rm -i`) — les
+  steps (et donc les valeurs saisies) sont **absents de `docker inspect`** et des arguments de
+  commande visibles par les autres processus de l'hôte.
+- **Valeurs `fill` redigées** : toute valeur de champ est remplacée par `"***"` dans le journal
+  d'actions renvoyé au client et dans les logs — jamais de mot de passe/identifiant en clair
+  stocké ou affiché après l'exécution.
+- **SSRF sur l'URL initiale ET chaque `goto`** : `engine.ssrf.validate_capture_url` s'applique à
+  l'URL de départ comme à toute navigation demandée en cours de séquence (mêmes règles que le
+  profil `capture` — IP privées/loopback/link-local/metadata cloud bloquées en amont).
+- **Même durcissement conteneur que le profil `capture` 3a**, réutilisé tel quel (pas de
+  duplication) : `--cap-drop ALL`, seccomp dédié, `--read-only`, non-root, réseau activé
+  uniquement pour joindre la cible (mêmes avertissements IP/proxy que ci-dessus).
+
+**Utilisation.**
+
+```sh
+cat > steps.json <<'EOF'
+[{"click": "#accept-cookies"}, {"fill": {"sel": "#email", "value": "test@exemple.tld"}},
+ {"click": "#submit"}, {"wait": 1000}, {"capture": "apres-soumission"}]
+EOF
+OCULAR_TOKEN=<jeton-fort> make script URL=https://exemple-suspect.tld STEPS=steps.json
+```
+
+`make script` lit le fichier `STEPS`, construit `{"profile":"capture","url":$URL,"steps":<contenu>}`
+et le soumet à `POST /jobs` — même mécanisme et même jeton `Authorization: Bearer $OCULAR_TOKEN` que
+la section « Via l'API » ci-dessus. Steps invalides (verbe inconnu, borne dépassée, SSRF sur un
+`goto`) → `422` avec le motif de rejet. Le résultat expose le **journal d'actions** (`dynamic_steps` :
+action, succès, durée, erreur éventuelle — valeurs déjà redigées) et la **galerie de captures
+labellisées**, aussi bien depuis l'API que depuis le formulaire scripté de l'UI (`http://localhost:8000`,
+onglet capture — champ « script » au format JSON ci-dessus).
+
 ### Via l'UI
 
 ```sh
