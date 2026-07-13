@@ -1,4 +1,4 @@
-.PHONY: build-runner up down analyze test test-int gc clean
+.PHONY: build-runner up down analyze script test test-int gc clean
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
@@ -11,6 +11,26 @@ analyze: build-runner
 	@if [ -n "$(URL)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='capture', url='$(URL)')))"; \
 	elif [ -n "$(FILE)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='analysis', html=open('$(FILE)').read())))"; \
 	else echo "usage: make analyze FILE=x.html | URL=https://…"; exit 1; fi
+# Tier dynamique scripté (3c) : rejoue une séquence d'actions (fill/click/wait…)
+# après le chargement de la page, pour révéler les appels post-interaction
+# (phishing multi-étapes, beacon au clic). STEPS pointe vers un fichier JSON
+# contenant la liste de steps du DSL (cf. README « Tier dynamique scripté »).
+# Même mécanisme/auth que la route API : POST /jobs, Authorization: Bearer
+# $(OCULAR_TOKEN). La cible ne parle jamais au broker directement (contrairement
+# à `analyze`) — la validation stricte (engine.steps.validate_steps) et le SSRF
+# sur url/goto sont appliqués côté serveur ; réponse 422 si les steps sont
+# invalides.
+# usage: make script URL=https://exemple-suspect.tld STEPS=chemin/vers/steps.json
+#        [OCULAR_API=http://localhost:8000] OCULAR_TOKEN=<jeton-fort>
+script:
+	@if [ -z "$(URL)" ] || [ -z "$(STEPS)" ]; then \
+		echo "usage: make script URL=https://... STEPS=chemin/vers/steps.json"; exit 1; \
+	fi
+	@BODY=$$(python3 -c "import json,sys; print(json.dumps({'profile':'capture','url':sys.argv[1],'steps':json.load(open(sys.argv[2]))}))" "$(URL)" "$(STEPS)") && \
+	curl -sS -X POST "$${OCULAR_API:-http://localhost:8000}/jobs" \
+	  -H "Authorization: Bearer $(OCULAR_TOKEN)" \
+	  -H "Content-Type: application/json" \
+	  -d "$$BODY"
 test:
 	. .venv/bin/activate && pytest -q
 test-int:
