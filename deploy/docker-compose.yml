@@ -21,7 +21,14 @@ services:
     mem_limit: 1g
     cpus: "1.0"
     volumes:
-      - ocular-artifacts:/artifacts:ro   # web LIT les artefacts
+      # rw (pas :ro) : le web ÉCRIT aussi les artefacts de capture de session
+      # interactive (POST /sessions/{id}/capture -> engine.artifacts.store_blobs).
+      # Sûr malgré rootfs read_only=true + rw sur ce seul volume : store_blobs
+      # vérifie que ref == sha256(contenu) avant tout write, donc un web
+      # compromis ne peut poser QUE des blobs sous leur propre nom de hash —
+      # aucun empoisonnement possible du store content-addressé partagé avec
+      # le broker.
+      - ocular-artifacts:/artifacts
       - ocular-saved:/saved              # web LIT/ÉCRIT les analyses sauvegardées
     depends_on: [redis]
     networks:
