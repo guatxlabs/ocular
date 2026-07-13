@@ -1142,6 +1142,28 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .dedup-meta dt{color:var(--mut);font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.04em;align-self:center}
 .dedup-meta dd{margin:0;color:var(--hd);font-weight:600;word-break:break-word}
 
+/* ---- session interactive (T8) : bandeau de risque + scène noVNC ---- */
+/* Le risque est le héros de la vue : bandeau warn pleine largeur, non ignorable. */
+.livewarn{display:flex;gap:12px;align-items:flex-start;margin:0 0 18px;padding:12px 16px;
+  border:1px solid color-mix(in srgb,var(--warn) 42%,transparent);border-left:3px solid var(--warn);
+  border-radius:var(--radius);background:color-mix(in srgb,var(--warn) 12%,var(--card))}
+.livewarn .ic{width:20px;height:20px;color:var(--warn);flex:0 0 auto;margin-top:1px}
+.livewarn-txt{font-size:13px;line-height:1.5;color:var(--fg)}
+.livewarn-txt b{color:var(--warn);font-weight:700;margin-right:2px}
+/* scène : barre d'état/actions + cadre de rendu noir (les pixels du conteneur) */
+.livestage{margin-top:4px}
+.livebar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.livemeta{font-family:var(--font-mono);font-size:12px;color:var(--mut);overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.livestat{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11px;
+  text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.livestat .ic{width:14px;height:14px}
+.livebar-act{display:flex;gap:10px;margin-left:auto}
+.vncframe{background:#000;border:1px solid var(--bd);border-radius:var(--radius);
+  min-height:420px;height:66vh;max-height:760px;overflow:hidden;display:flex}
+.vncframe canvas{margin:auto}
+.captureout{margin-top:14px}
+.captureout .savepanel{margin:0}
+
 /* responsive */
 @media (max-width:560px){
   main#app{padding:18px 14px 48px}
@@ -1149,4 +1171,6 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
   .finding-count{margin-left:0;text-align:left}
   header h1 .brand-sub{display:none}
   .saverow input{flex-basis:100%}
+  .livebar-act{margin-left:0;width:100%}
+  .vncframe{height:52vh;min-height:300px}
 }

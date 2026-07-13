@@ -71,7 +71,8 @@ async def _csp(request, call_next):
     if not request.url.path.startswith(_PROTECTED):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' blob: data:; object-src 'none'; base-uri 'self'"
+            "img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; "
+            "base-uri 'self'"
         )
     return response
 

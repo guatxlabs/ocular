@@ -56,6 +56,36 @@ export async function artifactObjectUrl(id, ref) {
   return URL.createObjectURL(blob);
 }
 
+// ---- sessions interactives (feature « interactive » T8) --------------------
+
+// POST /sessions {url|html} -> {session_id, token}. Le `token` est un capability
+// éphémère à garder EN MÉMOIRE (jamais localStorage) : il authentifie le WebSocket
+// via sous-protocole, pas via l'URL. 400 = url interdite (SSRF), 504 = non prête.
+export async function createSession(body) {
+  const res = await authFetch('/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  return res.json();
+}
+
+// DELETE /sessions/{id} -> {deleted}. Détruit la session côté serveur (arrêt du conteneur).
+export async function deleteSession(id) {
+  const res = await authFetch('/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  return res.json();
+}
+
+// POST /sessions/{id}/capture -> OcularResult (même forme qu'un job, avec job_id).
+// Le résultat est aussi stocké côté serveur -> revisible via GET /jobs/{job_id}.
+export async function captureSession(id) {
+  const res = await authFetch('/sessions/' + encodeURIComponent(id) + '/capture', { method: 'POST' });
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  return res.json();
+}
+
 // ---- analyses sauvegardées (feature « saved ») ----------------------------
 
 // POST /saved {job_id, label?} -> {id, input_hash}. 409 = artefacts expirés côté
