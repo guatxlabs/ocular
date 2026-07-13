@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import base64
 import json
 import os
 import subprocess
 import time
 
 from bus.queue import Job
-from engine.artifacts import ref_to_filename
+from engine.artifacts import store_blobs
 from ocular_logging import get_logger
 
 log = get_logger("broker.launcher")
@@ -40,15 +39,11 @@ def _proxy_env() -> list[str]:
     return out
 
 
-def _store_blobs(blobs: dict, artifacts_dir: str) -> None:
-    os.makedirs(artifacts_dir, exist_ok=True)
-    for ref, b64 in blobs.items():
-        try:
-            fname = ref_to_filename(ref)          # lève ValueError si ref non conforme (anti-traversal)
-        except ValueError:
-            continue
-        with open(os.path.join(artifacts_dir, fname), "wb") as fh:
-            fh.write(base64.b64decode(b64))
+# Alias rétro-compat : le stockage d'artefacts vit désormais dans
+# `engine.artifacts.store_blobs` (module neutre, sans Docker/subprocess),
+# réutilisé tel quel par `web.app` pour la capture de session interactive —
+# aucune duplication de la logique anti-traversal entre broker et web.
+_store_blobs = store_blobs
 
 
 def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
