@@ -2,6 +2,7 @@
 locator Playwright (aucun eval de contenu utilisateur), journalise, déclenche
 les screenshots `capture`. La validation vit dans engine.steps (source
 unique) — ce module ne revalide pas la forme des steps, il les exécute."""
+import asyncio
 import time
 
 from engine.steps import MAX_WAIT_MS, redact_step
@@ -42,20 +43,45 @@ async def _apply(page, step, screenshot_cb):
         raise ValueError(f"verbe non exécutable: {verb}")
 
 
-async def run_steps(page, steps, *, screenshot_cb):
+async def run_steps(page, steps, *, screenshot_cb, deadline: float | None = None):
     """Exécute `steps` (déjà validés par engine.steps) sur `page`.
 
     Retourne le journal `[{index, verb, ok, ms, step, error?}]` — `step` est
     passé par `redact_step` (valeur `fill` jamais en clair). Une erreur sur
     un step est journalisée `ok:false` puis arrête la séquence : le journal
     reflète uniquement les steps réellement tentés.
+
+    `deadline` (optionnel) : instant absolu `time.monotonic()` au-delà duquel
+    le budget wall-clock total de la séquence est épuisé (cf. spec 3c Global
+    Constraint « timeout d'exécution total 120s -> arrêt + résultat partiel »).
+    `None` (défaut) -> comportement STRICTEMENT inchangé (aucun garde). Avec un
+    `deadline` : avant chaque step, si déjà dépassé, journalise une entrée
+    `error:"timeout budget"` et arrête (même sémantique que l'arrêt-sur-erreur
+    existant). De plus CHAQUE step est encadré par `asyncio.wait_for` avec le
+    temps restant, pour qu'un step qui pend (ex. `click` sur un sélecteur
+    absent, actionabilité Playwright ~30s) soit coupé net sans jamais dépasser
+    le budget — journalisé de la même façon.
     """
     journal = []
     for i, step in enumerate(steps):
         verb = next(iter(step))
+        if deadline is not None and time.monotonic() >= deadline:
+            journal.append({
+                "index": i,
+                "verb": verb,
+                "ok": False,
+                "ms": 0,
+                "error": "timeout budget",
+                "step": redact_step(step),
+            })
+            break
         t0 = time.monotonic()
         try:
-            await _apply(page, step, screenshot_cb)
+            if deadline is not None:
+                remaining = max(deadline - t0, 0.0)
+                await asyncio.wait_for(_apply(page, step, screenshot_cb), timeout=remaining)
+            else:
+                await _apply(page, step, screenshot_cb)
             journal.append({
                 "index": i,
                 "verb": verb,
@@ -63,6 +89,19 @@ async def run_steps(page, steps, *, screenshot_cb):
                 "ms": int((time.monotonic() - t0) * 1000),
                 "step": redact_step(step),
             })
+        except asyncio.TimeoutError:
+            # Step coupé par le budget wall-clock (pas une erreur applicative) :
+            # message fixe, jamais dérivé de l'exception -> aucun risque de fuite
+            # d'une valeur `fill` (cf. règle ci-dessous pour les vraies erreurs).
+            journal.append({
+                "index": i,
+                "verb": verb,
+                "ok": False,
+                "ms": int((time.monotonic() - t0) * 1000),
+                "error": "timeout budget",
+                "step": redact_step(step),
+            })
+            break
         except Exception as e:  # noqa: BLE001 — journalise et arrête la séquence
             # Un `fill` en échec peut échoter sa valeur dans le message
             # d'exception → ne jamais mettre `str(e)` pour ce verbe, seul le

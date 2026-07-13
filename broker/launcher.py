@@ -20,6 +20,17 @@ _ARTIFACTS_DIR = artifacts_dir()
 
 _ANALYSIS_TIMEOUT = 60
 _CAPTURE_TIMEOUT = 90
+# Job scripté (3c, `job.steps` non vide) : le runner applique son propre
+# budget wall-clock TOTAL de 120s (`runner_recon/capture.py:SCRIPTED_EXEC_TIMEOUT_S`)
+# et émet un résultat PARTIEL (journal + screenshots déjà pris) avant de
+# rendre la main. Le timeout conteneur ici doit donc être STRICTEMENT
+# supérieur à ce budget (marge de démarrage Camoufox + extraction DOM finale
+# après l'arrêt du budget), sinon le broker `docker kill` le conteneur avant
+# que le runner n'ait eu la chance d'émettre ce résultat partiel — perte
+# totale (aucun stdout) au lieu d'un résultat dégradé mais exploitable.
+# Constante DÉDIÉE, séparée de `_CAPTURE_TIMEOUT` (3a, capture sans steps,
+# strictement inchangé à 90s).
+_SCRIPTED_TIMEOUT = 180
 _ANALYSIS_MEMORY = "2g"
 _ANALYSIS_PIDS_LIMIT = "256"
 CAPTURE_MEMORY = "4g"
@@ -123,7 +134,14 @@ def run_job(job: Job) -> str:
         stdin = scripted_stdin(job)
     else:
         stdin = None
-    timeout = _ANALYSIS_TIMEOUT if job.profile == "analysis" else _CAPTURE_TIMEOUT
+    if job.profile == "analysis":
+        timeout = _ANALYSIS_TIMEOUT
+    elif job.profile == "capture" and job.steps:
+        # Chemin scripté (3c) : cf. docstring de `_SCRIPTED_TIMEOUT`.
+        timeout = _SCRIPTED_TIMEOUT
+    else:
+        # Chemin capture 3a (sans steps) : strictement inchangé.
+        timeout = _CAPTURE_TIMEOUT
     try:
         proc = subprocess.run(
             build_docker_args(job),

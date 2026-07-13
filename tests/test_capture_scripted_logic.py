@@ -20,8 +20,94 @@ import pytest
 
 import runner_recon.capture as cap
 from engine.result import DynamicStep
-from runner_recon.capture import _read_stdin_payload, journal_to_dynamic_steps
+from runner_recon.capture import _read_stdin_payload, _scripted_deadline, journal_to_dynamic_steps
 from runner_recon.steps_exec import run_steps
+
+
+# --- budget wall-clock total (deadline passé à run_steps par capture_scripted) ---
+#
+# Couvre la spec 3c Global Constraint « timeout d'exécution total 120s -> arrêt
+# + résultat partiel ». `_scripted_deadline` est une fonction pure (aucun
+# navigateur requis) extraite de `capture_scripted` précisément pour rester
+# testable ici (capture_scripted importe camoufox, absent de ce venv de test).
+
+
+def test_scripted_exec_timeout_constant_is_120s():
+    assert cap.SCRIPTED_EXEC_TIMEOUT_S == 120
+
+
+def test_scripted_deadline_is_now_plus_budget(monkeypatch):
+    monkeypatch.setattr(cap.time, "monotonic", lambda: 1000.0)
+    assert _scripted_deadline() == 1000.0 + cap.SCRIPTED_EXEC_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_capture_scripted_passes_deadline_to_run_steps(monkeypatch):
+    # Vérifie le câblage réel de capture_scripted (navigateur entièrement
+    # mocké via un faux module `camoufox.async_api`) : `run_steps` doit bien
+    # recevoir un `deadline` ~ now + SCRIPTED_EXEC_TIMEOUT_S, pas None.
+    import sys
+    import types
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://example.com/"
+
+        async def goto(self, url, **k):
+            pass
+
+        async def content(self):
+            return "<html></html>"
+
+        async def title(self):
+            return "t"
+
+        async def screenshot(self, **k):
+            return b"PNG"
+
+        def on(self, event, handler):
+            pass
+
+    class FakeCtx:
+        async def new_page(self):
+            return FakePage()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeAsyncCamoufox:
+        def __init__(self, **k):
+            pass
+
+        async def __aenter__(self):
+            return FakeCtx()
+
+        async def __aexit__(self, *a):
+            return False
+
+    fake_async_api = types.ModuleType("camoufox.async_api")
+    fake_async_api.AsyncCamoufox = FakeAsyncCamoufox
+    fake_camoufox = types.ModuleType("camoufox")
+    fake_camoufox.async_api = fake_async_api
+    monkeypatch.setitem(sys.modules, "camoufox", fake_camoufox)
+    monkeypatch.setitem(sys.modules, "camoufox.async_api", fake_async_api)
+
+    captured = {}
+    real_run_steps = run_steps
+
+    async def spy_run_steps(page, steps, *, screenshot_cb, deadline=None):
+        captured["deadline"] = deadline
+        return await real_run_steps(page, steps, screenshot_cb=screenshot_cb, deadline=deadline)
+
+    monkeypatch.setattr(cap, "run_steps", spy_run_steps)
+    monkeypatch.setattr(cap.time, "monotonic", lambda: 5000.0)
+
+    await cap.capture_scripted("https://example.com/", [])
+
+    assert captured["deadline"] == 5000.0 + cap.SCRIPTED_EXEC_TIMEOUT_S
 
 
 def test_journal_to_dynamic_steps_maps_ok_duration_error_and_screenshot_ref():
