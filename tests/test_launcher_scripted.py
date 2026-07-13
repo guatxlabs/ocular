@@ -78,7 +78,13 @@ def test_run_job_capture_scripted_passes_stdin_and_no_url_arg_leak(monkeypatch, 
     payload = json.loads(calls["input"])
     assert payload == {"url": "https://example.com",
                         "steps": [{"click": "#a"}, {"capture": "final"}]}
-    assert calls["timeout"] == 90
+    # Budget wall-clock du runner (3c) = 120s -> le timeout conteneur pour un
+    # job scripté doit être STRICTEMENT supérieur à 120s (marge de démarrage
+    # Camoufox), pas 90s (hérité de 3a, insuffisant pour laisser le runner
+    # émettre son résultat partiel avant `docker kill`).
+    assert calls["timeout"] == launcher_mod._SCRIPTED_TIMEOUT
+    assert calls["timeout"] >= 120
+    assert calls["timeout"] != 90
     assert "-i" in calls["args"]
 
 
@@ -105,6 +111,57 @@ def test_run_job_capture_without_steps_still_no_stdin(monkeypatch, tmp_path):
     assert calls["input"] is None
 
 
+def test_run_job_capture_without_steps_keeps_90s_timeout(monkeypatch, tmp_path):
+    # Le chemin capture 3a (sans steps) garde STRICTEMENT le timeout hérité :
+    # cette régression ne doit pas se propager au-delà du chemin scripté.
+    import broker.launcher as launcher_mod
+
+    calls = {}
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(args, input=None, capture_output=None, timeout=None):
+        calls["timeout"] = timeout
+        wrapper = json.dumps({"result": {"ok": True}, "blobs": {}})
+        return _FakeCompletedProcess(returncode=0, stdout=wrapper.encode())
+
+    monkeypatch.setattr(launcher_mod, "_ARTIFACTS_DIR", str(tmp_path))
+    monkeypatch.setattr(launcher_mod.subprocess, "run", fake_run)
+
+    launcher_mod.run_job(Job(job_id="j5b", profile="capture", url="https://example.com"))
+    assert calls["timeout"] == 90
+    assert calls["timeout"] == launcher_mod._CAPTURE_TIMEOUT
+
+
+def test_run_job_capture_with_empty_steps_list_keeps_90s_timeout(monkeypatch, tmp_path):
+    import broker.launcher as launcher_mod
+
+    calls = {}
+
+    class _FakeCompletedProcess:
+        def __init__(self, returncode=0, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(args, input=None, capture_output=None, timeout=None):
+        calls["timeout"] = timeout
+        wrapper = json.dumps({"result": {"ok": True}, "blobs": {}})
+        return _FakeCompletedProcess(returncode=0, stdout=wrapper.encode())
+
+    monkeypatch.setattr(launcher_mod, "_ARTIFACTS_DIR", str(tmp_path))
+    monkeypatch.setattr(launcher_mod.subprocess, "run", fake_run)
+
+    launcher_mod.run_job(
+        Job(job_id="j5c", profile="capture", url="https://example.com", steps=[])
+    )
+    assert calls["timeout"] == 90
+
+
 def test_run_job_analysis_stdin_unchanged(monkeypatch, tmp_path):
     import broker.launcher as launcher_mod
 
@@ -118,6 +175,7 @@ def test_run_job_analysis_stdin_unchanged(monkeypatch, tmp_path):
 
     def fake_run(args, input=None, capture_output=None, timeout=None):
         calls["input"] = input
+        calls["timeout"] = timeout
         wrapper = json.dumps({"result": {"ok": True}, "blobs": {}})
         return _FakeCompletedProcess(returncode=0, stdout=wrapper.encode())
 
@@ -126,3 +184,4 @@ def test_run_job_analysis_stdin_unchanged(monkeypatch, tmp_path):
 
     launcher_mod.run_job(Job(job_id="j6", profile="analysis", html="<html></html>"))
     assert calls["input"] == b"<html></html>"
+    assert calls["timeout"] == launcher_mod._ANALYSIS_TIMEOUT == 60

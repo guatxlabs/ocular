@@ -4,7 +4,16 @@ Vérifie : dispatch de chaque verbe vers l'API locator, journal redigé (jamais
 la valeur `fill` en clair), arrêt de la séquence à la première erreur, et que
 le seul `evaluate` est le JS de scroll constant (jamais de contenu utilisateur
 interpolé en dehors d'un int contrôlé).
+
+Couvre aussi le budget wall-clock total (`deadline`, cf. spec 3c Global
+Constraint « timeout d'exécution total 120s -> arrêt + résultat partiel ») :
+sans `deadline`, comportement strictement inchangé ; avec `deadline`, un step
+qui pend est coupé net (`asyncio.wait_for`) et journalisé, et un budget déjà
+dépassé avant le premier step arrête la séquence sans rien exécuter.
 """
+import asyncio
+import time
+
 import pytest
 
 from runner_recon.steps_exec import run_steps
@@ -201,3 +210,82 @@ async def test_run_steps_goto_uses_page_goto():
     journal = await run_steps(page, [{"goto": "https://example.com/"}], screenshot_cb=cb)
     assert ("goto", "https://example.com/") in page.calls
     assert journal[0]["ok"] is True
+
+
+# --- budget wall-clock total (`deadline`) ---
+
+
+@pytest.mark.asyncio
+async def test_run_steps_without_deadline_behaviour_unchanged():
+    # `deadline` par défaut à None -> aucun garde ajouté, comportement identique
+    # à avant l'introduction du budget (steps normaux tous exécutés).
+    page = FakePage()
+
+    async def cb(label):
+        pass
+
+    steps = [{"click": "#a"}, {"click": "#b"}]
+    journal = await run_steps(page, steps, screenshot_cb=cb)
+    assert [e["ok"] for e in journal] == [True, True]
+    assert ("click", "#a") in page.calls and ("click", "#b") in page.calls
+
+
+@pytest.mark.asyncio
+async def test_run_steps_deadline_already_passed_logs_timeout_and_stops():
+    page = FakePage()
+
+    async def cb(label):
+        pass
+
+    steps = [{"click": "#a"}, {"click": "#b"}]
+    deadline = time.monotonic() - 1  # déjà dépassé avant le premier step
+    journal = await run_steps(page, steps, screenshot_cb=cb, deadline=deadline)
+
+    assert len(journal) == 1
+    assert journal[0]["ok"] is False
+    assert journal[0]["error"] == "timeout budget"
+    assert journal[0]["index"] == 0
+    assert journal[0]["verb"] == "click"
+    # aucun step n'a réellement été tenté sur la page
+    assert page.calls == []
+
+
+@pytest.mark.asyncio
+async def test_run_steps_pending_step_cut_by_deadline_and_logged_timeout():
+    class Pending(FakePage):
+        async def click(self, sel, **k):
+            # simule un step qui pend (ex. sélecteur absent -> actionabilité
+            # Playwright qui attend ~30s) : doit être coupé net par le budget.
+            await asyncio.sleep(30)
+            self.calls.append(("click", sel))  # jamais atteint si coupé
+
+    page = Pending()
+
+    async def cb(label):
+        pass
+
+    t0 = time.monotonic()
+    deadline = t0 + 0.1  # budget restant très court
+    journal = await run_steps(
+        page, [{"click": "#missing"}], screenshot_cb=cb, deadline=deadline
+    )
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 5  # coupé net, n'attend jamais les 30s du step qui pend
+    assert len(journal) == 1
+    assert journal[0]["ok"] is False
+    assert journal[0]["error"] == "timeout budget"
+    assert page.calls == []  # le `click` n'a jamais complété
+
+
+@pytest.mark.asyncio
+async def test_run_steps_deadline_not_reached_executes_normally():
+    page = FakePage()
+
+    async def cb(label):
+        pass
+
+    steps = [{"click": "#a"}, {"wait": 10}]
+    deadline = time.monotonic() + 30  # large marge, jamais atteint
+    journal = await run_steps(page, steps, screenshot_cb=cb, deadline=deadline)
+    assert [e["ok"] for e in journal] == [True, True]

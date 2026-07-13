@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from typing import Any, Optional
 
 from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo
@@ -18,6 +19,22 @@ from runner_recon.steps_exec import run_steps
 # CRITIQUE : comme runner_analysis/render.py — stdout = wrapper JSON pur consommé
 # par broker/launcher.py. Tous les logs partent sur stderr.
 log = get_logger("runner-recon", stream=sys.stderr)
+
+# Budget wall-clock TOTAL de l'exécution des steps scriptés (3c Global
+# Constraint : « timeout d'exécution total 120s -> arrêt + résultat partiel »).
+# Séparé du timeout conteneur broker (`broker/launcher.py:_SCRIPTED_TIMEOUT`,
+# 180s) : ce budget est appliqué PAR le runner (via `run_steps(deadline=...)`)
+# pour émettre un résultat partiel AVANT que le broker ne `docker kill` le
+# conteneur — la marge de 60s couvre le démarrage Camoufox + l'extraction DOM
+# finale après l'arrêt du budget.
+SCRIPTED_EXEC_TIMEOUT_S = 120
+
+
+def _scripted_deadline() -> float:
+    """Instant absolu `time.monotonic()` au-delà duquel le budget wall-clock
+    total de la séquence de steps est épuisé. Fonction pure, isolée pour être
+    testable sans navigateur (cf. tests/test_capture_scripted_logic.py)."""
+    return time.monotonic() + SCRIPTED_EXEC_TIMEOUT_S
 
 
 def _analyze(dom_html: bytes) -> list:
@@ -182,6 +199,11 @@ async def capture_scripted(
     # payer le coût d'un démarrage Camoufox — et l'exception remonte à `main()`
     # qui émet quand même un wrapper valide (chemin résilient).
     validated_steps = validate_steps(steps)  # cf. docstring (SSRF des `goto`)
+    # Budget wall-clock TOTAL démarré ICI (avant le lancement Camoufox, qui a
+    # lui-même un coût non négligeable) -> `run_steps` reçoit un `deadline`
+    # absolu et coupe la séquence net (résultat partiel) avant que le broker
+    # ne tue le conteneur (cf. SCRIPTED_EXEC_TIMEOUT_S ci-dessus).
+    deadline = _scripted_deadline()
 
     from camoufox.async_api import AsyncCamoufox
 
@@ -214,7 +236,17 @@ async def capture_scripted(
         except Exception as exc:
             capture.console.append({"level": "error", "text": f"goto: {type(exc).__name__}"})
 
-        journal = await run_steps(page, validated_steps, screenshot_cb=screenshot_cb)
+        journal = await run_steps(
+            page, validated_steps, screenshot_cb=screenshot_cb, deadline=deadline
+        )
+        if journal and journal[-1].get("error") == "timeout budget":
+            # Note console (pas une exception) : le résultat partiel (journal +
+            # screenshots déjà pris) est quand même émis ci-dessous — jamais de
+            # stdout vide sur dépassement de budget.
+            capture.console.append({
+                "level": "warning",
+                "text": f"scripted execution: budget de {SCRIPTED_EXEC_TIMEOUT_S}s atteint, steps restants abandonnés",
+            })
 
         try:
             dom_html = (await page.content()).encode()
