@@ -78,6 +78,41 @@ async def _csp(request, call_next):
     return response
 
 
+# Plafond de taille de corps de requête (audit 3c, FIX2 — garde anti-OOM).
+# Les endpoints POST (/jobs, /sessions, /saved) acceptent du JSON dont la
+# taille légitime est bornée par `max_html_bytes()` (contenu `html`, déjà
+# vérifié explicitement dans les routes ci-dessous) ; on ajoute une marge de
+# 2 Mo pour couvrir l'enveloppe JSON (échappement des guillemets/retours à
+# la ligne dans `html`, champ `steps`, autres clés). Sans cette garde, un
+# appelant authentifié pourrait poster un corps `steps` de plusieurs
+# dizaines de Mo : Pydantic désérialiserait la totalité en mémoire AVANT que
+# `validate_steps` (qui borne à MAX_STEPS) ne s'exécute — OOM possible côté
+# conteneur web. Ce middleware rejette en 413 sur la seule base du header
+# `Content-Length`, sans lire le corps, donc avant toute désérialisation.
+# Limite connue : un corps envoyé en `Transfer-Encoding: chunked` (donc sans
+# `Content-Length`) n'est PAS couvert par cette garde — un plafond réseau/
+# proxy en amont (nginx/ingress `client_max_body_size` ou équivalent) reste
+# nécessaire pour une couverture complète ; hors scope ici.
+_MAX_BODY_BYTES = max_html_bytes() + 2_000_000
+
+
+@app.middleware("http")
+async def _body_size_guard(request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > _MAX_BODY_BYTES:
+            log.warning(
+                "body rejected path=%s content_length=%d limit=%d",
+                request.url.path, declared, _MAX_BODY_BYTES,
+            )
+            return JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413)
+    return await call_next(request)
+
+
 @lru_cache(maxsize=1)
 def _redis_client():
     return redis.Redis.from_url(redis_url())

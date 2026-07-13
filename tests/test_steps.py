@@ -136,3 +136,15 @@ def test_goto_url_too_long_rejected():
     with pytest.raises(StepValidationError) as exc:
         validate_steps([{"goto": giant}])
     assert len(str(exc.value)) < 200  # url géante rejetée avant réflexion non bornée
+
+
+def test_press_giant_non_string_error_bounded():
+    with pytest.raises(StepValidationError) as exc:
+        validate_steps([{"press": ["A" * 200000]}])
+    assert len(str(exc.value)) < 200  # arg non-str géant : réflexion bornée, pas de 422 ~200KB
+
+
+# --- Minor 3: invariant liste vide (dont dépend le broker) ---
+
+def test_validate_steps_empty_list_gets_final_capture():
+    assert validate_steps([]) == [{"capture": "final"}]
