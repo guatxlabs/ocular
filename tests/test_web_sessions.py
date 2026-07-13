@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 
 import fakeredis
@@ -183,11 +184,12 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
         "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
         token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
-    ref = "sha256:" + "e" * 64
+    data = b"PNGDATA"
+    ref = "sha256:" + hashlib.sha256(data).hexdigest()  # ref cohérent : store_blobs vérifie l'intégrité
     wrapper = {
         "result": {"job_id": "", "profile": "capture", "target": "https://example.com",
                    "timestamp": "now", "schema_version": "1.0"},
-        "blobs": {ref: base64.b64encode(b"PNGDATA").decode(),
+        "blobs": {ref: base64.b64encode(data).decode(),
                   "../evil": base64.b64encode(b"x").decode()},
     }
     calls = []
@@ -208,8 +210,9 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     assert body["target"] == "https://example.com"
 
     # artefact stocké de façon sûre (anti-traversal : "../evil" ignoré)
-    assert (tmp_path / ("sha256_" + "e" * 64)).read_bytes() == b"PNGDATA"
-    assert list(tmp_path.iterdir()) == [tmp_path / ("sha256_" + "e" * 64)]
+    fname = "sha256_" + hashlib.sha256(data).hexdigest()
+    assert (tmp_path / fname).read_bytes() == data
+    assert list(tmp_path.iterdir()) == [tmp_path / fname]
 
     # résultat léger retrouvable via GET /jobs/{id} comme un job normal
     assert body["job_id"]
