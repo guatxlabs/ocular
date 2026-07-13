@@ -90,6 +90,46 @@ async def test_run_steps_stops_on_error():
 
 
 @pytest.mark.asyncio
+async def test_run_steps_fill_error_never_leaks_value():
+    # Un `page.fill` qui échote la valeur secrète dans son message d'exception
+    # ne doit JAMAIS faire fuiter cette valeur — ni dans `step` (redigé) ni
+    # dans `error` (type d'exception seul pour un fill en échec).
+    secret = "hunter2-super-secret"
+
+    class Leaky(FakePage):
+        async def fill(self, sel, val, **k):
+            raise RuntimeError(f"echec de saisie de {val}")
+
+    page = Leaky()
+
+    async def cb(label):
+        pass
+
+    journal = await run_steps(
+        page, [{"fill": {"sel": "i", "value": secret}}], screenshot_cb=cb
+    )
+    assert journal[0]["ok"] is False
+    assert journal[0]["error"] == "RuntimeError"
+    assert secret not in str(journal[0])
+
+
+@pytest.mark.asyncio
+async def test_run_steps_unknown_verb_logged_not_silently_ok():
+    # Défense en profondeur : un verbe sans branche d'exécution (ex. ajouté à
+    # l'allowlist de engine.steps mais pas ici) échoue explicitement, journalisé
+    # ok:false, plutôt que de réussir silencieusement.
+    page = FakePage()
+
+    async def cb(label):
+        pass
+
+    journal = await run_steps(page, [{"newverb": "x"}], screenshot_cb=cb)
+    assert journal[0]["ok"] is False
+    assert "newverb" in journal[0]["error"]
+    assert page.calls == []
+
+
+@pytest.mark.asyncio
 async def test_run_steps_error_message_truncated_to_200():
     class Boom(FakePage):
         async def click(self, sel, **k):
@@ -121,20 +161,22 @@ async def test_run_steps_scroll_top_bottom_and_px():
 
 
 @pytest.mark.asyncio
-async def test_run_steps_scroll_px_is_int_never_a_user_string():
-    # le seul `evaluate` de contenu variable doit interpoler un int contrôlé,
-    # jamais une chaîne — la valeur ci-dessous vient d'un step déjà validé par
-    # engine.steps (int borné), donc int(arg) est un no-op de défense en
-    # profondeur, pas une conversion de texte utilisateur.
+async def test_run_steps_scroll_injection_never_reaches_evaluate():
+    # Défense en profondeur de l'exécuteur : un `scroll` malveillant qui
+    # aurait contourné validate_steps (str d'injection au lieu d'un int)
+    # doit être journalisé ok:false SANS jamais atteindre page.evaluate avec
+    # du JS d'attaque — `int(arg)` lève ValueError AVANT l'appel.
     page = FakePage()
 
     async def cb(label):
         pass
 
-    await run_steps(page, [{"scroll": 42}], screenshot_cb=cb)
-    js = page.calls[0][1]
-    assert js == "window.scrollTo(0, 42)"
-    assert isinstance(42, int)
+    journal = await run_steps(page, [{"scroll": "1);alert(1)"}], screenshot_cb=cb)
+    assert journal[0]["ok"] is False
+    # aucun evaluate n'a été émis (l'int() échoue avant l'appel)
+    assert not [c for c in page.calls if c[0] == "eval"]
+    # et surtout jamais de JS contenant l'injection
+    assert not [c for c in page.calls if c[0] == "eval" and "alert" in c[1]]
 
 
 @pytest.mark.asyncio

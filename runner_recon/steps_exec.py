@@ -4,7 +4,7 @@ les screenshots `capture`. La validation vit dans engine.steps (source
 unique) — ce module ne revalide pas la forme des steps, il les exécute."""
 import time
 
-from engine.steps import redact_step
+from engine.steps import MAX_WAIT_MS, redact_step
 
 SCROLL_JS_TOP = "window.scrollTo(0, 0)"
 SCROLL_JS_BOTTOM = "window.scrollTo(0, document.body.scrollHeight)"
@@ -22,7 +22,7 @@ async def _apply(page, step, screenshot_cb):
         if isinstance(arg, int):
             await page.wait_for_timeout(arg)
         else:
-            await page.wait_for_selector(arg["selector"], timeout=30000)
+            await page.wait_for_selector(arg["selector"], timeout=MAX_WAIT_MS)
     elif verb == "press":
         await page.keyboard.press(arg)
     elif verb == "capture":
@@ -35,7 +35,11 @@ async def _apply(page, step, screenshot_cb):
         else:
             # `arg` est un int déjà borné par engine.steps.validate_steps
             # (0..MAX_SCROLL_PX) ; jamais une chaîne utilisateur interpolée.
+            # `int(arg)` est une défense en profondeur : si un `arg` non-int
+            # arrivait (validate_steps contourné), il lève AVANT tout evaluate.
             await page.evaluate(f"window.scrollTo(0, {int(arg)})")
+    else:
+        raise ValueError(f"verbe non exécutable: {verb}")
 
 
 async def run_steps(page, steps, *, screenshot_cb):
@@ -60,12 +64,16 @@ async def run_steps(page, steps, *, screenshot_cb):
                 "step": redact_step(step),
             })
         except Exception as e:  # noqa: BLE001 — journalise et arrête la séquence
+            # Un `fill` en échec peut échoter sa valeur dans le message
+            # d'exception → ne jamais mettre `str(e)` pour ce verbe, seul le
+            # type d'exception (jamais de contenu utilisateur).
+            error = type(e).__name__ if verb == "fill" else str(e)[:200]
             journal.append({
                 "index": i,
                 "verb": verb,
                 "ok": False,
                 "ms": int((time.monotonic() - t0) * 1000),
-                "error": str(e)[:200],
+                "error": error,
                 "step": redact_step(step),
             })
             break
