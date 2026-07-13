@@ -4,10 +4,14 @@ navigateur requis, comme test_capture_logic.py pour `build_result`.
 Couvre :
   - `journal_to_dynamic_steps` : traduction du journal `run_steps` en
     `list[DynamicStep]` (schéma existant, pas de nouveau champ `actions`) —
-    ok/duration_ms/error portés, screenshot_ref uniquement sur un `capture`,
-    et surtout la valeur `fill` jamais en clair dans le résultat émis.
+    ok/duration_ms/error portés, screenshot_ref des `capture` associé PAR
+    ORDRE (pas par label : deux captures de même label doivent avoir des refs
+    distincts), et surtout la valeur `fill` jamais en clair.
   - le dispatch stdin de `main()` : JSON scripté non vide -> `capture_scripted`
-    (mocké) ; stdin vide/absent -> chemin 3a (`--url`) strictement inchangé.
+    (mocké) ; stdin vide/absent -> chemin 3a (`--url`) strictement inchangé ;
+    payload scripté malformé (url/steps mauvais type) ou steps invalides
+    (allowlist/SSRF) -> wrapper OcularResult VALIDE quand même (jamais zéro
+    octet stdout — anti double-fault).
 """
 import io
 import json
@@ -40,9 +44,10 @@ def test_journal_to_dynamic_steps_maps_ok_duration_error_and_screenshot_ref():
         },
         {"index": 3, "verb": "capture", "ok": True, "ms": 2, "step": {"capture": "apres"}},
     ]
-    refs_by_label = {"apres": "sha256:deadbeef"}
+    # un seul step `capture` -> une seule ref, associée par ORDRE
+    capture_refs = ["sha256:deadbeef"]
 
-    out = journal_to_dynamic_steps(journal, refs_by_label)
+    out = journal_to_dynamic_steps(journal, capture_refs)
 
     assert len(out) == 4
     assert all(isinstance(d, DynamicStep) for d in out)
@@ -69,8 +74,30 @@ def test_journal_to_dynamic_steps_maps_ok_duration_error_and_screenshot_ref():
 
 def test_journal_to_dynamic_steps_capture_without_matching_ref_is_none():
     journal = [{"index": 0, "verb": "capture", "ok": True, "ms": 1, "step": {"capture": "x"}}]
-    out = journal_to_dynamic_steps(journal, {})  # aucun ref enregistré pour "x"
+    out = journal_to_dynamic_steps(journal, [])  # aucune ref produite (capture échouée)
     assert out[0].screenshot_ref is None
+
+
+def test_journal_to_dynamic_steps_duplicate_labels_get_distinct_refs():
+    # Deux `capture` de MÊME label ne doivent PAS partager le screenshot_ref :
+    # l'association se fait par ORDRE (Nième capture <-> Nième ref), pas par
+    # label (un dict keyed par label écraserait la 1re ref -> preuve forensique
+    # mal associée).
+    journal = [
+        {"index": 0, "verb": "capture", "ok": True, "ms": 1, "step": {"capture": "x"}},
+        {"index": 1, "verb": "click", "ok": True, "ms": 2, "step": {"click": "#a"}},
+        {"index": 2, "verb": "capture", "ok": True, "ms": 1, "step": {"capture": "x"}},
+    ]
+    capture_refs = ["sha256:first", "sha256:second"]
+    out = journal_to_dynamic_steps(journal, capture_refs)
+
+    captures = [d for d in out if d.action == '{"capture": "x"}']
+    assert len(captures) == 2
+    assert captures[0].screenshot_ref == "sha256:first"
+    assert captures[1].screenshot_ref == "sha256:second"
+    assert captures[0].screenshot_ref != captures[1].screenshot_ref
+    # le `click` intercalé ne consomme pas de ref
+    assert out[1].screenshot_ref is None
 
 
 @pytest.mark.asyncio
@@ -94,13 +121,13 @@ async def test_journal_to_dynamic_steps_end_to_end_with_run_steps():
             return b"PNG"
 
     page = FakePage()
-    refs_by_label = {}
+    capture_refs = []
     shot_idx = 0
 
     async def cb(label):
         nonlocal shot_idx
         png = await page.screenshot()
-        refs_by_label[label] = f"sha256:{label}-{len(png)}"
+        capture_refs.append(f"sha256:{label}-{shot_idx}-{len(png)}")
         shot_idx += 1
 
     steps = [
@@ -109,10 +136,10 @@ async def test_journal_to_dynamic_steps_end_to_end_with_run_steps():
         {"capture": "apres"},
     ]
     journal = await run_steps(page, steps, screenshot_cb=cb)
-    out = journal_to_dynamic_steps(journal, refs_by_label)
+    out = journal_to_dynamic_steps(journal, capture_refs)
 
     assert [d.ok for d in out] == [True, True, True]
-    assert out[-1].screenshot_ref == refs_by_label["apres"]
+    assert out[-1].screenshot_ref == capture_refs[0]
     # la valeur `fill` ne fuit jamais dans les DynamicStep produits
     assert "hunter2" not in " ".join(d.action for d in out)
 
@@ -147,6 +174,46 @@ def test_read_stdin_payload_read_raising_returns_none(monkeypatch):
 
     monkeypatch.setattr(cap.sys, "stdin", Boom())
     assert _read_stdin_payload() is None
+
+
+def test_read_stdin_payload_isatty_returns_none(monkeypatch):
+    # Terminal interactif : ne PAS bloquer sur `sys.stdin.read()` (pend sur EOF).
+    # Même s'il y aurait du contenu lisible, un TTY -> None -> chemin 3a argparse.
+    class Tty(io.StringIO):
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(
+        cap.sys, "stdin", Tty(json.dumps({"url": "https://x", "steps": []}))
+    )
+    assert _read_stdin_payload() is None
+
+
+def test_read_stdin_payload_null_url_raises(monkeypatch):
+    # Payload clairement scripté (clés url+steps) mais `url` du mauvais type :
+    # DOIT lever (traité comme scripté invalide), pas retourner un dict avec
+    # url=None qui ferait re-crasher le fallback résilient (double-fault).
+    monkeypatch.setattr(
+        cap.sys, "stdin", io.StringIO(json.dumps({"url": None, "steps": []}))
+    )
+    with pytest.raises(ValueError):
+        _read_stdin_payload()
+
+
+def test_read_stdin_payload_int_url_raises(monkeypatch):
+    monkeypatch.setattr(
+        cap.sys, "stdin", io.StringIO(json.dumps({"url": 123, "steps": []}))
+    )
+    with pytest.raises(ValueError):
+        _read_stdin_payload()
+
+
+def test_read_stdin_payload_non_list_steps_raises(monkeypatch):
+    monkeypatch.setattr(
+        cap.sys, "stdin", io.StringIO(json.dumps({"url": "https://x", "steps": "nope"}))
+    )
+    with pytest.raises(ValueError):
+        _read_stdin_payload()
 
 
 def test_main_dispatches_to_capture_scripted_when_stdin_has_job(monkeypatch, capsys):
@@ -232,3 +299,82 @@ def test_main_empty_stdin_falls_back_to_3a_url_path_unchanged(monkeypatch, capsy
     out = capsys.readouterr().out
     d = json.loads(out)
     assert d["result"]["target"] == "https://example.com"
+
+
+# --- anti double-fault : payload scripté malformé -> wrapper valide, jamais 0 octet ---
+
+
+@pytest.mark.parametrize("bad_url", [None, 123, ["x"], {"a": 1}])
+def test_main_scripted_malformed_url_emits_valid_wrapper(monkeypatch, capsys, bad_url):
+    # Régression : `{"url": null/123/..., "steps": []}` faisait crasher le
+    # fallback résilient (`url_input_hash(None)` -> AttributeError) => zéro
+    # octet stdout, le broker perdait tout résultat. Doit émettre un wrapper
+    # OcularResult VALIDE sur stdout.
+    monkeypatch.setattr(
+        cap.sys, "stdin", io.StringIO(json.dumps({"url": bad_url, "steps": []}))
+    )
+    monkeypatch.setattr("sys.argv", ["capture"])
+
+    cap.main()
+
+    out = capsys.readouterr().out
+    assert out.strip(), "stdout ne doit JAMAIS être vide (contrat runner)"
+    d = json.loads(out)
+    assert d["result"]["profile"] == "capture"
+    assert d["result"]["schema_version"] == "1.0"
+
+
+def test_main_scripted_non_list_steps_emits_valid_wrapper(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cap.sys, "stdin", io.StringIO(json.dumps({"url": "https://x/", "steps": "nope"}))
+    )
+    monkeypatch.setattr("sys.argv", ["capture"])
+
+    cap.main()
+
+    out = capsys.readouterr().out
+    assert out.strip()
+    d = json.loads(out)
+    assert d["result"]["profile"] == "capture"
+
+
+def test_main_scripted_invalid_step_emits_valid_wrapper(monkeypatch, capsys):
+    # Défense en profondeur : un verbe hors allowlist doit être capturé par
+    # `capture_scripted` (via validate_steps) et produire un wrapper valide,
+    # jamais un crash. (camoufox n'est pas installé dans le venv de test :
+    # validate_steps DOIT donc s'exécuter AVANT tout import/lancement du
+    # navigateur pour que ce chemin soit atteint sans navigateur.)
+    monkeypatch.setattr(
+        cap.sys, "stdin",
+        io.StringIO(json.dumps({"url": "https://example.com/", "steps": [{"evil": "x"}]})),
+    )
+    monkeypatch.setattr("sys.argv", ["capture"])
+
+    cap.main()
+
+    out = capsys.readouterr().out
+    assert out.strip()
+    d = json.loads(out)
+    assert d["result"]["profile"] == "capture"
+    assert d["result"]["target"] == "https://example.com/"
+    assert any("capture failed" in c["text"] for c in d["result"]["console"])
+
+
+def test_main_scripted_ssrf_goto_emits_valid_wrapper(monkeypatch, capsys):
+    # Défense en profondeur SSRF : un `goto` interne (validate_steps le rejette)
+    # ne doit pas crasher le runner — wrapper valide émis.
+    monkeypatch.setattr(
+        cap.sys, "stdin",
+        io.StringIO(json.dumps(
+            {"url": "https://example.com/", "steps": [{"goto": "http://127.0.0.1/"}]}
+        )),
+    )
+    monkeypatch.setattr("sys.argv", ["capture"])
+
+    cap.main()
+
+    out = capsys.readouterr().out
+    assert out.strip()
+    d = json.loads(out)
+    assert d["result"]["profile"] == "capture"
+    assert d["result"]["target"] == "https://example.com/"
