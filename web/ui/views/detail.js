@@ -8,9 +8,10 @@
 import { el, iconNode, esc } from '../core.js';
 import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
-  saveAnalysis, Unauthorized,
+  saveAnalysis, getSavedMeta, setAnalystVerdict, Unauthorized,
 } from '../api.js';
 import { buildFilterBar } from '../filter.js';
+import { fmtIso } from './saved.js';
 
 // seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau
 // réseau (petit résultat -> pas de bruit inutile).
@@ -28,6 +29,7 @@ export function renderDetail(app, id) {
     back: { href: '#/jobs', label: 'Jobs' },
     poll: true,
     saveable: true,
+    getMeta: null, // pas encore sauvegardée -> pas de provenance/verdict analyste
   });
 }
 
@@ -38,6 +40,9 @@ export function renderSavedDetail(app, sid) {
     back: { href: '#/saved', label: 'Sauvegardes' },
     poll: false,
     saveable: false,
+    // provenance/verdict analyste (Phase 3e) : GET /saved n'a pas de route par id
+    // dédiée -> getSavedMeta filtre la liste (cf. api.js).
+    getMeta: () => getSavedMeta(sid),
   });
 }
 
@@ -77,7 +82,16 @@ function mount(app, id, src) {
     }
     stop();
     if (res && res.status === 'error') { renderError(res); return; }
-    renderResult(res);
+    let meta = null;
+    if (src.getMeta) {
+      try { meta = await src.getMeta(); }
+      catch (ex) {
+        if (ex instanceof Unauthorized) return;
+        // provenance/verdict analyste : best-effort — un échec ici ne doit pas
+        // empêcher l'affichage du résultat déjà chargé.
+      }
+    }
+    renderResult(res, meta);
   }
 
   // Job réellement en échec côté broker (distinct d'un verdict "unknown") :
@@ -93,10 +107,11 @@ function mount(app, id, src) {
     body.appendChild(el('div.errbox', {}, r.error || ''));
   }
 
-  function renderResult(r) {
+  function renderResult(r, meta) {
     const frag = document.createDocumentFragment();
 
-    // ---- HERO : verdict ----
+    // ---- HERO : verdict (auto — toujours visible, jamais masqué par le verdict
+    // analyste, qui vit dans un panneau séparé plus bas) ----
     const verdict = r.verdict || 'unknown';
     const findings = r.static_findings || [];
     frag.appendChild(el('div', { class: 'verdict-hero ' + (VERDICT_CLASS[verdict] || 'v-unknown') }, [
@@ -113,6 +128,13 @@ function mount(app, id, src) {
 
     // ---- panneau « Sauvegarder » (source job uniquement) ----
     if (src.saveable) frag.appendChild(buildSavePanel(r));
+
+    // ---- provenance + verdict analyste (source saved uniquement, Phase 3e) ----
+    if (meta) {
+      const prov = buildProvenance(meta);
+      if (prov) frag.appendChild(prov);
+      frag.appendChild(buildAnalystPanel(id, meta));
+    }
 
     // ---- journal d'actions (tier scripté 3c) : rejoué SEULEMENT si `steps`
     // a été soumis. Chaque entrée vient de `dynamic_steps` (action déjà
@@ -176,6 +198,90 @@ function mount(app, id, src) {
       el('span.savelead', {}, [iconNode('bookmark'), 'Conserver cette analyse']),
       label,
       btn,
+    ]));
+    sec.appendChild(err);
+    return sec;
+  }
+
+  // Provenance de la sauvegarde : « sauvé par X @ T » + statut Turnstile (✓/✗,
+  // omis si `turnstile_solved` est null — non applicable, ex. profil html). `null`
+  // si aucune donnée à afficher (ex. sauvegarde antérieure à la migration 3e).
+  // `saved_by` est une identité potentiellement hostile (forward-auth) -> posée en
+  // textNode via el(), JAMAIS innerHTML.
+  function buildProvenance(meta) {
+    const sec = el('div.provenance');
+    if (meta.saved_by) {
+      const by = ['sauvé par ', el('b', {}, meta.saved_by)];
+      if (meta.saved_at) by.push(' @ ' + fmtIso(meta.saved_at));
+      sec.appendChild(el('span.prov-item', {}, by));
+    }
+    if (meta.turnstile_solved === 1) {
+      sec.appendChild(el('span.prov-item.prov-ts.ok', {}, [iconNode('check'), 'Turnstile passé']));
+    } else if (meta.turnstile_solved === 0) {
+      sec.appendChild(el('span.prov-item.prov-ts.bad', {}, [iconNode('warn'), 'Turnstile non passé']));
+    }
+    return sec.childNodes.length ? sec : null;
+  }
+
+  // Panneau verdict ANALYSTE (vocabulaire distinct du verdict auto : legitimate,
+  // pas benign — cf. AnalystVerdictRequest côté serveur) : affiche le verdict déjà
+  // posé (s'il existe) + contrôles de classification. `analyst`/`analyst_note` sont
+  // des données potentiellement hostiles (identité forward-auth / texte libre) ->
+  // TOUJOURS posées en textNode via el(), jamais innerHTML. Mise à jour à chaud :
+  // la réponse de setAnalystVerdict repeint `current` sans recharger la page.
+  function buildAnalystPanel(sid, meta) {
+    const sec = el('div.analystpanel');
+    sec.appendChild(el('h4', {}, 'Verdict analyste'));
+
+    const current = el('div.analyst-current');
+    const paintCurrent = (m) => {
+      current.replaceChildren();
+      if (m && m.analyst_verdict) {
+        current.appendChild(el('span', { class: 'analyst-badge av-' + m.analyst_verdict }, m.analyst_verdict));
+        const by = ['classé par ', el('b', {}, m.analyst || '?')];
+        if (m.analyst_at) by.push(' @ ' + fmtIso(m.analyst_at));
+        current.appendChild(el('span.analyst-by', {}, by));
+        if (m.analyst_note) current.appendChild(el('p.analyst-note', {}, m.analyst_note));
+      } else {
+        current.appendChild(el('span.muted', {}, 'Pas de verdict analyste.'));
+      }
+    };
+    paintCurrent(meta);
+
+    const noteInput = el('input', {
+      type: 'text', maxlength: '2000', placeholder: 'note (optionnelle)',
+      'aria-label': 'Note analyste',
+    });
+    const err = el('div.errbox', { role: 'alert', hidden: 'hidden' });
+
+    const VERDICTS = [['legitimate', 'légitime'], ['suspicious', 'suspect'], ['malicious', 'malveillant']];
+    const btns = [];
+    VERDICTS.forEach(([value, label]) => {
+      const b = el('button', { type: 'button', class: 'verdict-btn vb-' + value }, label);
+      b.addEventListener('click', async () => {
+        err.hidden = true;
+        btns.forEach((x) => { x.disabled = true; });
+        try {
+          const updated = await setAnalystVerdict(sid, value, noteInput.value.trim());
+          paintCurrent(updated);
+          noteInput.value = '';
+        } catch (ex) {
+          if (ex instanceof Unauthorized) return;
+          // XSS-clean : toujours textContent (ex.message peut inclure un detail serveur).
+          err.textContent = ex && ex.status === 422 ? 'Verdict invalide.' : String(ex.message || ex);
+          err.hidden = false;
+        } finally {
+          btns.forEach((x) => { x.disabled = false; });
+        }
+      });
+      btns.push(b);
+    });
+
+    sec.appendChild(current);
+    sec.appendChild(el('div.verdict-controls', {}, [
+      el('span.verdict-lead', {}, 'Classer'),
+      ...btns,
+      noteInput,
     ]));
     sec.appendChild(err);
     return sec;

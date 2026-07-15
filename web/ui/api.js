@@ -58,6 +58,17 @@ export async function checkToken() {
   return true;
 }
 
+// GET /auth/whoami -> {identity, method}. `identity` porte l'utilisateur résolu côté
+// serveur (bearer -> "token", ou identité forward-auth si l'opt-in serveur est actif) ;
+// `method` ∈ "bearer"|"forward-auth". Sert le bandeau « connecté : X » (Phase 3e) —
+// `identity` est une donnée potentiellement hostile (en-tête forward-auth) : l'appelant
+// DOIT la poser en textContent, jamais en innerHTML.
+export async function whoami() {
+  const res = await authFetch('/auth/whoami');
+  if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
 // Charge un artefact protégé (PNG ou DOM) en blob -> objectURL utilisable en src/href.
 export async function artifactObjectUrl(id, ref) {
   const res = await authFetch('/jobs/' + encodeURIComponent(id) + '/artifact/' + ref);
@@ -156,10 +167,37 @@ export async function lookupSavedByUrl(url) {
   return res.json();
 }
 
-// GET /saved -> liste des métas (id desc).
+// GET /saved -> liste des métas (id desc). Chaque entrée porte, depuis Phase 3e,
+// saved_by/turnstile_solved/analyst_verdict/analyst/analyst_at (pas analyst_note :
+// non exposé par cette route côté serveur, voir setAnalystVerdict).
 export async function listSaved() {
   const res = await authFetch('/saved');
   if (!res.ok) throw new Error(await errText(res));
+  return res.json();
+}
+
+// Pas de route GET /saved/{id} dédiée à la méta (seule /saved/{hash} existe, par
+// input_hash) : on réutilise GET /saved et on filtre par id — cohérent avec la
+// vue Sauvegardes (déjà consommatrice de listSaved) et suffisant à ce volume de
+// données. `null` si l'id est inconnu.
+export async function getSavedMeta(sid) {
+  const rows = await listSaved();
+  return rows.find((r) => String(r.id) === String(sid)) || null;
+}
+
+// POST /saved/{sid}/verdict {analyst_verdict, note?} -> méta mise à jour (avec
+// analyst_verdict/analyst/analyst_at/analyst_note). 422 si `analyst_verdict` n'est
+// pas dans {legitimate,suspicious,malicious}, 404 si sid inconnu — l'appelant lit
+// `e.status` pour distinguer les deux.
+export async function setAnalystVerdict(sid, verdict, note) {
+  const body = { analyst_verdict: verdict };
+  if (note) body.note = note;
+  const res = await authFetch('/saved/' + encodeURIComponent(sid) + '/verdict', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
   return res.json();
 }
 

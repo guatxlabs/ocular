@@ -5,6 +5,9 @@ import { el, iconNode } from '../core.js';
 import { listSaved, Unauthorized } from '../api.js';
 
 const VERDICT_TONE = { benign: 'ok', suspicious: 'warn', malicious: 'bad' };
+// verdict ANALYSTE (Phase 3e) : vocabulaire distinct du verdict auto (legitimate,
+// pas benign — cf. AnalystVerdictRequest côté serveur) ; même palette de tons.
+const ANALYST_TONE = { legitimate: 'ok', suspicious: 'warn', malicious: 'bad' };
 const TONE_STYLE = {
   ok: 'color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:color-mix(in srgb,var(--ok) 40%,transparent)',
   warn: 'color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)',
@@ -15,6 +18,29 @@ const TONE_STYLE = {
 export function verdictPill(v) {
   const tone = VERDICT_TONE[v] || 'mut';
   return el('span.pending-pill', { style: TONE_STYLE[tone] }, v || 'unknown');
+}
+
+// Pastille verdict ANALYSTE — `null` si aucun verdict analyste posé (pas de pastille
+// vide affichée). Valeur enum fixe (legitimate/suspicious/malicious, validée côté
+// serveur) : jamais de donnée hostile ici, mais on reste sur el()/textNode par
+// cohérence avec le reste de la vue.
+export function analystPill(v) {
+  if (!v) return null;
+  const tone = ANALYST_TONE[v] || 'mut';
+  return el('span.pending-pill.analyst-pill', { style: TONE_STYLE[tone] }, v);
+}
+
+// Provenance compacte pour une ligne de liste : « sauvé par X » + Turnstile ✓/✗
+// (omis si `turnstile_solved` est null — non applicable, ex. profil html). `saved_by`
+// est une identité potentiellement hostile (forward-auth) -> textNode via el(), jamais
+// innerHTML.
+export function provenanceLine(m) {
+  const kids = [];
+  if (m.saved_by) kids.push(el('span.prov-by', {}, ['sauvé par ', el('b', {}, m.saved_by)]));
+  if (m.turnstile_solved === 1) kids.push(el('span.prov-ts.ok', { title: 'Turnstile passé' }, 'Turnstile ✓'));
+  else if (m.turnstile_solved === 0) kids.push(el('span.prov-ts.bad', { title: 'Turnstile non passé' }, 'Turnstile ✗'));
+  if (!kids.length) return null;
+  return el('span.provenance-mini', {}, kids);
 }
 
 // ISO -> horodatage local lisible (fallback : la chaîne brute si non parsable).
@@ -66,7 +92,9 @@ export function renderSaved(app) {
         onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } },
       }, [
         verdictPill(m.verdict),
+        analystPill(m.analyst_verdict),
         el('span.jobtarget', { title: m.label || '' }, m.label || '(sans étiquette)'),
+        provenanceLine(m),
         el('span.savedhash', { title: m.input_hash || '' }, shortHash(m.input_hash)),
         el('time', {}, fmtIso(m.saved_at)),
         iconNode('chevright'),
