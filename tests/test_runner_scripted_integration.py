@@ -147,6 +147,11 @@ def test_scripted_run_captures_post_click_call():
                 [
                     docker, "run", "-i", "--rm",
                     "--network", net,
+                    # La fixture tourne sur un réseau docker privé (IP RFC1918) :
+                    # l'egress guard (3g, ON par défaut) la bloquerait à raison.
+                    # On le désactive ICI car la cible est une fixture de test
+                    # interne, pas un scénario SSRF réel.
+                    "-e", "OCULAR_EGRESS_GUARD=0",
                     "--cap-drop", "ALL",
                     "--security-opt", "no-new-privileges:true",
                     "--security-opt", "seccomp=schemas/seccomp-recon.json",
