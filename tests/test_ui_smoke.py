@@ -324,6 +324,31 @@ def test_interactive_imports_filter_js_and_polls_live():
     assert "POLL_INTERVAL_MS = 2000" in js
 
 
+def test_filter_bar_exposes_refresh_backcompat():
+    # buildFilterBar attache son refresh() interne sur le nœud retourné
+    # (rétro-compatible : detail.js ignore `.refresh`). Signature/retour
+    # principal inchangés.
+    js = open("web/ui/filter.js").read()
+    assert "bar.refresh = refresh" in js
+    assert "return bar;" in js
+
+
+def test_live_filter_bar_built_once_and_refreshed_not_rebuilt_per_poll():
+    # La barre de filtre du panneau live est construite UNE SEULE FOIS, hors de
+    # la boucle de poll : `buildFilterBar` ne doit PAS être appelée dans le
+    # corps du callback de poll (`pollLive`) ni dans `update()`. Le poll
+    # rafraîchit via `bar.refresh()` -> les chips posés PERSISTENT.
+    js = open("web/ui/views/interactive.js").read()
+    # buildFilterBar appelée exactement une fois (dans buildLivePanel, hors poll)
+    assert js.count("buildFilterBar(") == 1
+    # le refresh de la barre est bien invoqué (persistance des chips au poll)
+    assert "bar.refresh" in js
+    # pollLive() ne reconstruit pas la barre
+    m = re.search(r"async function pollLive\(\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "pollLive introuvable dans interactive.js"
+    assert "buildFilterBar" not in m.group(0)
+
+
 def test_interactive_live_panel_never_uses_innerhtml_or_regex_on_data():
     # Le panneau live (réseau + findings) doit rester XSS-clean (el()/textContent
     # uniquement) et ne jamais matcher les données réseau par regex — le
