@@ -1,5 +1,7 @@
 import base64
 import hashlib
+import os
+import stat
 
 import pytest
 
@@ -37,6 +39,42 @@ def test_store_blobs_writes_when_ref_matches_sha256_of_content(tmp_path):
     ref = "sha256:" + hashlib.sha256(data).hexdigest()
     store_blobs({ref: base64.b64encode(data).decode()}, str(tmp_path))
     assert (tmp_path / ref_to_filename(ref)).read_bytes() == data
+
+
+def test_store_blobs_skips_write_when_file_already_exists(tmp_path):
+    # BUG 1 (régression) : `broker.launcher` (jobs batch, en ROOT) et
+    # `web.app` (capture de session interactive, UID non-root 10002) écrivent
+    # dans le MÊME store content-addressé. Deux contenus identiques (même
+    # HTML rendu par deux moteurs différents) donnent la MÊME ref -> le
+    # fichier existe déjà, écrit avec un autre propriétaire/mode restrictif
+    # (0644, non accessible en écriture à un autre UID). Avant le correctif,
+    # `store_blobs` tentait quand même `open(path, "wb")` -> `PermissionError`
+    # non rattrapée -> 500 sur `POST /sessions/{id}/capture`, qui empêchait
+    # d'atteindre `/saved` avec un job_id valide.
+    #
+    # Prouvé ici indépendamment des droits d'exécution du test (root en
+    # conteneur de test contourne les permissions fichier) via l'horodatage :
+    # si `store_blobs` rouvrait le fichier en écriture, mtime changerait même
+    # à contenu identique. On fige mtime dans le passé et on vérifie qu'il
+    # est INCHANGÉ après l'appel -> preuve que l'écriture a bien été sautée.
+    data = b"same content, two writers"
+    ref = "sha256:" + hashlib.sha256(data).hexdigest()
+    path = tmp_path / ref_to_filename(ref)
+    path.write_bytes(data)
+    old_time = 1_000_000_000.0  # 2001, loin dans le passé
+    os.utime(path, (old_time, old_time))
+
+    store_blobs({ref: base64.b64encode(data).decode()}, str(tmp_path))  # ne doit PAS lever
+
+    assert path.read_bytes() == data
+    assert os.stat(path).st_mtime == old_time  # jamais rouvert en écriture
+
+    # belt-and-suspenders : si le process tourne sans privilège root, un
+    # fichier en lecture seule doit aussi survivre à l'appel sans exception.
+    if os.geteuid() != 0:
+        os.chmod(path, stat.S_IRUSR)
+        store_blobs({ref: base64.b64encode(data).decode()}, str(tmp_path))
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
 
 
 @pytest.mark.parametrize("bad", [

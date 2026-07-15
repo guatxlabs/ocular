@@ -31,10 +31,19 @@ def store_blobs(blobs: dict, artifacts_dir: str) -> None:
     est le vrai hash de son propre contenu, ce qui rend le montage rw sûr
     sans empoisonner le store partagé avec le broker.
 
-    Module neutre (aucune dépendance Docker/subprocess) : réutilisé tel quel
-    par `broker.launcher` (jobs jetables, conteneur + docker) ET par
-    `web.app` (capture de session interactive, HTTP interne uniquement, sans
-    accès conteneur) pour éviter de dupliquer cette logique de stockage.
+    Idempotence multi-écrivain (bug interactif — la capture d'une session
+    plantait en 500 avant même d'atteindre `/saved`) : `broker.launcher`
+    écrit ce store en ROOT (jobs batch, conteneur+docker), `web.app` y écrit
+    en UID non-root 10002 (capture de session interactive). Deux entrées de
+    contenu strictement identique (ex. le même HTML rendu produit le même DOM
+    octet pour octet par les deux moteurs) partagent le MÊME nom de fichier
+    (store content-addressé) — si le fichier existe déjà (écrit par l'autre
+    UID, mode 0644 non accessible en écriture à un autre utilisateur),
+    tenter de le RÉÉCRIRE lève `PermissionError`, non rattrapée, qui faisait
+    échouer toute la capture. Le contenu étant adressé par son propre hash,
+    un fichier déjà présent sous ce nom est PAR CONSTRUCTION déjà le bon
+    contenu (collision sha256 infaisable) : on saute l'écriture, sans jamais
+    tenter d'ouvrir un fichier qu'on ne possède pas forcément.
     """
     os.makedirs(artifacts_dir, exist_ok=True)
     for ref, b64 in blobs.items():
@@ -42,10 +51,13 @@ def store_blobs(blobs: dict, artifacts_dir: str) -> None:
             fname = ref_to_filename(ref)          # lève ValueError si ref non conforme (anti-traversal)
         except ValueError:
             continue
+        path = os.path.join(artifacts_dir, fname)
+        if os.path.exists(path):
+            continue                                # déjà stocké (même hash -> même contenu) : rien à faire
         data = base64.b64decode(b64)
         if hashlib.sha256(data).hexdigest() != ref.split(":", 1)[1]:
             continue                                # intégrité : hash != ref -> pas d'écriture
-        with open(os.path.join(artifacts_dir, fname), "wb") as fh:
+        with open(path, "wb") as fh:
             fh.write(data)
 
 
