@@ -25,11 +25,11 @@ export function renderSubmit(app) {
   // ---- champ HTML (profil analysis) ----
   const ta = el('textarea', {
     id: 'html', spellcheck: 'false', 'aria-label': 'HTML à analyser',
-    placeholder: 'colle ici le HTML (ou charge un .eml)',
+    placeholder: 'colle du HTML (ou charge un fichier .htm/.html/.eml)',
   });
   const fileLabel = el('span', {}, 'aucun fichier');
   const fileInput = el('input', {
-    type: 'file', accept: '.eml,message/rfc822,text/html', hidden: 'hidden',
+    type: 'file', accept: '.htm,.html,.eml,message/rfc822,text/html', hidden: 'hidden',
     onchange: () => {
       const f = fileInput.files && fileInput.files[0];
       if (!f) return;
@@ -43,7 +43,7 @@ export function renderSubmit(app) {
     el('label', { for: 'html' }, 'HTML à analyser'),
     ta,
     el('div.filepick', {}, [
-      el('button.btn-ghost', { type: 'button', onclick: () => fileInput.click() }, [iconNode('upload'), 'Charger un .eml']),
+      el('button.btn-ghost', { type: 'button', onclick: () => fileInput.click() }, [iconNode('upload'), 'Charger un fichier']),
       fileInput,
       fileLabel,
     ]),
@@ -204,7 +204,7 @@ export function renderSubmit(app) {
         target = raw;
       } else {
         const html = ta.value.trim();
-        if (!html) { showErr('Ajoute du HTML ou charge un .eml avant de lancer.'); return; }
+        if (!html) { showErr('Ajoute du HTML ou charge un fichier .htm/.html/.eml avant de lancer.'); return; }
         const m = html.match(/<title[^>]*>([^<]{0,80})/i);
         payload = { profile: 'analysis', html };
         target = (m && m[1].trim()) || (html.slice(0, 60).replace(/\s+/g, ' ').trim() + '…');
@@ -236,7 +236,7 @@ export function renderSubmit(app) {
 
   app.appendChild(el('div.viewhead', {}, [
     el('h2', {}, 'Analyser une page'),
-    el('span.sub', {}, 'Colle du HTML, dépose un .eml, ou capture une URL live.'),
+    el('span.sub', {}, 'Colle du HTML, dépose un fichier .htm/.html/.eml, ou capture une URL live.'),
   ]));
   app.appendChild(el('div.card', {}, [form]));
   setTimeout(() => ta.focus(), 30);

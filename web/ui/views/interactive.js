@@ -69,11 +69,28 @@ export function renderInteractive(app) {
 
   const htmlArea = el('textarea', {
     id: 'live-html', spellcheck: 'false', 'aria-label': 'HTML à rendre',
-    placeholder: 'colle ici le HTML à rendre',
+    placeholder: 'colle du HTML (ou charge un fichier .htm/.html/.eml)',
+  });
+  const liveFileLabel = el('span', {}, 'aucun fichier');
+  const liveFileInput = el('input', {
+    type: 'file', accept: '.htm,.html,.eml,text/html', hidden: 'hidden',
+    onchange: () => {
+      const f = liveFileInput.files && liveFileInput.files[0];
+      if (!f) return;
+      liveFileLabel.textContent = f.name;
+      const reader = new FileReader();
+      reader.onload = () => { htmlArea.value = String(reader.result || ''); };
+      reader.readAsText(f);
+    },
   });
   const htmlField = el('div.oc-field', { hidden: 'hidden' }, [
     el('label', { for: 'live-html' }, 'HTML à rendre'),
     htmlArea,
+    el('div.filepick', {}, [
+      el('button.btn-ghost', { type: 'button', onclick: () => liveFileInput.click() }, [iconNode('upload'), 'Charger un fichier']),
+      liveFileInput,
+      liveFileLabel,
+    ]),
   ]);
 
   function makeSeg(value, icon, text) {

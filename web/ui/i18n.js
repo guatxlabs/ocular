@@ -17,13 +17,15 @@ const I18N_EN = {
   'Le serveur n\'a pas de jeton configuré (OCULAR_TOKEN).': 'The server has no token configured (OCULAR_TOKEN).',
   // submit
   'Analyser une page': 'Analyze a page', 'Colle du HTML ou dépose un .eml, puis lance l\'analyse.': 'Paste HTML or drop an .eml, then run the analysis.',
-  'HTML à analyser': 'HTML to analyze', 'colle ici le HTML (ou charge un .eml)': 'paste HTML here (or load an .eml)',
-  'Charger un .eml': 'Load an .eml', 'aucun fichier': 'no file',
+  'HTML à analyser': 'HTML to analyze',
+  'colle du HTML (ou charge un fichier .htm/.html/.eml)': 'paste HTML (or load a .htm/.html/.eml file)',
+  'Charger un fichier': 'Load a file', 'aucun fichier': 'no file',
   'URL à analyser': 'URL to analyze', 'analyse d\'URL live': 'live URL analysis',
   'Lancer l\'analyse': 'Run analysis', 'Analyse en cours…': 'Analyzing…',
-  'Ajoute du HTML ou charge un .eml avant de lancer.': 'Add HTML or load an .eml before running.',
+  'Ajoute du HTML ou charge un fichier .htm/.html/.eml avant de lancer.': 'Add HTML or load a .htm/.html/.eml file before running.',
   // submit — toggle profil + capture URL
-  'Colle du HTML, dépose un .eml, ou capture une URL live.': 'Paste HTML, drop an .eml, or capture a live URL.',
+  'Colle du HTML, dépose un fichier .htm/.html/.eml, ou capture une URL live.':
+    'Paste HTML, drop a .htm/.html/.eml file, or capture a live URL.',
   'Analyser HTML': 'Analyze HTML', 'Analyser URL': 'Analyze URL',
   'Profil d\'analyse': 'Analysis profile',
   'capture live via moteur furtif (Camoufox) — Turnstile géré':
@@ -102,7 +104,6 @@ const I18N_EN = {
   'IP exposée · contenu rendu côté conteneur.': 'Exposed IP · content rendered in the container.',
   'Ouvrir une URL': 'Open a URL', 'Rendre du HTML': 'Render HTML',
   'URL à ouvrir': 'URL to open', 'HTML à rendre': 'HTML to render',
-  'colle ici le HTML à rendre': 'paste the HTML to render here',
   'chargement live dans le conteneur (moteur furtif)': 'live loading in the container (stealth engine)',
   'Ouvrir la session': 'Open the session', 'Ouverture de la session…': 'Opening the session…',
   'Renseigne une URL avant d\'ouvrir.': 'Enter a URL before opening.',

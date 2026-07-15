@@ -1161,7 +1161,7 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 /* ---- session interactive (T8) : bandeau de risque + scène noVNC ---- */
 /* Le risque est le héros de la vue : bandeau warn pleine largeur, non ignorable. */
 .livewarn{display:flex;gap:12px;align-items:flex-start;margin:0 0 18px;padding:12px 16px;
-  border:1px solid color-mix(in srgb,var(--warn) 42%,transparent);border-left:3px solid var(--warn);
+  border:1px solid color-mix(in srgb,var(--warn) 42%,transparent);
   border-radius:var(--radius);background:color-mix(in srgb,var(--warn) 12%,var(--card))}
 .livewarn .ic{width:20px;height:20px;color:var(--warn);flex:0 0 auto;margin-top:1px}
 .livewarn-txt{font-size:13px;line-height:1.5;color:var(--fg)}
