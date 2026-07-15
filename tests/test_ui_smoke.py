@@ -529,3 +529,80 @@ def test_style_has_whoami_provenance_and_verdict_controls_css():
     assert ".provenance{" in css
     assert ".analystpanel{" in css
     assert ".verdict-btn{" in css
+
+
+# ---- Phase 3h : is_admin/groups via whoami -> masquage UI des contrôles admin ----
+
+def test_core_exposes_is_admin_and_groups_from_whoami():
+    # core.js doit lire `is_admin`/`groups` sur la réponse de whoami() (déjà
+    # appelée au boot pour le bandeau, Phase 3e) et les exposer aux vues via des
+    # getters — jamais de mutation externe de l'état interne.
+    js = open("web/ui/core.js").read()
+    assert "who.is_admin" in js
+    assert "who.groups" in js
+    assert "export function isAdmin" in js
+    assert "export function getGroups" in js
+
+
+def test_core_resets_admin_state_on_whoami_failure_and_logout():
+    # Fail-closed côté ergonomie aussi : un whoami() en échec ou une déconnexion
+    # explicite doit retomber sur isAdmin() === false (pas de contrôle admin
+    # "collé" après expiration/logout).
+    js = open("web/ui/core.js").read()
+    assert "adminFlag = false" in js
+    assert js.count("adminFlag = false") >= 2  # catch whoami + logout
+
+
+def test_core_hides_admin_nav_link_for_non_admins():
+    js = open("web/ui/core.js").read()
+    assert 'querySelector(\'#topnav a[data-route="admin"]\')' in js
+    assert "adminLink.hidden = !authed || !adminFlag" in js
+
+
+def test_admin_view_gates_flush_delete_controls_on_is_admin():
+    # La vue Admin (flush/delete) doit conditionner TOUT son rendu (token,
+    # liste, boutons de suppression) sur isAdmin() importé de core.js — check
+    # placé avant toute construction du token/de la liste, avec un retour
+    # anticipé si non-admin.
+    js = open("web/ui/views/admin.js").read()
+    assert "isAdmin, getGroups" in js or ("isAdmin" in js and "getGroups" in js)
+    assert "if (!isAdmin())" in js
+    # le early-return doit précéder la carte token (flush/delete inaccessibles)
+    assert js.index("if (!isAdmin())") < js.index("tokenCard")
+
+
+def test_admin_view_shows_admin_required_message_when_not_admin():
+    js = open("web/ui/views/admin.js").read()
+    assert "Admin requis." in js
+
+
+def test_admin_view_renders_groups_via_el_never_innerhtml():
+    # `groups` (potentiellement issu d'un en-tête forward-auth) doit être posé
+    # en textNode via el(...), jamais en innerHTML.
+    import re
+    js = open("web/ui/views/admin.js").read()
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+    assert "getGroups()" in js
+    assert "groups.join(', ')" in js
+
+
+def test_core_whoami_groups_rendered_via_el_never_innerhtml():
+    import re
+    js = open("web/ui/core.js").read()
+    m = re.search(r"async function refreshWhoami\(\)\s*\{.*?\n\}\n", js, re.S)
+    assert m, "refreshWhoami introuvable dans core.js"
+    body = m.group(0)
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+    assert "groupsList.join(', ')" in body
+    assert "el('span.whoami-groups'" in body
+
+
+def test_i18n_has_phase3h_admin_gate_translations():
+    js = open("web/ui/i18n.js").read()
+    for term in ("Admin requis.", "Tes groupes :", "Aucun groupe détecté."):
+        assert f"'{term}'" in js, term
+
+
+def test_style_has_whoami_groups_css():
+    css = open("web/ui/style.css").read()
+    assert ".whoami-groups{" in css

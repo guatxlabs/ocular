@@ -104,6 +104,16 @@ let identityConfirmed = false;
 let authMethod = null;
 let whoamiLoaded = false;
 let whoamiPromise = null;
+// is_admin/groups (Phase 3h) : reflet UNIQUEMENT ergonomique de whoami() — le
+// backend (`_auth`, bloc DELETE /saved) reste la seule vraie garde. Sert à
+// masquer les contrôles admin (vue Admin, lien de nav) côté client.
+let adminFlag = false;
+let groupsList = [];
+
+// Accès en lecture pour les vues (admin.js notamment) — jamais de mutation
+// directe depuis l'extérieur, seule refreshWhoami() met ces valeurs à jour.
+export function isAdmin() { return adminFlag; }
+export function getGroups() { return groupsList.slice(); }
 
 function ensureWhoamiEl() {
   if (whoamiEl) return whoamiEl;
@@ -114,9 +124,9 @@ function ensureWhoamiEl() {
   return whoamiEl;
 }
 
-// `who.identity` vient du serveur : bearer -> "token", ou identité forward-auth
-// (en-tête client relayé par un proxy de confiance) sinon — donnée potentiellement
-// hostile -> posée en textNode via el(...)/iconNode, JAMAIS innerHTML.
+// `who.identity`/`who.groups` viennent du serveur : bearer -> "token", ou identité
+// forward-auth (en-tête client relayé par un proxy de confiance) sinon — donnée
+// potentiellement hostile -> posée en textNode via el(...)/iconNode, JAMAIS innerHTML.
 async function refreshWhoami() {
   const wEl = ensureWhoamiEl();
   try {
@@ -124,18 +134,26 @@ async function refreshWhoami() {
     identityConfirmed = true;
     authMethod = who && who.method;
     whoamiLoaded = true;
+    adminFlag = !!(who && who.is_admin);
+    groupsList = Array.isArray(who && who.groups) ? who.groups : [];
     if (wEl) {
-      wEl.replaceChildren(
+      const kids = [
         iconNode('shield'),
         el('span.whoami-label', {}, 'connecté'),
         el('b.whoami-id', {}, (who && who.identity) || '?'),
-      );
+      ];
+      // groupes affichés en clair (textContent) si présents -> confort de lecture,
+      // jamais de HTML injecté (groupList vient potentiellement d'un en-tête client).
+      if (groupsList.length) kids.push(el('span.whoami-groups', { title: 'groupes' }, groupsList.join(', ')));
+      wEl.replaceChildren(...kids);
       wEl.hidden = false;
     }
   } catch (ex) {
     if (!(ex instanceof Unauthorized)) { /* réseau/serveur : bandeau reste masqué, pas de routage cassé */ }
     identityConfirmed = false;
     authMethod = null;
+    adminFlag = false;
+    groupsList = [];
     if (wEl) { wEl.hidden = true; wEl.replaceChildren(); }
   }
 }
@@ -157,6 +175,10 @@ function updateChrome(view, authed) {
   if (logout) logout.hidden = !authed || authMethod === 'forward-auth';
   document.querySelectorAll('#topnav a').forEach((a) =>
     a.classList.toggle('on', a.dataset.route === view || (view === 'job' && a.dataset.route === 'jobs')));
+  // lien Admin masqué aux non-admins — confort seulement, le backend reste la
+  // garde réelle (renderAdmin() re-vérifie isAdmin() avant tout rendu).
+  const adminLink = document.querySelector('#topnav a[data-route="admin"]');
+  if (adminLink) adminLink.hidden = !authed || !adminFlag;
 }
 
 // ---- routeur hash ----
@@ -214,6 +236,7 @@ async function boot() {
   if (logout) logout.addEventListener('click', () => {
     clearToken();
     identityConfirmed = false; authMethod = null; whoamiLoaded = false;
+    adminFlag = false; groupsList = [];
     location.hash = '#/login';
   });
 

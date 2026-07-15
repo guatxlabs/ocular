@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from starlette.requests import Request
 
-from web.identity import resolve_identity
+from web.identity import has_admin_group, resolve_groups, resolve_identity
 
 
 def _request(headers: dict[str, str]) -> Request:
@@ -94,3 +94,52 @@ def test_resolve_identity_opt_in_off_header_never_read_proof(monkeypatch):
     # avec bearer -> ne doit pas non plus consulter l'en-tête (opt-in off)
     authorized, identity, method = resolve_identity(req, bearer_ok=True)
     assert (authorized, identity, method) == (True, "token", "bearer")
+
+
+# --- resolve_groups / has_admin_group (admin via groupe IdP, opt-in strict) -----
+
+
+def test_resolve_groups_opt_in_off_ignores_header_even_if_admin_present(monkeypatch):
+    """CRUCIAL anti-spoofing : opt-in OFF => X-Forwarded-Groups totalement ignoré,
+    même s'il contient 'admins'."""
+    monkeypatch.delenv("OCULAR_TRUST_FORWARD_AUTH", raising=False)
+    monkeypatch.setenv("OCULAR_ADMIN_GROUP", "admins")
+    req = _request({"X-Forwarded-Groups": "admins"})
+    assert resolve_groups(req) == []
+    assert has_admin_group(req) is False
+
+
+def test_resolve_groups_opt_in_on_splits_strips_filters_empty(monkeypatch):
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    monkeypatch.setenv("OCULAR_ADMIN_GROUP", "admins")
+    req = _request({"X-Forwarded-Groups": " a ,admins, b ,,"})
+    assert resolve_groups(req) == ["a", "admins", "b"]
+    assert has_admin_group(req) is True
+
+
+def test_has_admin_group_false_when_admin_not_in_groups(monkeypatch):
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    monkeypatch.setenv("OCULAR_ADMIN_GROUP", "admins")
+    req = _request({"X-Forwarded-Groups": "users,editors"})
+    assert has_admin_group(req) is False
+
+
+def test_has_admin_group_false_when_admin_group_unset_even_if_present(monkeypatch):
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    monkeypatch.delenv("OCULAR_ADMIN_GROUP", raising=False)
+    req = _request({"X-Forwarded-Groups": "admins"})
+    assert resolve_groups(req) == ["admins"]
+    assert has_admin_group(req) is False
+
+
+def test_resolve_groups_opt_in_off_no_header_never_read_proof(monkeypatch):
+    """Prouve que le nom d'en-tête groupes n'est pas résolu quand opt-in OFF."""
+    monkeypatch.delenv("OCULAR_TRUST_FORWARD_AUTH", raising=False)
+
+    def _boom():  # pragma: no cover - ne doit jamais être appelé
+        raise AssertionError("forward_auth_groups_header() consulté alors que trust_forward_auth() est False")
+
+    monkeypatch.setattr("web.identity.forward_auth_groups_header", _boom)
+
+    req = _request({"X-Forwarded-Groups": "admins"})
+    assert resolve_groups(req) == []
