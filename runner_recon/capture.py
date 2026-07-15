@@ -127,6 +127,31 @@ _TURNSTILE_RETRY_ATTEMPTS = 6
 _TURNSTILE_RETRY_INTERVAL_S = 0.8
 _TURNSTILE_POST_CLICK_WAIT_S = 4
 
+# Gating (phase3f-F1a) : indicateur DOM booléen, PELÉ au tout début de
+# `solve_turnstile`, AVANT tout screenshot/detect/clic. Le div `[data-sitekey]`/
+# `.cf-turnstile` et le `<script>`/`<iframe>` `challenges.cloudflare.com`
+# marquent la présence d'un challenge Cloudflare.
+#
+# ATTENTION (régression corrigée) : ces éléments NE sont PAS forcément
+# présents dès `goto` — guatx.com les injecte de façon ASYNCHRONE (script CF
+# chargé puis DOM muté après coup). Un check one-shot juste après `goto`
+# manquait donc l'indicateur et sautait la résolution à tort. On POLL donc
+# l'indicateur sur une courte fenêtre bornée (`_CF_INDICATOR_POLL_ATTEMPTS` x
+# `_CF_INDICATOR_POLL_INTERVAL_S` ~ 3.6s) : l'injection async a le temps
+# d'apparaître. Absent après toute la fenêtre -> pas de Turnstile sur cette
+# page -> `return False` (aucune tentative de clic ; latence bornée par des
+# `evaluate` légers, moins chers que les anciens screenshots+opencv). Présent
+# (même tardivement) -> la boucle de retry vision + solve EXISTANTE s'exécute
+# inchangée.
+_CF_INDICATOR_JS = (
+    "() => !!document.querySelector("
+    "'[data-sitekey], .cf-turnstile, "
+    "script[src*=\"challenges.cloudflare.com\"], "
+    "iframe[src*=\"challenges.cloudflare.com\"]')"
+)
+_CF_INDICATOR_POLL_ATTEMPTS = 6
+_CF_INDICATOR_POLL_INTERVAL_S = 0.6
+
 
 async def solve_turnstile(
     page: Any,
@@ -159,7 +184,26 @@ async def solve_turnstile(
     vérifié (3e cause corrigée par le plan).
 
     Ne journalise jamais d'URL/secret : uniquement des coordonnées px et un
-    booléen."""
+    booléen.
+
+    **Gating (phase3f-F1a)** : avant tout screenshot/detect/clic, POLL
+    l'indicateur DOM `_CF_INDICATOR_JS` (booléen, `page.evaluate`) sur une
+    courte fenêtre bornée — l'injection Cloudflare est ASYNCHRONE (guatx.com),
+    donc un check one-shot juste après `goto` la manquerait. Absent après
+    toute la fenêtre -> `return False` (0 screenshot, 0 detect, 0 clic) : une
+    page sans Turnstile ne paie plus les ~4s de screenshots+opencv de la
+    boucle de retry, juste des `evaluate` légers. Présent (même tardivement)
+    -> la boucle de retry vision + solve ci-dessous s'exécute exactement comme
+    avant."""
+    indicator = False
+    for _ in range(_CF_INDICATOR_POLL_ATTEMPTS):
+        if await page.evaluate(_CF_INDICATOR_JS):
+            indicator = True
+            break
+        await asyncio.sleep(_CF_INDICATOR_POLL_INTERVAL_S)
+    if not indicator:
+        return False  # pas d'indicateur CF sous la fenêtre -> pas de Turnstile
+
     det = None
     for attempt in range(_TURNSTILE_RETRY_ATTEMPTS):
         png = await page.screenshot(full_page=False)
@@ -229,6 +273,39 @@ async def _goto_with_fallback(page: Any, url: str, timeout_ms: int, console: lis
     console.append({"level": "warning", "text": "scheme-fallback https->http"})
 
 
+# Budget de finalisation DOM (phase3f-F1c) : appliqué UNIQUEMENT au chemin
+# scripté (`capture_scripted`), dont `page` peut être dans un état dégradé
+# après un `run_steps` bancal (cf. commentaire au point d'appel). Court
+# (15s) car résiduel : il mord sur la marge broker/launcher.py, pas sur le
+# budget `SCRIPTED_EXEC_TIMEOUT_S` (déjà épuisé à ce stade dans le cas visé).
+_DOM_FINALIZE_TIMEOUT_S = 15
+
+
+async def _capture_dom(page: Any, url: str) -> tuple[bytes, str, str]:
+    """Extraction DOM finale — factorisée entre `capture_url` (3a) et
+    `capture_scripted` (3c) : avant (phase3f-F1), ces deux fonctions
+    dupliquaient ~5 lignes identiques (`page.content()`/`title()`/`url` sous
+    try/except), relevé par 2 audits comme risque de dérive. Une seule
+    implémentation désormais.
+
+    Ne lève JAMAIS : toute exception (driver Camoufox mort, page hostile) est
+    absorbée ici, loguée (avec le contexte `url` forensique), et remplacée par
+    dom/title vides — même politique d'erreur qu'avant le factoring (résultat
+    partiel plutôt qu'un crash qui priverait le broker de tout résultat).
+    `final_url` retombe sur `url` (l'URL cible), PAS sur `""` : avant le
+    refactor les appelants prédéclaraient `final_url = url` et ne l'écrasaient
+    qu'en cas de succès -> même comportement ici, cohérent avec
+    `_error_wrapper` (qui restaure aussi `final_url=url`)."""
+    try:
+        dom_html = (await page.content()).encode()
+        title = await page.title()
+        final_url = page.url
+        return dom_html, title, final_url
+    except Exception as exc:
+        log.warning("url=%s dom capture failed err=%s", url, type(exc).__name__)
+        return b"", "", url
+
+
 async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, dict[str, bytes]]:
     """Pilote Camoufox (anti-detect Firefox headed, Xvfb) : navigue vers `url`,
     tente de résoudre un Turnstile interactif via la vision (template matching)
@@ -241,7 +318,9 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
     capture = NetworkCapture()
     screenshots: list[tuple[int, str, bytes]] = []
     turnstile_solved = False
-    dom_html, title, final_url = b"", "", url
+    # (dom_html/title/final_url ne sont plus prédéclarés ici : `_capture_dom`
+    # ne lève jamais, donc la seule affectation qui compte est celle après le
+    # `async with` ci-dessous — cf. `_capture_dom`.)
 
     async with AsyncCamoufox(
         headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
@@ -264,12 +343,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
         except Exception as exc:
             capture.console.append({"level": "warning", "text": f"turnstile: {type(exc).__name__}"})
 
-        try:
-            dom_html = (await page.content()).encode()
-            title = await page.title()
-            final_url = page.url
-        except Exception as exc:
-            log.warning("url=%s dom capture failed err=%s", url, type(exc).__name__)
+        dom_html, title, final_url = await _capture_dom(page, url)
 
     return build_result(
         url, screenshots, capture.network, capture.console, dom_html, title,
@@ -328,8 +402,6 @@ async def capture_scripted(
         capture_refs.append(ref)
         shot_idx += 1
 
-    dom_html, title, final_url = b"", "", url
-
     async with AsyncCamoufox(
         headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
     ) as ctx:
@@ -350,12 +422,26 @@ async def capture_scripted(
                 "text": f"scripted execution: budget de {SCRIPTED_EXEC_TIMEOUT_S}s atteint, steps restants abandonnés",
             })
 
+        # Finalisation sous timeout (phase3f-F1c) : après un `run_steps`
+        # bancal (ex. step qui a lui-même timeout), `page` peut être dans un
+        # état dégradé où `page.content()/title()` PEND indéfiniment (pas
+        # d'exception, juste un blocage) — sans budget propre ici, ça peut
+        # dépasser la marge broker et priver le broker de tout résultat
+        # (stdout vide). `_capture_dom` a son propre budget court
+        # (`_DOM_FINALIZE_TIMEOUT_S`) : sur dépassement, dom vide + warning
+        # console, mais on continue jusqu'à `emit_wrapper` (résultat partiel
+        # garanti, jamais de stdout vide).
         try:
-            dom_html = (await page.content()).encode()
-            title = await page.title()
-            final_url = page.url
-        except Exception as exc:
-            log.warning("url=%s scripted dom capture failed err=%s", url, type(exc).__name__)
+            dom_html, title, final_url = await asyncio.wait_for(
+                _capture_dom(page, url), timeout=_DOM_FINALIZE_TIMEOUT_S
+            )
+        except asyncio.TimeoutError:
+            dom_html, title, final_url = b"", "", url
+            log.warning("url=%s scripted dom capture timed out after %ss", url, _DOM_FINALIZE_TIMEOUT_S)
+            capture.console.append({
+                "level": "warning",
+                "text": f"scripted dom capture: timeout après {_DOM_FINALIZE_TIMEOUT_S}s",
+            })
 
     builder.set_dom(dom_html)
     findings = _analyze(dom_html)
