@@ -184,3 +184,122 @@ def test_livewarn_has_no_divergent_border_left():
     block = m.group(0)
     assert "border-left" not in block
     assert "border:1px" in block or "border: 1px" in block
+
+
+# ---- filtre SOC des résultats réseau (Task 1 3d-2 I) : filter.js ----
+
+def test_filter_js_served_as_static_module():
+    # web/ui/filter.js est un module ES autonome, servi en statique comme les
+    # autres vues (aucune route serveur dédiée n'est requise par le plan).
+    c = TestClient(app)
+    r = c.get("/filter.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers.get("content-type", "").lower()
+
+
+def test_filter_js_has_no_user_regex_anti_redos():
+    # Contrainte de sécurité du plan : aucune regex utilisateur -> aucun
+    # `new RegExp` dans le module de filtrage (matching substring/égalité
+    # uniquement, via String.includes/toLowerCase).
+    js = open("web/ui/filter.js").read()
+    assert "new RegExp" not in js
+
+
+def test_filter_js_never_uses_innerhtml():
+    # XSS-clean : chips/compteur construits via el()/textContent, jamais
+    # d'innerHTML sur des données d'entrée (labels de chip, valeurs d'entrée).
+    js = open("web/ui/filter.js").read()
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_filter_js_makes_no_network_calls():
+    # Filtrage 100% côté client sur des données déjà chargées : aucun fetch/
+    # appel réseau ne doit être déclenché par le module.
+    js = open("web/ui/filter.js").read()
+    assert "fetch(" not in js
+    assert "XMLHttpRequest" not in js
+
+
+def test_filter_js_exports_expected_interface():
+    js = open("web/ui/filter.js").read()
+    for name in ("entryHost", "entryMime", "matchChip", "filterEntries", "buildFilterBar"):
+        assert f"export function {name}" in js or f"export async function {name}" in js, name
+
+
+def test_build_filter_bar_is_synchronous_no_core_import():
+    # buildFilterBar doit être SYNCHRONE (pas `async`) et ne contenir AUCUN
+    # import (statique OU dynamique `import(`) de core.js : `el` est injecté par
+    # l'appelant. C'est indispensable pour que la barre soit insérée AVANT le
+    # i18nWalk() synchrone (sinon libellés jamais traduits en LANG='en'), et pour
+    # que les fonctions pures restent importables par le test node sans core.js.
+    js = open("web/ui/filter.js").read()
+    assert "export async function buildFilterBar" not in js
+    assert "export function buildFilterBar" in js
+    assert "import(" not in js  # aucun import dynamique
+    # aucun import top-level de core.js (statique) — el vient uniquement du param
+    assert "from './core.js'" not in js
+    assert "'./core.js'" not in js
+
+
+# ---- filtre SOC des résultats réseau (Task 2 3d-2 I) : intégration détail ----
+
+def test_detail_imports_and_uses_filter_bar_in_build_network():
+    # detail.js doit importer filter.js et appeler buildFilterBar depuis
+    # buildNetwork (au-dessus du tableau, réutilise la logique de Task 1 -> DRY,
+    # pas de réimplémentation du matching).
+    js = open("web/ui/views/detail.js").read()
+    assert "from '../filter.js'" in js
+    assert "buildFilterBar" in js
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "buildFilterBar" in body
+
+
+def test_detail_network_filter_threshold_avoids_noise_on_small_results():
+    # Petit résultat (<= 8 entrées) -> pas de barre de filtre (pas de bruit) ;
+    # la barre n'apparaît qu'au-delà du seuil.
+    js = open("web/ui/views/detail.js").read()
+    assert re.search(r"net\.length\s*>\s*(NETWORK_FILTER_THRESHOLD|8)", js)
+
+
+def test_detail_network_filter_handler_makes_no_network_calls():
+    # Le handler de filtre (portion buildNetwork qui appelle buildFilterBar)
+    # ne doit déclencher aucun fetch/appel API : filtrage 100% côté client sur
+    # `net` déjà chargé.
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "fetch(" not in body
+    assert re.search(r"\bapi\.", body) is None
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+
+
+def test_detail_network_filter_rerender_uses_el_not_innerhtml():
+    # Le re-rendu déclenché par onChange (renderRows) doit repasser par el() /
+    # replaceChildren, jamais innerHTML — mêmes colonnes method/status/type/url
+    # que le rendu initial.
+    js = open("web/ui/views/detail.js").read()
+    assert "renderRows" in js
+    assert "tb.replaceChildren" in js
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_detail_inserts_filter_bar_synchronously():
+    # detail.js doit insérer la barre de façon SYNCHRONE (pas de `.then(` autour
+    # de buildFilterBar) : el importé synchrone est injecté et la barre est
+    # ajoutée avant le retour de renderResult (donc avant i18nWalk).
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "buildFilterBar(() => net, renderRows, { el })" in body
+    # aucune promesse chaînée sur buildFilterBar (plus d'insertion asynchrone)
+    assert ".then(" not in body
+
+
+def test_i18n_has_filter_bar_translations():
+    js = open("web/ui/i18n.js").read()
+    for term in ("Domaine", "Statut", "contient", "égal", "exclure"):
+        assert f"'{term}'" in js, term

@@ -118,6 +118,11 @@ const I18N_EN = {
   'Capturer': 'Capture', 'capture…': 'capturing…', 'Fermer': 'Close',
   'Capture enregistrée': 'Capture saved', 'Voir l\'analyse': 'View the analysis',
   'Capture échouée — la session ne répond pas.': 'Capture failed — the session is not responding.',
+  // detail — filtre SOC du tableau réseau (Task 2 3d-2 I, réutilise filter.js)
+  'Filtre réseau': 'Network filter', 'correspondances': 'matches',
+  'Domaine': 'Domain', 'Type': 'Type', 'Statut': 'Status',
+  'contient': 'contains', 'égal': 'equal', 'exclure': 'exclude',
+  'valeur…': 'value…', 'retirer': 'remove',
   // sévérités
   'critical': 'critical', 'high': 'high', 'medium': 'medium', 'low': 'low',
   // verdicts

@@ -10,6 +10,11 @@ import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
   saveAnalysis, Unauthorized,
 } from '../api.js';
+import { buildFilterBar } from '../filter.js';
+
+// seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau
+// réseau (petit résultat -> pas de bruit inutile).
+const NETWORK_FILTER_THRESHOLD = 8;
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
 const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
@@ -284,16 +289,40 @@ function mount(app, id, src) {
       el('th', {}, 'method'), el('th', {}, 'status'), el('th', {}, 'type'), el('th', {}, 'url'),
     ])]);
     const tb = el('tbody');
-    net.forEach((n) => {
-      tb.appendChild(el('tr', {}, [
+    // Rendu des lignes factorisé : réutilisé pour l'affichage initial ET pour
+    // le re-rendu déclenché par le filtre — mêmes colonnes, même el() XSS-clean.
+    const renderRows = (rows) => {
+      tb.replaceChildren(...rows.map((n) => el('tr', {}, [
         el('td', {}, n.method || ''),
         el('td', {}, n.status != null ? String(n.status) : '—'),
         el('td', {}, n.resource_type || ''),
         el('td', { title: n.url || '' }, n.url || ''),
-      ]));
-    });
+      ])));
+    };
     table.appendChild(thead); table.appendChild(tb);
-    sec.appendChild(el('div.card', {}, [el('div.plscroll', {}, [table])]));
+    const card = el('div.card', {}, [el('div.plscroll', {}, [table])]);
+
+    // Filtre SOC (filter.js, Task 1) : affiché seulement au-delà du seuil, pour
+    // ne pas ajouter de bruit sur un petit résultat. Filtrage 100% côté client
+    // sur `net` déjà chargé : `getEntries` referme sur le tableau en mémoire,
+    // `onChange` re-rend le <tbody> via `renderRows` — AUCUN fetch/appel réseau
+    // n'est jamais déclenché par le filtre.
+    if (net.length > NETWORK_FILTER_THRESHOLD) {
+      // `el` (importé synchrone) est injecté -> buildFilterBar renvoie le nœud
+      // immédiatement, inséré AVANT le retour de renderResult donc AVANT le
+      // i18nWalk(app) synchrone de core.js (barre traduite en LANG='en').
+      // buildFilterBar fait déjà un refresh()/onChange initial qui appelle
+      // renderRows -> le tableau est peuplé par ce refresh, pas de renderRows
+      // manuel ici (évite un double rendu initial).
+      const bar = buildFilterBar(() => net, renderRows, { el });
+      const counter = bar.querySelector('.filter-count');
+      if (counter) counter.setAttribute('aria-label', 'correspondances');
+      sec.appendChild(el('div.filter-slot', {}, [bar]));
+    } else {
+      renderRows(net); // pas de barre -> rendu initial direct
+    }
+
+    sec.appendChild(card);
     return sec;
   }
 
