@@ -119,6 +119,79 @@ def build_result(
     )
 
 
+# Boucle de détection Turnstile : ~6 tentatives x 0.8s (5 pauses) = 4s de
+# budget total avant d'abandonner (pas de Turnstile sur cette page -> chemin
+# 3a inchangé, cf. solve_turnstile). Attente post-clic séparée (le widget met
+# un instant à se mettre à jour après le clic avant de re-vérifier).
+_TURNSTILE_RETRY_ATTEMPTS = 6
+_TURNSTILE_RETRY_INTERVAL_S = 0.8
+_TURNSTILE_POST_CLICK_WAIT_S = 4
+
+
+async def solve_turnstile(
+    page: Any,
+    screenshots: list[tuple[int, str, bytes]],
+    console: list[dict],
+    vision_mod: Any,
+    next_index: int = 1,
+) -> bool:
+    """Détecte + résout un challenge Turnstile Cloudflare sur `page` (vision
+    template matching + clic OS xdotool), appelée après le screenshot initial
+    de `capture_url`. `vision_mod` est injecté (jamais un `import vision`
+    local ici) : garde cette fonction testable avec un module mocké, sans
+    navigateur ni dépendance opencv/numpy réelle (cf. tests/test_capture_logic.py).
+
+    Corrige 2 causes racines (plan phase3d-2b) :
+    - **timing** : le widget Turnstile se charge dans une iframe async, donc
+      souvent absent du tout premier screenshot -> re-screenshot + re-détecte
+      jusqu'à `_TURNSTILE_RETRY_ATTEMPTS` fois (~4s au total). Aucun match
+      après toutes les tentatives -> pas de Turnstile sur cette page,
+      comportement 3a inchangé (retourne `False` sans jamais cliquer).
+    - **mapping** : `vision_mod.detect()` renvoie des px IMAGE (viewport du
+      screenshot) alors que `human_click_xdotool` clique en px ÉCRAN -> offset
+      via `window.mozInnerScreenX/Y` + `devicePixelRatio`
+      (`vision_mod.image_to_screen`).
+
+    Après le clic, attend `_TURNSTILE_POST_CLICK_WAIT_S` puis re-vérifie : la
+    case a disparu du nouveau screenshot -> résolu (`True`) ; toujours
+    présente -> pas résolu (`False`, logué en warning dans `console`).
+    `turnstile_solved` reflète donc la réalité, jamais un optimiste `True` non
+    vérifié (3e cause corrigée par le plan).
+
+    Ne journalise jamais d'URL/secret : uniquement des coordonnées px et un
+    booléen."""
+    det = None
+    for attempt in range(_TURNSTILE_RETRY_ATTEMPTS):
+        png = await page.screenshot(full_page=False)
+        det = vision_mod.detect(vision_mod.png_to_bgr(png), strategy="turnstile")
+        if det is not None:
+            break
+        if attempt < _TURNSTILE_RETRY_ATTEMPTS - 1:
+            await asyncio.sleep(_TURNSTILE_RETRY_INTERVAL_S)
+
+    if det is None:
+        return False  # pas de Turnstile détecté après retry -> comportement 3a inchangé
+
+    off = await page.evaluate(
+        "() => ({x: window.mozInnerScreenX, y: window.mozInnerScreenY, "
+        "d: window.devicePixelRatio || 1})"
+    )
+    sx, sy = vision_mod.image_to_screen((det[0], det[1]), off["x"], off["y"], off["d"])
+    log.info("turnstile detected img=(%d,%d) screen=(%d,%d)", det[0], det[1], sx, sy)
+    await vision_mod.human_click_xdotool(sx, sy)
+
+    await asyncio.sleep(_TURNSTILE_POST_CLICK_WAIT_S)
+    png1 = await page.screenshot(full_page=False)
+    screenshots.append((next_index, "post-turnstile", png1))
+
+    still_there = vision_mod.detect(vision_mod.png_to_bgr(png1), strategy="turnstile") is not None
+    solved = not still_there
+    log.info("turnstile solved=%s", solved)
+    if not solved:
+        console.append({"level": "warning", "text": "turnstile: non résolu"})
+    return solved
+
+
 async def _goto_with_fallback(page: Any, url: str, timeout_ms: int, console: list[dict]) -> None:
     """Navigue `page` vers `url` ; si CETTE PREMIÈRE tentative lève ET que le
     schéma est `https`, retente UNE SEULE fois avec le même hôte/chemin/query
@@ -181,16 +254,13 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
         png0 = await page.screenshot(full_page=False)
         screenshots.append((0, "initial", png0))
 
-        # Turnstile : détection vision (template matching) + clic OS xdotool
+        # Turnstile : détection vision (template matching, retry le temps du
+        # rendu async du widget) + mapping viewport->écran + clic OS xdotool +
+        # vérif post-clic (cf. solve_turnstile, cause racine détaillée là-bas).
         try:
-            det = vision.detect(vision.png_to_bgr(png0), strategy="turnstile")
-            if det is not None:
-                x, y = det[0], det[1]
-                await vision.human_click_xdotool(x, y)
-                await asyncio.sleep(4)
-                png1 = await page.screenshot(full_page=False)
-                screenshots.append((1, "post-turnstile", png1))
-                turnstile_solved = True
+            turnstile_solved = await solve_turnstile(
+                page, screenshots, capture.console, vision, next_index=len(screenshots)
+            )
         except Exception as exc:
             capture.console.append({"level": "warning", "text": f"turnstile: {type(exc).__name__}"})
 
