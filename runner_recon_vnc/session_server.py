@@ -22,6 +22,7 @@ interactif.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import os
 import secrets
@@ -30,13 +31,38 @@ from typing import Any, Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
+from engine.egress_guard import EgressGuard
 from engine.result import DomInfo, OcularResult, StealthInfo
 from engine.static import analyze_html
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, sha256_ref  # noqa: F401  (sha256_ref réutilisé ici)
+from ocular_settings import egress_guard_enabled
 
-app = FastAPI()
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Rien au démarrage (la page Camoufox/le garde egress ne démarrent
+    qu'à la demande, cf. `_ensure_browser`). À l'arrêt PROPRE du conteneur
+    (SIGTERM géré par uvicorn), ferme au mieux le navigateur puis stoppe le
+    garde egress (`_state["guard"]`) — best-effort : ne lève jamais (le
+    conteneur s'arrête de toute façon). Si le conteneur est tué net
+    (SIGKILL/OOM) ce hook ne s'exécute pas : le garde meurt avec le process,
+    accepté (cf. docstring `_ensure_browser`, c'est un enfant du même
+    conteneur éphémère — aucune ressource ne fuit au-delà de sa durée de
+    vie)."""
+    yield
+    cm = _state.get("cm")
+    if cm is not None:
+        with contextlib.suppress(Exception):
+            await cm.__aexit__(None, None, None)
+    guard = _state.get("guard")
+    if guard is not None:
+        with contextlib.suppress(Exception):
+            await guard.stop()
+
+
+app = FastAPI(lifespan=_lifespan)
 
 
 def require_session_secret(
@@ -59,7 +85,13 @@ def require_session_secret(
 # État de session unique (un conteneur = une session interactive = une page
 # Camoufox vivante). Pas de multi-session dans cette tâche : le broker lance
 # un conteneur par session (tâches suivantes de la phase 3b).
-_state: dict[str, Any] = {"cm": None, "page": None, "cap": None, "target": None, "kind": None}
+# `guard` (plan 3g Task G2) : l'EgressGuard démarré par `_ensure_browser`
+# quand `egress_guard_enabled()` — vit tant que la session vit, un seul par
+# conteneur (comme `page`/`cap`), stoppé par `_shutdown` (best-effort — cf.
+# docstring `_ensure_browser`).
+_state: dict[str, Any] = {
+    "cm": None, "page": None, "cap": None, "target": None, "kind": None, "guard": None,
+}
 
 
 def build_capture_result(
@@ -107,11 +139,53 @@ def build_capture_result(
 
 
 async def _ensure_browser() -> None:
+    """Démarre la page Camoufox unique de cette session (idempotent — un
+    `page` déjà vivant court-circuite).
+
+    Egress guard (plan 3g Task G2) : ce tier interactif est réseau-ON comme
+    le tier batch (`runner_recon/capture.py`) — même câblage. Quand
+    `egress_guard_enabled()` (défaut), un `EgressGuard` local est démarré
+    AVANT Camoufox et le navigateur est routé à travers lui via l'option
+    `proxy` STANDARD Playwright (`{"server": "http://127.0.0.1:<port>"}`) —
+    `AsyncCamoufox` déroule ses kwargs directement dans
+    `playwright.firefox.launch(...)`, cf. `runner_recon/capture.py::
+    _camoufox_session` pour la vérification détaillée de cette voie.
+
+    Le garde est gardé vivant dans `_state["guard"]` tant que la session vit
+    (une page = un garde, pas de restart entre `/goto`/`/load`/`/capture`) et
+    stoppé au mieux par `_lifespan` (hook FastAPI, déclenché sur arrêt propre
+    du conteneur — SIGTERM). Si le conteneur est tué net
+    (SIGKILL/OOM), le garde meurt avec le process : acceptable, c'est un
+    process enfant du même conteneur éphémère, aucune ressource ne fuit
+    au-delà de sa durée de vie.
+
+    Fail-safe : si `guard.start()` lève, l'exception remonte — jamais de
+    fallback silencieux vers un Camoufox sans proxy (même politique que le
+    tier batch)."""
     if _state["page"] is not None:
         return
     from camoufox.async_api import AsyncCamoufox
 
-    cm = AsyncCamoufox(headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True)
+    # WebRTC OFF (audit 3g C1) : identique au tier batch — le moteur ICE/STUN
+    # de Firefox sort en UDP DIRECT hors du garde egress (proxy TCP), donc une
+    # page hostile pourrait joindre une IP interne via `RTCPeerConnection` +
+    # `stun:`. La pref `media.peerconnection.enabled=false` rend
+    # `RTCPeerConnection` indisponible dans la page -> vecteur UDP fermé (cf.
+    # runner_recon/capture.py::_CAMOUFOX_LAUNCH_KWARGS pour le détail).
+    launch_kwargs: dict[str, Any] = dict(
+        headless=False,
+        os="linux",
+        humanize=0.3,
+        i_know_what_im_doing=True,
+        firefox_user_prefs={"media.peerconnection.enabled": False},
+    )
+    if egress_guard_enabled():
+        guard = EgressGuard()
+        port = await guard.start()
+        launch_kwargs["proxy"] = {"server": f"http://127.0.0.1:{port}"}
+        _state["guard"] = guard
+
+    cm = AsyncCamoufox(**launch_kwargs)
     ctx = await cm.__aenter__()
     page = await ctx.new_page()
     cap = NetworkCapture()

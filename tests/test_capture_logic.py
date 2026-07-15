@@ -558,3 +558,207 @@ async def test_capture_url_dom_extraction_raises_final_url_falls_back_to_url(mon
 
     assert result.dom.title == ""
     assert result.dom.final_url == "https://target.example/y"
+
+
+# --- Phase 3g Task G2 : câblage de l'egress guard dans capture_url/capture_scripted ---
+#
+# Aucun vrai navigateur/proxy ici (mocks purs) : ces tests prouvent uniquement
+# le CÂBLAGE (guard démarré, port propagé dans l'option `proxy` au format
+# attendu par Camoufox/Playwright) — la preuve que le trafic passe RÉELLEMENT
+# par le garde est apportée par tests/test_egress_integration.py (marqueur
+# integration, vrai conteneur runner + vraie fixture réseau).
+
+
+class _FakeGuardPage:
+    """Page minimale suffisante pour dérouler capture_url/capture_scripted
+    jusqu'au bout sans lever (goto/content/title/screenshot triviaux)."""
+
+    url = "https://example.com/"
+
+    async def goto(self, url, **k):
+        pass
+
+    async def content(self):
+        return "<html></html>"
+
+    async def title(self):
+        return "t"
+
+    async def screenshot(self, **k):
+        return b"PNG"
+
+    def on(self, event, handler):
+        pass
+
+
+class _FakeEgressGuard:
+    """Mock d'`engine.egress_guard.EgressGuard` : enregistre `start()`/`stop()`
+    (compte d'appels + ordre) et renvoie un port fixe déterministe."""
+
+    instances: list["_FakeEgressGuard"] = []
+
+    def __init__(self, *a, **k):
+        self.started = False
+        self.stopped = False
+        self.port = 54321
+        _FakeEgressGuard.instances.append(self)
+
+    async def start(self) -> int:
+        self.started = True
+        return self.port
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+def _install_fake_camoufox_recording_kwargs(monkeypatch, page, calls: list[dict]):
+    """Comme `_install_fake_camoufox`, mais enregistre les kwargs reçus par
+    `AsyncCamoufox(...)` dans `calls` (une entrée par instanciation) — permet
+    de vérifier que l'option `proxy` transmise pointe bien `127.0.0.1:<port>`,
+    exactement le format `ProxySettings` Playwright standard (vérifié dans
+    `runner_recon/capture.py::_camoufox_session`, camoufox déroule ses kwargs
+    directement dans `playwright.firefox.launch(**kwargs)`)."""
+    import sys
+    import types
+
+    class FakeCtx:
+        async def new_page(self):
+            return page
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeAsyncCamoufox:
+        def __init__(self, **k):
+            calls.append(k)
+
+        async def __aenter__(self):
+            return FakeCtx()
+
+        async def __aexit__(self, *a):
+            return False
+
+    fake_async_api = types.ModuleType("camoufox.async_api")
+    fake_async_api.AsyncCamoufox = FakeAsyncCamoufox
+    fake_camoufox = types.ModuleType("camoufox")
+    fake_camoufox.async_api = fake_async_api
+    monkeypatch.setitem(sys.modules, "camoufox", fake_camoufox)
+    monkeypatch.setitem(sys.modules, "camoufox.async_api", fake_async_api)
+
+
+@pytest.fixture(autouse=True)
+def _reset_fake_guard_instances():
+    _FakeEgressGuard.instances = []
+    yield
+    _FakeEgressGuard.instances = []
+
+
+@pytest.mark.asyncio
+async def test_capture_url_starts_egress_guard_and_routes_camoufox_through_proxy(monkeypatch):
+    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+
+    calls: list[dict] = []
+    _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "vision", types.ModuleType("vision"))
+
+    await cap.capture_url("https://example.com/")
+
+    assert len(_FakeEgressGuard.instances) == 1
+    guard = _FakeEgressGuard.instances[0]
+    assert guard.started is True
+    assert guard.stopped is True                  # stoppé même en sortie normale (finally)
+
+    assert len(calls) == 1
+    assert calls[0]["proxy"] == {"server": f"http://127.0.0.1:{guard.port}"}
+    # WebRTC OFF (audit 3g C1) : ferme le bypass UDP ICE/STUN du garde egress.
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_capture_scripted_starts_egress_guard_and_routes_camoufox_through_proxy(monkeypatch):
+    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+
+    calls: list[dict] = []
+    _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
+
+    await cap.capture_scripted("https://example.com/", [])
+
+    assert len(_FakeEgressGuard.instances) == 1
+    guard = _FakeEgressGuard.instances[0]
+    assert guard.started is True
+    assert guard.stopped is True
+
+    assert len(calls) == 1
+    assert calls[0]["proxy"] == {"server": f"http://127.0.0.1:{guard.port}"}
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_capture_url_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
+    # OCULAR_EGRESS_GUARD=0 (ou toute désactivation) -> comportement actuel
+    # inchangé : ni EgressGuard instancié, ni option `proxy` passée à Camoufox.
+    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: False)
+    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+
+    calls: list[dict] = []
+    _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "vision", types.ModuleType("vision"))
+
+    await cap.capture_url("https://example.com/")
+
+    assert _FakeEgressGuard.instances == []
+    assert len(calls) == 1
+    assert "proxy" not in calls[0]
+    # WebRTC OFF est un durcissement de base, INDÉPENDANT du garde : reste
+    # appliqué même quand OCULAR_EGRESS_GUARD=0 (le bypass UDP ICE est fermé
+    # en toutes circonstances).
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_capture_scripted_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
+    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: False)
+    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+
+    calls: list[dict] = []
+    _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
+
+    await cap.capture_scripted("https://example.com/", [])
+
+    assert _FakeEgressGuard.instances == []
+    assert len(calls) == 1
+    assert "proxy" not in calls[0]
+
+
+@pytest.mark.asyncio
+async def test_capture_url_guard_start_failure_propagates_no_silent_unfiltered_fallback(monkeypatch):
+    # Fail-safe tranché (cf. docstring `_camoufox_session`) : si le garde ne
+    # démarre pas, on NE bascule PAS silencieusement sur un Camoufox sans
+    # proxy -- l'exception remonte (capturée plus haut par `main()`, qui émet
+    # un wrapper d'erreur propre -- jamais un fetch direct non filtré).
+    class _FailingGuard(_FakeEgressGuard):
+        async def start(self) -> int:
+            raise RuntimeError("boom: guard ne démarre pas")
+
+    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(cap, "EgressGuard", _FailingGuard)
+
+    calls: list[dict] = []
+    _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "vision", types.ModuleType("vision"))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await cap.capture_url("https://example.com/")
+
+    assert calls == []                              # Camoufox jamais lancé
