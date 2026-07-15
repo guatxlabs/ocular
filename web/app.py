@@ -274,8 +274,11 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
         # préfixer "https://" (comportement attendu côté utilisateur), tandis
         # qu'un scheme explicite (http/https) reste inchangé. La validation
         # SSRF porte donc sur l'URL normalisée, et c'est elle qui est enqueue.
-        req.url = normalize_url(req.url)
+        # normalize_url() est couvert par le même try/except que la garde SSRF :
+        # un scheme non-réseau (data:/mailto:/javascript:/...) ou une entrée
+        # tordue ne doit jamais produire un 500, seulement un 400 propre.
         try:
+            req.url = normalize_url(req.url)
             validate_capture_url(req.url)
         except ValueError:
             raise HTTPException(status_code=400, detail="url interdite")
@@ -461,8 +464,10 @@ def create_session(
         # Même normalisation qu'à la soumission d'un job capture (cf.
         # submit_job) : AVANT la garde SSRF, pour que "example.com" devienne
         # "https://example.com" tout en respectant un scheme explicite.
-        req.url = normalize_url(req.url)
+        # normalize_url() est couvert par le même try/except que la garde SSRF
+        # (jamais de 500 pour un scheme non-réseau ou une entrée tordue).
         try:
+            req.url = normalize_url(req.url)
             validate_capture_url(req.url)
         except ValueError:
             raise HTTPException(status_code=400, detail="url interdite")
