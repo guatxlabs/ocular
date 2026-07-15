@@ -1,0 +1,16 @@
+# dockerignore SPÉCIFIQUE à deploy/Dockerfile.test (BuildKit : ce fichier prime
+# sur le .dockerignore racine pour ce Dockerfile). Identique au .dockerignore de
+# prod SAUF qu'on N'exclut PAS tests/ (l'image de test unitaire en a besoin).
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+.coverage
+.superpowers
+docs
+.env
+artifacts
+*.db
+*.db-*

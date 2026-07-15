@@ -31,8 +31,16 @@ script:
 	  -H "Authorization: Bearer $(OCULAR_TOKEN)" \
 	  -H "Content-Type: application/json" \
 	  -d "$$BODY"
+# Tests unitaires EN CONTENEUR (canonique, sans venv natif) : build l'image de
+# test puis exécute pytest -m "not integration" dedans.
 test:
-	. .venv/bin/activate && pytest -q
+	docker build -f deploy/Dockerfile.test -t ocular-test:latest .
+	docker run --rm ocular-test:latest
+# Variante locale (venv) pour un cycle rapide en dev, si tu préfères.
+test-local:
+	. .venv/bin/activate && pytest -m "not integration" -q
+# Tests d'INTÉGRATION : restent sur l'hôte (ils orchestrent Docker : build/run
+# d'images, pas de docker-in-docker). Nécessitent le CLI docker + le venv.
 test-int:
 	. .venv/bin/activate && pytest -m integration -q
 gc:
