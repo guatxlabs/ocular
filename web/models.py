@@ -24,3 +24,8 @@ class SessionRequest(BaseModel):
 class SessionResponse(BaseModel):
     session_id: str
     token: str
+
+
+class AnalystVerdictRequest(BaseModel):
+    analyst_verdict: str
+    note: Optional[str] = None
