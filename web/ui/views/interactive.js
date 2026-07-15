@@ -11,7 +11,22 @@
 //   • Anti-XSS : tout le contenu variable passe par des textNodes (el()/textContent),
 //     jamais innerHTML (seules les icônes statiques via iconNode le sont, dans core.js).
 import { el, iconNode } from '../core.js';
-import { createSession, deleteSession, captureSession, Unauthorized } from '../api.js';
+import {
+  createSession, deleteSession, captureSession, liveSession, saveAnalysis, Unauthorized,
+} from '../api.js';
+import { getToken } from '../state.js';
+import { buildFilterBar, filterEntries } from '../filter.js';
+
+// Poll du panneau live (C4) : canal de données séparé du flux pixels VNC.
+const POLL_INTERVAL_MS = 2000;
+// Fermeture auto silencieuse (C2) : onglet caché en continu au-delà de ce délai.
+const SESSION_HIDDEN_CLOSE_MS = 60000;
+// Même seuil que le tableau réseau du résultat figé (detail.js) : pas de
+// barre de filtre sur un petit résultat (bruit inutile).
+const NETWORK_FILTER_THRESHOLD = 8;
+
+const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
+const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
 
 // URL du WebSocket proxy, MÊME ORIGINE (couvert par CSP connect-src 'self').
 // Le token n'y figure PAS : il voyage par sous-protocole (voir wsProtocols plus bas).
@@ -20,21 +35,182 @@ function wsUrlFor(sessionId) {
   return scheme + location.host + '/sessions/' + encodeURIComponent(sessionId) + '/ws';
 }
 
+// Panneau live (C4) : compteurs + tableau réseau filtrable (réutilise filter.js,
+// AUCUNE réimplémentation du matching) + liste des findings. `update(data)` est
+// appelé à chaque tour de poll avec la réponse de `liveSession`. XSS-clean :
+// tout passe par el()/textContent, jamais innerHTML.
+function buildLivePanel(getLastNetwork) {
+  const netCountEl = el('b', {}, '0');
+  const findCountEl = el('b', {}, '0');
+  const verdictEl = el('span.livesumverdict.v-unknown', {}, 'verdict inconnu');
+  const summary = el('div.livesummary', {}, [
+    el('span.livesumitem', {}, [netCountEl, ' appels réseau']),
+    el('span.livesumsep', {}, '·'),
+    el('span.livesumitem', {}, [findCountEl, ' findings']),
+    el('span.livesumsep', {}, '·'),
+    verdictEl,
+  ]);
+
+  const netWrap = el('div.livenet');
+  const findWrap = el('div.livefindings');
+
+  function renderNetwork(net) {
+    netWrap.replaceChildren();
+    if (!net.length) { netWrap.appendChild(el('p.muted', {}, 'aucune requête réseau')); return; }
+    const table = el('table.qtable');
+    const thead = el('thead', {}, [el('tr', {}, [
+      el('th', {}, 'method'), el('th', {}, 'status'), el('th', {}, 'type'), el('th', {}, 'url'),
+    ])]);
+    const tb = el('tbody');
+    // Même rendu de ligne que le tableau réseau du résultat figé (detail.js) —
+    // XSS-clean, jamais innerHTML.
+    const renderRows = (rows) => {
+      tb.replaceChildren(...rows.map((n) => el('tr', {}, [
+        el('td', {}, n.method || ''),
+        el('td', {}, n.status != null ? String(n.status) : '—'),
+        el('td', {}, n.resource_type || ''),
+        el('td', { title: n.url || '' }, n.url || ''),
+      ])));
+    };
+    table.appendChild(thead); table.appendChild(tb);
+    if (net.length > NETWORK_FILTER_THRESHOLD) {
+      // Barre de filtre SOC réutilisée telle quelle (filter.js, Task 1 3d-2 I).
+      // Le canal live re-poll toutes les 2s : `getLastNetwork` referme sur les
+      // données les plus fraîches, `renderRows` re-rend le <tbody> — DRY, pas
+      // de réimplémentation du matching. Reconstruite à chaque tour (filter.js
+      // n'expose pas de hook de rafraîchissement externe pour un jeu de chips
+      // déjà posé) : compromis assumé pour un panneau live qui doit refléter
+      // l'état courant du réseau à chaque poll.
+      const bar = buildFilterBar(getLastNetwork, renderRows, { el });
+      netWrap.appendChild(el('div.filter-slot', {}, [bar]));
+    } else {
+      renderRows(filterEntries(net, []));
+    }
+    netWrap.appendChild(el('div.card', {}, [el('div.plscroll', {}, [table])]));
+  }
+
+  function renderFindings(findings) {
+    findWrap.replaceChildren();
+    if (!findings.length) { findWrap.appendChild(el('p.muted', {}, 'Aucune détection statique.')); return; }
+    findings.forEach((f) => {
+      findWrap.appendChild(el('div', { class: 'alert finding ' + (SEV_CLASS[f.severity] || '') }, [
+        el('span.sev', {}, f.severity || ''),
+        el('div.title', {}, [el('div.frule', {}, f.rule || '')]),
+      ]));
+    });
+  }
+
+  function update(data) {
+    const counts = (data && data.counts) || {};
+    const network = Array.isArray(data && data.network) ? data.network : [];
+    const findings = Array.isArray(data && data.findings) ? data.findings : [];
+    netCountEl.textContent = String(counts.network != null ? counts.network : network.length);
+    findCountEl.textContent = String(counts.findings != null ? counts.findings : findings.length);
+    const verdict = (data && data.verdict) || 'unknown';
+    verdictEl.textContent = verdict;
+    verdictEl.className = 'livesumverdict ' + (VERDICT_CLASS[verdict] || 'v-unknown');
+    renderNetwork(network);
+    renderFindings(findings);
+  }
+
+  const node = el('div.livepanel', {}, [
+    summary,
+    el('div.detsec', {}, [el('h3', {}, 'Réseau'), netWrap]),
+    el('div.detsec', {}, [el('h3', {}, 'Détections statiques'), findWrap]),
+  ]);
+
+  return { node, update };
+}
+
 export function renderInteractive(app) {
   // État vivant de la vue (closure) : session courante + client RFB.
   let rfb = null;          // instance noVNC (module chargé à la demande)
   let sessionId = null;    // id de la session côté serveur
   let token = null;        // token capability — MÉMOIRE UNIQUEMENT, jamais persisté
   let closed = false;      // garde anti-double-nettoyage
+  let pollTimer = null;    // setInterval du panneau live (/live, C4)
+  let lastNetwork = [];    // dernier réseau reçu par le poll (closure pour buildFilterBar)
+  let livePanel = null;    // panneau live courant (recréé à chaque ouverture de session)
+  let hiddenTimer = null;  // setTimeout de fermeture auto (C2, onglet caché)
 
-  function teardownRfb() {
-    if (rfb) { try { rfb.disconnect(); } catch { /* déjà fermé */ } rfb = null; }
+  // Arrête le poll du panneau live — jamais de setInterval fantôme entre deux
+  // sessions/vues. Idempotent.
+  function stopPoll() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  // Nettoyage appelé par le routeur au changement de vue : coupe le flux RFB.
-  // On NE supprime PAS la session ici (le serveur la recycle sur inactivité) —
-  // la destruction explicite reste le bouton « Fermer ».
-  const cleanup = () => { closed = true; teardownRfb(); };
+  // teardownRfb() est LE point de coupure du flux VNC (nav de vue, fermeture
+  // explicite, fermeture auto onglet caché) : y arrêter le poll garantit qu'il
+  // ne survit jamais à la scène live qui l'a démarré.
+  function teardownRfb() {
+    if (rfb) { try { rfb.disconnect(); } catch { /* déjà fermé */ } rfb = null; }
+    stopPoll();
+  }
+
+  // Nettoyage appelé par le routeur au changement de vue : coupe le flux RFB
+  // + le poll live, retire les listeners globaux (visibilitychange/beforeunload)
+  // pour ne pas fuiter entre navigations de vue. On NE supprime PAS la session
+  // ici (le serveur la recycle sur inactivité) — la destruction explicite reste
+  // le bouton « Fermer » (ou l'auto-fermeture C2 ci-dessous).
+  const cleanup = () => {
+    closed = true;
+    teardownRfb();
+    if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+    window.removeEventListener('beforeunload', onBeforeUnload);
+  };
+
+  // ---- C2 : fermeture auto silencieuse (onglet caché > 60s) ----
+  // Toujours caché à l'échéance -> ferme la session (DELETE) + teardown RFB +
+  // arrêt du poll (doClose() fait déjà tout ça). Redevenu visible avant -> on
+  // annule simplement le timer, rien d'autre ne change.
+  function onVisibilityChange() {
+    if (document.hidden) {
+      if (hiddenTimer) clearTimeout(hiddenTimer);
+      hiddenTimer = setTimeout(() => {
+        hiddenTimer = null;
+        if (sessionId) doClose();
+      }, SESSION_HIDDEN_CLOSE_MS);
+    } else if (hiddenTimer) {
+      clearTimeout(hiddenTimer);
+      hiddenTimer = null;
+    }
+  }
+
+  // Fermeture brutale du navigateur/onglet : tentative best-effort, ne doit
+  // JAMAIS bloquer la fermeture. `sendBeacon` ne porte ni la méthode DELETE ni
+  // l'en-tête Authorization (limite native de l'API) : la fermeture fiable
+  // reste le `disconnect_grace` + reaper côté serveur (C2 backend, déjà en
+  // place sur le proxy WS) — ceci ne fait que réduire la fenêtre d'exposition.
+  function onBeforeUnload() {
+    if (!sessionId) return;
+    const url = '/sessions/' + encodeURIComponent(sessionId);
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(url);
+      } else {
+        fetch(url, { method: 'DELETE', keepalive: true, headers: { Authorization: 'Bearer ' + getToken() } })
+          .catch(() => {});
+      }
+    } catch { /* best-effort, ignore */ }
+  }
+
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('beforeunload', onBeforeUnload);
+
+  // ---- C4 : poll du panneau live (/sessions/{id}/live, canal données séparé
+  // du flux pixels VNC). Une erreur (session fermée -> 404, conteneur en panne
+  // -> 502, 401) arrête proprement le poll sans jamais casser l'UI existante.
+  async function pollLive() {
+    if (!sessionId || !livePanel) return;
+    try {
+      const data = await liveSession(sessionId);
+      lastNetwork = Array.isArray(data.network) ? data.network : [];
+      livePanel.update(data);
+    } catch {
+      stopPoll();
+    }
+  }
 
   // ---- en-tête + bandeau d'avertissement (héros de la vue) ----
   app.appendChild(el('div.viewhead', {}, [
@@ -179,6 +355,10 @@ export function renderInteractive(app) {
     capBtn.addEventListener('click', () => doCapture(capBtn, captureOut));
     closeBtn.addEventListener('click', () => doClose());
 
+    // Panneau live (C4) : réseau + findings en continu, canal séparé du flux
+    // pixels VNC ci-dessous — démarré indépendamment de la connexion RFB.
+    livePanel = buildLivePanel(() => lastNetwork);
+
     stage.replaceChildren(
       el('div.livebar', {}, [
         el('span.livemeta', { title: sessionId || '' }, sessionId || ''),
@@ -186,9 +366,14 @@ export function renderInteractive(app) {
         el('div.livebar-act', {}, [capBtn, closeBtn]),
       ]),
       target,
+      livePanel.node,
       captureOut,
     );
     stage.hidden = false;
+
+    stopPoll(); // garde anti-doublon si openStage() était rappelée
+    pollLive();
+    pollTimer = setInterval(pollLive, POLL_INTERVAL_MS);
 
     // Chargement paresseux du module RFB embarqué localement (aucun CDN, CSP-safe).
     let RFB;
@@ -232,12 +417,49 @@ export function renderInteractive(app) {
     btn.replaceChildren(spin, document.createTextNode('capture…'));
     try {
       const res = await captureSession(sessionId);
+      const jobId = res.job_id || '';
+
+      // Bouton Sauvegarder (C3) : même flux POST /saved que le résultat figé
+      // (detail.js) — réutilise saveAnalysis() et les mêmes messages i18n,
+      // aucune réimplémentation. XSS-clean : el()/textContent uniquement.
+      const saveLabelInput = el('input', {
+        type: 'text', maxlength: '120', 'aria-label': 'Étiquette (optionnelle)',
+        placeholder: 'étiquette (optionnelle)',
+      });
+      const saveBtn = el('button.btn-ghost', { type: 'button' }, [iconNode('bookmark'), 'Sauvegarder']);
+      const saveActions = el('div.saverow', {}, [saveLabelInput, saveBtn]);
+      const saveErr = el('div.errbox', { role: 'alert', hidden: 'hidden' });
+
+      saveBtn.addEventListener('click', async () => {
+        saveErr.hidden = true;
+        saveBtn.disabled = true;
+        try {
+          const saved = await saveAnalysis(jobId, saveLabelInput.value.trim());
+          saveActions.replaceChildren(
+            el('span.savedok', {}, [iconNode('check'), 'Analyse sauvegardée']),
+            el('a.savedlink', { href: '#/saved/' + saved.id }, 'Voir dans Sauvegardes'),
+          );
+        } catch (ex) {
+          if (ex instanceof Unauthorized) return;
+          saveBtn.disabled = false;
+          // XSS-clean : toujours textContent, jamais innerHTML.
+          saveErr.textContent = ex && ex.duplicateLabel
+            ? 'Nom déjà utilisé — choisis une autre étiquette.'
+            : ex && ex.expired
+            ? 'Artefacts expirés — relance l\'analyse avant de sauvegarder.'
+            : String((ex && ex.message) || ex);
+          saveErr.hidden = false;
+        }
+      });
+
       out.replaceChildren(el('div.savepanel', {}, [
         el('div.saverow', {}, [
           el('span.savelead', {}, [iconNode('check'), 'Capture enregistrée']),
           el('span.livemeta', {}, res.verdict || 'unknown'),
-          el('a.savedlink', { href: '#/job/' + (res.job_id || '') }, 'Voir l\'analyse'),
+          el('a.savedlink', { href: '#/job/' + jobId }, 'Voir l\'analyse'),
         ]),
+        saveActions,
+        saveErr,
       ]));
     } catch (ex) {
       if (ex instanceof Unauthorized) return;
@@ -253,6 +475,7 @@ export function renderInteractive(app) {
   // Fermer : détruit la session côté serveur et coupe le flux, retour au formulaire.
   async function doClose() {
     teardownRfb();
+    livePanel = null;
     const id = sessionId;
     sessionId = null;
     token = null;

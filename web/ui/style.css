@@ -1200,6 +1200,23 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .captureout{margin-top:14px}
 .captureout .savepanel{margin:0}
 
+/* panneau live (C4, poll /sessions/{id}/live) : compteurs + réseau filtrable
+   (réutilise .filter-bar/.qtable/.card) + findings (réutilise .alert/.sev/.frule).
+   Accent + sévérités pilotés par les mêmes variables que le reste de l'UI
+   (--acc/--ok/--warn/--bad) -> thèmes clair/sombre gratuits, pas de couleur en dur. */
+.livepanel{margin-top:16px;padding-top:16px;border-top:1px solid var(--bd)}
+.livesummary{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;font-size:13px;color:var(--mut)}
+.livesumitem b{color:var(--hd);font-family:var(--font-mono)}
+.livesumsep{color:var(--bd)}
+.livesumverdict{font-family:var(--font-mono);font-weight:700;text-transform:uppercase;font-size:11px;
+  letter-spacing:.05em;padding:2px 9px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut)}
+.livesumverdict.v-benign{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.livesumverdict.v-suspicious{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.livesumverdict.v-malicious{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
+.livenet .plscroll{max-height:280px}
+.livefindings{display:flex;flex-direction:column}
+.livefindings .finding{margin-bottom:7px}
+
 /* responsive */
 @media (max-width:560px){
   main#app{padding:18px 14px 48px}
