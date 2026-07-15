@@ -75,6 +75,22 @@ class SessionRegistry:
             return  # session inconnue/expirée déjà supprimée : no-op
         self._r.hset(key, "last_activity", _iso_to_epoch(now_iso))
 
+    def mark_connected(self, session_id: str) -> None:
+        """Efface `disconnected_at` : la session est (de nouveau) activement
+        connectée (WS ouvert, ou poll `/live` en cours). Sans effet si le
+        champ était déjà absent (session jamais déconnectée)."""
+        self._r.hdel(self._key(session_id), "disconnected_at")
+
+    def mark_disconnected(self, session_id: str, now_epoch: float) -> None:
+        """Marque l'heure (epoch) de déconnexion — utilisée par `expired()`
+        (règle de grâce) pour nettoyer une session dont le navigateur est
+        parti brutalement. No-op sur une session inconnue/déjà supprimée
+        (cohérent avec `touch`)."""
+        key = self._key(session_id)
+        if not self._r.exists(key):
+            return
+        self._r.hset(key, "disconnected_at", now_epoch)
+
     def get_secret(self, session_id: str) -> Optional[str]:
         """Secret de session (frontière conteneur) que SEUL le web connaît, pour
         signer ses appels internes `/goto`/`/load`/`/capture` (header
@@ -100,14 +116,34 @@ class SessionRegistry:
     def delete(self, session_id: str) -> None:
         self._r.delete(self._key(session_id))
 
-    def expired(self, now_epoch: float, ttl: float, idle: float) -> list[str]:
+    def expired(
+        self,
+        now_epoch: float,
+        ttl: float,
+        idle: float,
+        disconnect_grace: Optional[float] = None,
+    ) -> list[str]:
         """Ids des sessions dont l'âge dépasse `ttl` (absolu depuis created_at)
-        OU dont l'inactivité dépasse `idle` (depuis last_activity)."""
+        OU dont l'inactivité dépasse `idle` (depuis last_activity) — logique
+        inchangée. Si `disconnect_grace` est fourni (signature rétro-compatible
+        : défaut `None` == comportement d'avant), reaper AUSSI une session
+        dont `disconnected_at` est présent et > 0 ET dont l'écoulement depuis
+        cette déconnexion dépasse `disconnect_grace` (fermeture brutale du
+        navigateur). Une session sans `disconnected_at` (jamais connectée, ou
+        actuellement connectée — `mark_connected` l'efface) n'est JAMAIS
+        reaper par cette règle, seulement par ttl/idle ci-dessus."""
         ids = []
         for sess in self.list_active():
             created = float(sess["created_at"])
             last = float(sess["last_activity"])
-            if (now_epoch - created) > ttl or (now_epoch - last) > idle:
+            reap_it = (now_epoch - created) > ttl or (now_epoch - last) > idle
+            if not reap_it and disconnect_grace is not None:
+                disconnected_at = sess.get("disconnected_at")
+                if disconnected_at not in (None, ""):
+                    disconnected_at = float(disconnected_at)
+                    if disconnected_at > 0 and (now_epoch - disconnected_at) > disconnect_grace:
+                        reap_it = True
+            if reap_it:
                 ids.append(sess["session_id"])
         return ids
 

@@ -38,28 +38,30 @@ def test_reaper_loop_calls_reap_once_with_stop_event(monkeypatch):
     calls = []
     stop_event = _FakeStopEvent()
 
-    def fake_reap(registry, now, ttl, idle):
-        calls.append((registry, now, ttl, idle))
+    def fake_reap(registry, now, ttl, idle, disconnect_grace):
+        calls.append((registry, now, ttl, idle, disconnect_grace))
 
     monkeypatch.setattr(main_mod, "reap", fake_reap)
     monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
     monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
     monkeypatch.setattr(main_mod, "_time", type("T", (), {"time": staticmethod(lambda: 42.0)})())
 
     registry = object()
     _reaper_loop(registry, stop_event=stop_event)  # une seule itération puis sort via wait()
 
     assert len(calls) == 1
-    assert calls[0] == (registry, 42.0, 1800, 600)
+    assert calls[0] == (registry, 42.0, 1800, 600, 45)
 
 
 def test_reaper_loop_survives_reap_exception(monkeypatch):
-    def boom(registry, now, ttl, idle):
+    def boom(registry, now, ttl, idle, disconnect_grace):
         raise RuntimeError("redis down")
 
     monkeypatch.setattr(main_mod, "reap", boom)
     monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
     monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
 
     stop_event = _FakeStopEvent()
 

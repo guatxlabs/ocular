@@ -174,5 +174,13 @@ export function buildFilterBar(getEntries, onChange, opts = {}) {
   renderChips();
   refresh();
 
+  // Expose le refresh interne sur le nœud (rétro-compatible : detail.js ignore
+  // `.refresh`). Utile aux appelants dont les données évoluent APRÈS la
+  // construction de la barre (ex. panneau live pollé toutes les 2s) : ils
+  // gardent une réf mutable, `getEntries` renvoie les données courantes, et
+  // `bar.refresh()` ré-applique les chips DÉJÀ posés sur ces nouvelles données
+  // + re-rend — sans reconstruire la barre (donc chips préservés).
+  bar.refresh = refresh;
+
   return bar;
 }
