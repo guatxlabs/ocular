@@ -184,3 +184,43 @@ def test_livewarn_has_no_divergent_border_left():
     block = m.group(0)
     assert "border-left" not in block
     assert "border:1px" in block or "border: 1px" in block
+
+
+# ---- filtre SOC des résultats réseau (Task 1 3d-2 I) : filter.js ----
+
+def test_filter_js_served_as_static_module():
+    # web/ui/filter.js est un module ES autonome, servi en statique comme les
+    # autres vues (aucune route serveur dédiée n'est requise par le plan).
+    c = TestClient(app)
+    r = c.get("/filter.js")
+    assert r.status_code == 200
+    assert "javascript" in r.headers.get("content-type", "").lower()
+
+
+def test_filter_js_has_no_user_regex_anti_redos():
+    # Contrainte de sécurité du plan : aucune regex utilisateur -> aucun
+    # `new RegExp` dans le module de filtrage (matching substring/égalité
+    # uniquement, via String.includes/toLowerCase).
+    js = open("web/ui/filter.js").read()
+    assert "new RegExp" not in js
+
+
+def test_filter_js_never_uses_innerhtml():
+    # XSS-clean : chips/compteur construits via el()/textContent, jamais
+    # d'innerHTML sur des données d'entrée (labels de chip, valeurs d'entrée).
+    js = open("web/ui/filter.js").read()
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_filter_js_makes_no_network_calls():
+    # Filtrage 100% côté client sur des données déjà chargées : aucun fetch/
+    # appel réseau ne doit être déclenché par le module.
+    js = open("web/ui/filter.js").read()
+    assert "fetch(" not in js
+    assert "XMLHttpRequest" not in js
+
+
+def test_filter_js_exports_expected_interface():
+    js = open("web/ui/filter.js").read()
+    for name in ("entryHost", "entryMime", "matchChip", "filterEntries", "buildFilterBar"):
+        assert f"export function {name}" in js or f"export async function {name}" in js, name
