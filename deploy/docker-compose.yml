@@ -19,6 +19,11 @@ services:
       OCULAR_TRUST_FORWARD_AUTH: "${OCULAR_TRUST_FORWARD_AUTH:-}"
       OCULAR_FORWARD_USER_HEADER: "${OCULAR_FORWARD_USER_HEADER:-X-Forwarded-User}"
       OCULAR_FORWARD_EMAIL_HEADER: "${OCULAR_FORWARD_EMAIL_HEADER:-X-Forwarded-Email}"
+      # Rôle admin via groupe IdP (phase 3h) — opt-in : nécessite aussi
+      # OCULAR_TRUST_FORWARD_AUTH=1 + le proxy qui strippe le header client.
+      # Vide -> admin uniquement via X-Admin-Token.
+      OCULAR_ADMIN_GROUP: "${OCULAR_ADMIN_GROUP:-}"
+      OCULAR_FORWARD_GROUPS_HEADER: "${OCULAR_FORWARD_GROUPS_HEADER:-X-Forwarded-Groups}"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: ["ALL"]
