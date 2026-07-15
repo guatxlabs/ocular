@@ -91,6 +91,9 @@ header h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800
 .whoami .ic{width:14px;height:14px;color:var(--acc)}
 .whoami-label::after{content:" : "}
 .whoami-id{color:var(--hd);font-family:var(--font-mono);font-weight:700;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* groupes IdP (Phase 3h, is_admin/groups) — affichés seulement si non vides */
+.whoami-groups{color:var(--mut);font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.whoami-groups::before{content:"· "}
 
 /* mise en page : sidebar repliable */
 [hidden]{display:none!important}
