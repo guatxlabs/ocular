@@ -67,6 +67,16 @@ def forward_auth_email_header() -> str:
     return os.environ.get("OCULAR_FORWARD_EMAIL_HEADER", "X-Forwarded-Email")
 
 
+def admin_group() -> str:
+    """Nom du groupe IdP accordant l'admin (`DELETE /saved`). Défaut `""` =
+    admin-par-groupe désactivé (seul `OCULAR_ADMIN_TOKEN` fait foi)."""
+    return os.environ.get("OCULAR_ADMIN_GROUP", "")
+
+
+def forward_auth_groups_header() -> str:
+    return os.environ.get("OCULAR_FORWARD_GROUPS_HEADER", "X-Forwarded-Groups")
+
+
 def session_ttl() -> int:
     return int(os.environ.get("OCULAR_SESSION_TTL", "1800"))     # 30 min absolu
 
