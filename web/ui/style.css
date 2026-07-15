@@ -1086,6 +1086,26 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .detsec > h3{font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);margin:0 0 10px;font-weight:600;display:flex;align-items:center;gap:8px}
 .detsec > h3 .cnt{color:var(--acc)}
 
+/* filtre SOC du tableau réseau (Task 2 3d-2 I, filter.js) : barre discrète,
+   accent violet, chips retirables. Thème piloté par les variables (voir :root
+   / html[data-theme="light"] en tête de fichier) -> pas de règle dupliquée ici. */
+.filter-slot{margin-bottom:10px}
+.filter-bar{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--bd);border-radius:var(--radius);background:var(--card2)}
+.filter-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.filter-field,.filter-op{background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:7px;padding:5px 8px;font-size:12px;font-family:var(--font-mono)}
+.filter-value{flex:1 1 160px;min-width:120px;background:var(--card);color:var(--fg);border:1px solid var(--bd);border-radius:7px;padding:5px 9px;font-size:12px}
+.filter-field:focus,.filter-op:focus,.filter-value:focus{outline:none;border-color:var(--acc)}
+.filter-exclude-label{display:inline-flex;align-items:center;gap:5px;color:var(--mut);font-size:12px;cursor:pointer;user-select:none}
+.filter-add{background:var(--acc);color:var(--acc-ink);border:0;border-radius:7px;padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;line-height:1}
+.filter-add:hover{filter:brightness(1.08)}
+.filter-chips{display:flex;flex-wrap:wrap;gap:6px}
+.filter-chip{display:inline-flex;align-items:center;gap:6px;border-radius:var(--pill);padding:3px 4px 3px 9px;font-family:var(--font-mono);font-size:11px;border:1px solid var(--bd);background:var(--card)}
+.filter-chip.include{color:var(--acc);border-color:var(--acc-soft);background:var(--acc-bg)}
+.filter-chip.exclude{color:var(--bad)}
+.chip-remove{background:transparent;border:0;color:inherit;cursor:pointer;font-size:13px;line-height:1;padding:2px 4px;border-radius:4px}
+.chip-remove:hover{background:var(--acc-soft)}
+.filter-count{color:var(--mut);font-size:11px;font-family:var(--font-mono)}
+
 /* findings groupés par sévérité (réutilise .alert / .sev / .sev-N de plume) */
 .sevgroup{margin-bottom:12px}
 .sevgroup > .sevlabel{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 6px}
