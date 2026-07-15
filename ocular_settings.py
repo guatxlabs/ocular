@@ -91,6 +91,20 @@ def session_disconnect_grace() -> int:
     return int(os.environ.get("OCULAR_SESSION_DISCONNECT_GRACE", "45"))
 
 
+def egress_guard_enabled() -> bool:
+    """Secure-by-default (plan 3g) : le garde egress (`engine.egress_guard.
+    EgressGuard`) est **ON** par défaut sur les runners réseau-ON (recon
+    batch + session interactive) — `OCULAR_EGRESS_GUARD=0` (ou
+    false/no/off) pour le désactiver explicitement. Le navigateur Camoufox
+    n'a alors aucun bypass caché : c'est ce garde, résolution+pinning IP au
+    moment de la connexion, qui défait le DNS-rebinding résiduel qu'un
+    contrôle SSRF au submit (`engine.ssrf.validate_capture_url`) ne peut pas
+    couvrir seul."""
+    return os.environ.get("OCULAR_EGRESS_GUARD", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 def session_ready_timeout() -> float:
     """Délai global (secondes) laissé au broker pour lancer le conteneur de
     session + au session_server pour répondre `/health`, avant de renvoyer
