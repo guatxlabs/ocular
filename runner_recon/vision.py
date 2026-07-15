@@ -17,13 +17,19 @@ import math
 import random
 import asyncio
 import subprocess
-import numpy as np
 
 _DISP = {"DISPLAY": os.environ.get("DISPLAY", ":99"), "PATH": "/usr/bin:/bin"}
 
 
 # ───────────────────────── detection (ex detector.py) ─────────────────────────
+# numpy (comme cv2 plus bas) est importé paresseusement, dans chaque fonction qui
+# en a besoin, pas au niveau module : `numpy`/`opencv-python-headless` ne sont
+# installés que dans l'image runner_recon (cf. Dockerfile), pas dans le venv de
+# dev/test -- ça garde les helpers purs (`image_to_screen`, le clic xdotool) et
+# `capture.py` (qui importe `vision` seulement à l'intérieur de ses fonctions
+# async, jamais au niveau module) importables/testables sans ces deps lourdes.
 def _detect_color(frame_bgr, target_rgb, tolerance, min_pixels):
+    import numpy as np
     rgb = frame_bgr[:, :, 2::-1].astype(np.int32)          # BGR -> RGB
     tr, tg, tb = target_rgb
     d2 = (rgb[:, :, 0] - tr) ** 2 + (rgb[:, :, 1] - tg) ** 2 + (rgb[:, :, 2] - tb) ** 2
@@ -35,6 +41,7 @@ def _detect_color(frame_bgr, target_rgb, tolerance, min_pixels):
 
 def _detect_edges(frame_bgr, edge_lo, edge_hi, min_area, max_area, aspect):
     import cv2
+    import numpy as np
     bgr = np.ascontiguousarray(frame_bgr[:, :, :3])
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -115,8 +122,35 @@ def detect(frame_bgr, strategy="color", target_rgb=(34, 238, 85), tolerance=70,
 def png_to_bgr(png_bytes):
     """Décode des octets PNG (page.screenshot) -> ndarray BGR (comme mss/cv2)."""
     import cv2
+    import numpy as np
     arr = np.frombuffer(png_bytes, dtype=np.uint8)
     return cv2.imdecode(arr, cv2.IMREAD_COLOR)   # BGR, 3 canaux
+
+
+# ───────────────── mapping coords image (viewport) -> écran (Xvfb) ─────────────────
+def image_to_screen(det, moz_x, moz_y, dpr):
+    """(x, y) px IMAGE (viewport du screenshot Playwright, ce que renvoie
+    `detect()`) -> (x, y) px ÉCRAN Xvfb (ce qu'attend `human_click_xdotool`).
+
+    Cause racine n°1 du Turnstile qui rate sa cible (cf. plan phase3d-2b) :
+    `detect()` travaille sur le screenshot, dont l'origine (0,0) est le coin
+    haut-gauche du VIEWPORT de la page -- pas de l'écran. `human_click_xdotool`
+    clique en coordonnées ÉCRAN absolues (xdotool/X11). Il manque l'offset du
+    chrome du navigateur (barre d'URL/onglets Firefox) + la position de la
+    fenêtre, exposé par `window.mozInnerScreenX/Y` (API Gecko, px CSS) --
+    sans lui, le clic tombe à côté de la case, décalé de la hauteur du chrome.
+
+    `dpr` = `window.devicePixelRatio` : le screenshot est capturé en px
+    *device* (peut différer des px *CSS* si dpr != 1), alors que
+    `mozInnerScreenX/Y` est en px CSS -- diviser par `dpr` avant d'ajouter
+    l'offset remet les deux quantités dans la même unité. `dpr` falsy (0 ou
+    None -- valeur JS foireuse ou absente) retombe sur 1 (jamais de division
+    par zéro).
+
+    Fonction PURE (aucune dépendance vision/navigateur) : testée isolément
+    dans tests/test_vision_coords.py."""
+    d = dpr or 1
+    return (int(round(moz_x + det[0] / d)), int(round(moz_y + det[1] / d)))
 
 
 # ───────── clic OS xdotool (X11 réel) — passe les Turnstile interactifs ─────────
