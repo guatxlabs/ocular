@@ -71,6 +71,7 @@ const I18N_EN = {
   'étiquette (optionnelle)': 'label (optional)', 'Analyse sauvegardée': 'Analysis saved',
   'Voir dans Sauvegardes': 'View in Saved',
   'Artefacts expirés — relance l\'analyse avant de sauvegarder.': 'Artifacts expired — rerun the analysis before saving.',
+  'Nom déjà utilisé — choisis une autre étiquette.': 'Name already used — pick another label.',
   // vue Sauvegardes
   'Analyses conservées côté serveur, indépendantes du navigateur.': 'Analyses kept server-side, independent of the browser.',
   'Aucune analyse sauvegardée.': 'No saved analysis.',

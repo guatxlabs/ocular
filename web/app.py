@@ -554,6 +554,8 @@ def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     try:
         sid = saved_store.save(conn, result, blobs, body.get("label"),
                                datetime.now(timezone.utc).isoformat())
+    except saved_store.DuplicateLabelError:
+        raise HTTPException(status_code=409, detail="nom déjà utilisé")
     finally:
         conn.close()
     log.info("saved job_id=%s id=%s verdict=%s", job_id, sid, result.get("verdict"))

@@ -1,3 +1,5 @@
+import pytest
+
 import saved_store as ss
 
 
@@ -58,3 +60,31 @@ def test_label_is_parameterized_not_injected():
     ss.save(c, _result(), {"sha256:" + "b" * 64: b"X"}, evil, "t")
     # la table existe toujours et le label est stocké littéralement
     assert ss.get_by_hash(c, "sha256:" + "a" * 64)["label"] == evil
+
+
+# ---- unicité du nom (label) — Task D 3d-1 ----------------------------------
+
+def test_duplicate_label_on_different_hash_raises():
+    c = _conn()
+    ss.save(c, _result(h="sha256:" + "a" * 64), {}, "x", "t1")
+    with pytest.raises(ss.DuplicateLabelError):
+        ss.save(c, _result(h="sha256:" + "f" * 64), {}, "x", "t2")
+    # la 2e sauvegarde n'a pas été créée
+    assert len(ss.list_all(c)) == 1
+
+
+def test_duplicate_label_resave_same_hash_is_allowed_upsert():
+    c = _conn()
+    ss.save(c, _result(h="sha256:" + "a" * 64), {}, "x", "t1")
+    sid = ss.save(c, _result(h="sha256:" + "a" * 64), {}, "x", "t2")
+    assert sid
+    assert len(ss.list_all(c)) == 1
+    assert ss.get_by_hash(c, "sha256:" + "a" * 64)["label"] == "x"
+
+
+def test_empty_or_none_label_has_no_uniqueness_constraint():
+    c = _conn()
+    ss.save(c, _result(h="sha256:" + "a" * 64), {}, "", "t1")
+    ss.save(c, _result(h="sha256:" + "f" * 64), {}, "", "t2")
+    ss.save(c, _result(h="sha256:" + "9" * 64), {}, None, "t3")
+    assert len(ss.list_all(c)) == 3
