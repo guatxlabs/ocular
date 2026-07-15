@@ -225,6 +225,30 @@ délibéré de portabilité :
   VPS…) fonctionne sans modification — **aucun n'est requis** : un simple fichier `.env` local
   suffit pour un déploiement mono-VPS.
 
+#### Identité IdP (forward-auth) — optionnel
+
+Pour tracer **qui** analyse/tranche (verdict analyste, provenance des sauvegardes), Ocular peut
+dériver l'identité de l'utilisateur depuis les en-têtes injectés par un reverse-proxy
+authentifié — compatible **n'importe quel** IdP (Keycloak, Authentik, Authelia, oauth2-proxy,
+LDAP fronté par un proxy…), sans verrouillage.
+
+- **Désactivé par défaut.** L'en-tête d'identité n'est lu que si `OCULAR_TRUST_FORWARD_AUTH=1`.
+  Sans cette variable, seul le `Bearer $OCULAR_TOKEN` authentifie (comportement inchangé).
+- Variables : `OCULAR_TRUST_FORWARD_AUTH` (opt-in), `OCULAR_FORWARD_USER_HEADER`
+  (défaut `X-Forwarded-User`), `OCULAR_FORWARD_EMAIL_HEADER` (défaut `X-Forwarded-Email`).
+- Quand activé, une requête proxifiée porteuse de l'en-tête d'identité est autorisée
+  automatiquement (l'analyste derrière l'IdP n'a **aucun jeton à coller**) ; l'identité alimente
+  `saved_by` et le verdict analyste. `GET /auth/whoami` renvoie l'identité de l'appelant.
+
+> ⚠️ **IMPÉRATIF de sécurité.** N'activez `OCULAR_TRUST_FORWARD_AUTH` **que** derrière un
+> reverse-proxy qui **authentifie ET supprime (strip) toute copie de l'en-tête d'identité
+> venant du client**. Sinon, un client peut usurper `X-Forwarded-User: admin` et obtenir un
+> accès. Recommandations : (1) gardez `OCULAR_TOKEN` défini même en mode forward-auth (filet
+> réseau) ; (2) assurez-vous que le conteneur `web` n'est **jamais** joignable en direct, seul
+> le proxy l'atteint ; (3) le proxy doit écraser l'en-tête, pas seulement l'ajouter.
+> L'action admin (`DELETE /saved`) reste protégée séparément par `OCULAR_ADMIN_TOKEN` — le
+> forward-auth ne l'escalade jamais.
+
 ## Déployer
 
 Sur un VPS :
