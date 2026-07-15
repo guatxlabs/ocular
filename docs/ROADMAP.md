@@ -31,12 +31,11 @@ Légende : ✅ fait & mergé · 🔜 à faire (priorisé) · ⏳ différé (dett
 
 Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par la méthode (spec courte → SDD → e2e).
 
-> **État** :
-> - **3d-1 (mergé)** : ✅ A verdict · D nom unique · E GC planifié · F upload .htm/.html · G bandeau CSS · H schéma URL+fallback.
-> - **3d-2 (mergé)** : ✅ **I** filtrage SOC (`filter.js`, structuré, sans ReDoS) · ✅ **C** interactif (panneau live pollé + filtrable, fermeture auto onglet 60s + fermeture brutale `disconnected_at`/reaper grâce, sauvegarde) · ✅ **B** Turnstile (causes racines corrigées : mapping viewport→écran `mozInnerScreen` + retry ; **à valider sur cible Cloudflare réelle**).
-> - **Reste** : **J** (recalibration détecteurs) ; suivis ci-dessous.
+> **État — PHASE 3d COMPLÈTE (A–J tous mergés) :**
+> - **3d-1** : ✅ A verdict · D nom unique · E GC planifié · F upload .htm/.html · G bandeau CSS · H schéma URL+fallback.
+> - **3d-2** : ✅ **I** filtrage SOC (`filter.js`, structuré, sans ReDoS) · ✅ **C** interactif (panneau live pollé/filtrable, fermeture auto onglet 60s + fermeture brutale `disconnected_at`/reaper grâce, sauvegarde) · ✅ **B** Turnstile (mapping viewport→écran `mozInnerScreen` + retry — **VALIDÉ EN DIRECT sur guatx.com** : `img=(315,337)→screen=(315,398)`, `solved=True`) · ✅ **J** recalibration verdict (re-tier + corroboration phishing/obfuscation — login légitime=benign, phishing/malware=malicious, faux négatifs audités+corrigés, EN+FR).
 >
-> **Suivis (dette 3d-2)** : (a) Turnstile — le retry ajoute ~4s à toute capture ; gater le retry sur un indicateur Cloudflare (iframe `challenges.cloudflare.com`) pour ne payer le délai que quand un challenge existe ; valider contre un vrai widget. (b) Interactif — le poll `/live` ne réarme pas `mark_connected` : si un reconnect auto RFB est ajouté un jour, faire pointer `/live` vers `mark_connected` pour éviter un reap prématuré.
+> **Suivis (dette, non bloquants)** : (a) Turnstile — le retry ajoute ~4s à toute capture ; gater sur un indicateur Cloudflare (iframe `challenges.cloudflare.com`) pour ne payer le délai que quand un challenge existe. (b) Interactif — le poll `/live` ne réarme pas `mark_connected` (ok tant qu'il n'y a pas de reconnect auto RFB). (c) Langage d'urgence phishing : EN+FR couverts ; autres langues rattrapées par le cluster form-externe mais patterns dédiés = dette.
 
 ### A. Correctness du verdict
 - **A1 — Script externe seul ≠ malveillant.** `engine/static.py:25` classe **tout** `<script src=https://…>` en `critical` → `compute_verdict` renvoie `malicious`. Une page légitime avec un CDN est donc « malicious ». **Attendu** : un script externe seul ne doit **pas** faire basculer en `suspicious`/`malicious`. Fix : abaisser la sévérité de ce détecteur (`low`/`info`, reste visible comme finding) et/ou ne l'élever que combiné à d'autres signaux (obfuscation, `eval`, exfil). Revoir dans la foulée les autres détecteurs à sévérité trop agressive.
