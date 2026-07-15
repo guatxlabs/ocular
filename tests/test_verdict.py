@@ -145,3 +145,41 @@ def test_french_full_phishing_is_malicious():
         _rf("Account suspended text", "medium"),
     ]
     assert compute_verdict(findings) == "malicious"
+
+
+def test_spanish_full_phishing_is_malicious():
+    # credential + form externe + urgence ES -> kit complet, cluster multilingue.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("External form action", "medium"),
+        _rf("Account verification text", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_german_full_phishing_is_malicious():
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("External form action", "medium"),
+        _rf("Account suspended text", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_portuguese_full_phishing_is_malicious():
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("External form action", "medium"),
+        _rf("Identity confirmation text", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_spanish_partial_phishing_signal_is_suspicious():
+    # credential + urgence ES, mais pas de form externe -> pas corroboré.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Payment update text", "medium"),
+        _rf("Form action URL", "low"),
+    ]
+    assert compute_verdict(findings) == "suspicious"

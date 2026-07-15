@@ -59,12 +59,12 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"<input[^>]*name\s*=\s*[\"']pass", "Password field (name)", "low"),
     (r"<input[^>]*name\s*=\s*[\"']email", "Email input field", "low"),
     (r"<input[^>]*name\s*=\s*[\"']user", "Username input field", "low"),
-    # Langage d'urgence (phishing) — couverture EN + FR. Les patterns FR sont
-    # mappés sur les MÊMES `rule` names que l'anglais pour rejoindre le cluster
-    # _URGENCY côté verdict. Quantificateurs bornés `.{0,20}` (pas d'imbrication)
-    # -> ReDoS-safe. Les autres langues restent une dette connue ; le fix
-    # "cred + form externe -> suspicious" rattrape déjà le cas form-externe
-    # quelle que soit la langue.
+    # Langage d'urgence (phishing) — couverture EN + FR + ES + DE + PT. Tous les
+    # patterns non-EN sont mappés sur les MÊMES `rule` names que l'anglais pour
+    # rejoindre le cluster _URGENCY côté verdict (cf. engine/verdict.py).
+    # Quantificateurs bornés `.{0,20}` (pas d'imbrication) -> ReDoS-safe.
+    # Collocations mot-clé+proximité (pas de mot isolé trop courant type
+    # compte/cuenta/konto/conta) -> anti-faux-positif.
     (r"verify.*account", "Account verification text", "medium"),
     (r"confirm.*identity", "Identity confirmation text", "medium"),
     (r"update.*payment", "Payment update text", "medium"),
@@ -73,6 +73,37 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"confirm\w*.{0,20}(identit|compte)", "Identity confirmation text", "medium"),
     (r"(mett|mise).{0,20}jour.{0,20}paiement", "Payment update text", "medium"),
     (r"compte.{0,20}(suspendu|bloqu[eé]|d[eé]sactiv)", "Account suspended text", "medium"),
+    # ES — le radical "verific" ne couvre pas la forme "verifique" (c -> qu
+    # devant e en espagnol) -> alternance des deux radicaux.
+    (r"(?:verific|verifiqu)\w*.{0,20}cuenta", "Account verification text", "medium"),
+    (r"confirm\w*.{0,20}(identidad|cuenta)", "Identity confirmation text", "medium"),
+    (r"actualiz\w*.{0,20}pago", "Payment update text", "medium"),
+    (r"cuenta.{0,20}(suspendid|bloquead|desactivad)", "Account suspended text", "medium"),
+    # DE — l'allemand place souvent le verbe avant l'objet ("Bitte
+    # verifizieren Sie Ihr Konto" / "Bestätigen Sie Ihre Identität") ->
+    # alternance des deux ordres, toujours avec écarts bornés `.{0,20}`.
+    (
+        r"(?:konto|zugang).{0,20}(?:verifizier|best[aä]tig)\w*"
+        r"|(?:verifizier|best[aä]tig)\w*.{0,20}(?:konto|zugang)",
+        "Account verification text",
+        "medium",
+    ),
+    (
+        r"identit[aä]t.{0,20}best[aä]tig\w*|best[aä]tig\w*.{0,20}identit[aä]t",
+        "Identity confirmation text",
+        "medium",
+    ),
+    (
+        r"zahlung\w*.{0,20}aktualisier\w*|aktualisier\w*.{0,20}zahlung",
+        "Payment update text",
+        "medium",
+    ),
+    (r"konto.{0,20}(gesperrt|deaktiviert|suspendier)", "Account suspended text", "medium"),
+    # PT — même remarque qu'en ES ("verifique" via c -> qu).
+    (r"(?:verific|verifiqu)\w*.{0,20}conta", "Account verification text", "medium"),
+    (r"confirm\w*.{0,20}(identidade|conta)", "Identity confirmation text", "medium"),
+    (r"atualiz\w*.{0,20}pagamento", "Payment update text", "medium"),
+    (r"conta.{0,20}(suspens|bloquead|desativ)", "Account suspended text", "medium"),
 ]
 
 _COMPILED = [(re.compile(p, re.IGNORECASE), d, s) for p, d, s in PATTERNS]
