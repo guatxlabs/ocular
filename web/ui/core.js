@@ -175,10 +175,12 @@ function updateChrome(view, authed) {
   if (logout) logout.hidden = !authed || authMethod === 'forward-auth';
   document.querySelectorAll('#topnav a').forEach((a) =>
     a.classList.toggle('on', a.dataset.route === view || (view === 'job' && a.dataset.route === 'jobs')));
-  // lien Admin masqué aux non-admins — confort seulement, le backend reste la
-  // garde réelle (renderAdmin() re-vérifie isAdmin() avant tout rendu).
+  // Lien Admin visible dès qu'on est authentifié : l'admin par X-Admin-Token se
+  // saisit DANS la page admin, donc on ne peut pas la masquer sur le seul flag de
+  // groupe (sinon un admin par token n'y accéderait jamais). Le backend reste la
+  // garde réelle (DELETE /saved -> 403/503).
   const adminLink = document.querySelector('#topnav a[data-route="admin"]');
-  if (adminLink) adminLink.hidden = !authed || !adminFlag;
+  if (adminLink) adminLink.hidden = !authed;
 }
 
 // ---- routeur hash ----

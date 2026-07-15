@@ -28,26 +28,19 @@ export function renderAdmin(app) {
     el('span.sub', {}, 'Purge des analyses sauvegardées. Actions destructives.'),
   ]));
 
-  // is_admin (Phase 3h) : gate purement ergonomique — reflète whoami() (groupe
-  // IdP admin ou identité admin résolue serveur). Le backend REST reste la vraie
-  // garde (DELETE /saved renvoie 403/503 indépendamment de ce masquage) ; on
-  // n'affiche même pas le formulaire de token/liste si le compte courant n'est
-  // pas admin, pour ne pas laisser croire qu'une action serait possible.
-  if (!isAdmin()) {
+  // Deux voies d'admin (Phase 3h) : (1) X-Admin-Token saisi ci-dessous — la voie
+  // par défaut, toujours disponible ; (2) groupe IdP admin (forward-auth), qui
+  // autorise DELETE /saved côté backend SANS token. On affiche donc TOUJOURS le
+  // formulaire de token (sinon un admin par token ne pourrait jamais se connecter),
+  // et si l'appelant est déjà admin via son groupe, on signale que le token est
+  // facultatif. Le backend REST reste la vraie garde (403/503 quoi qu'il arrive).
+  if (isAdmin()) {
     const groups = getGroups();
     app.appendChild(el('div.card', {}, [
-      el('div.emptyview', {}, [
-        iconNode('shield'),
-        el('p', {}, 'Admin requis.'),
-        // libellé statique + valeur dynamique en NŒUDS SÉPARÉS (2 kids) : i18nWalk
-        // ne traduit que des textNode dont la valeur trimée matche EXACTEMENT une
-        // clé du dico — les concaténer en une seule chaîne casserait la traduction.
-        el('span.muted', {}, groups.length
-          ? ['Tes groupes :', ' ', el('b', {}, groups.join(', '))]
-          : 'Aucun groupe détecté.'),
-      ]),
+      el('span.muted', {}, groups.length
+        ? ['Admin via ton groupe IdP — token facultatif. Groupes :', ' ', el('b', {}, groups.join(', '))]
+        : 'Admin via ton identité — token facultatif.'),
     ]));
-    return null;
   }
 
   const notice = el('div.errbox', { role: 'alert', hidden: 'hidden' });
