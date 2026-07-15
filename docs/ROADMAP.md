@@ -87,12 +87,16 @@ Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par l
 - **Finalisation DOM sous `asyncio.wait_for`** (résultat partiel garanti).
 - **Plafond de corps ASGI** : coupe réellement le chunked (sans Content-Length) → **413** (prouvé e2e réel ; l'ancienne version levait une exception avalée par les BaseHTTPMiddleware).
 
+## ✅ Phase 3g — SSRF egress guard (mergé)
+
+Ferme le trou SSRF résiduel (redirections + DNS-rebinding que `validate_capture_url` ne couvrait pas). Proxy HTTP/CONNECT **dans le runner** (`engine/egress_guard.py`) : résout → **épingle l'IP** (pas de re-résolution → défait le rebinding) → `is_global` sinon 403 ; chaque redirection = nouveau CONNECT re-vérifié. WebRTC désactivé (ferme le canal UDP ICE qui contournait le proxy TCP), multicast rejeté. Secure-by-default (`OCULAR_EGRESS_GUARD`, ON ; `=0` pour analyser une cible interne de confiance). Audité (aucun bypass de parsing) + e2e réel (interne bloqué, redirection bloquée, guatx résout à travers, WebRTC off prouvé).
+
 > **Leçon opérationnelle (récurrente)** : un e2e complet doit rebuild **les images runner** (`docker build -f runner_*/Dockerfile`) **ET** les services compose (`docker compose up -d --build` pour web/broker). `compose up -d` seul réutilise des images stale → faux résultats (vu 2× : verdict « malicious », body-cap « 422 »).
 
 ## ⏳ Différés techniques (dette identifiée par les audits, non bloquante)
 
 Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
-- **SSRF — DNS-rebinding & suivi de redirections.** `validate_capture_url` valide au submit, mais `page.goto()` (3a/3c) suit les redirections dans le navigateur (réseau ON) → une réponse `302` vers une IP interne contourne la garde. Fix = **filtrage egress du runner** (isolation réseau / proxy egress avec allowlist). Chantier réseau, pas DSL.
+- ~~**SSRF — DNS-rebinding & suivi de redirections**~~ → **✅ FERMÉ (phase 3g)** : egress guard dans le runner (proxy HTTP/CONNECT + résolution+**pinning IP** + `is_global`), WebRTC désactivé (canal UDP ICE), multicast rejeté. Validé e2e (interne bloqué, redirection 302→IP interne bloquée, rebinding défait, guatx résout à travers). **Résiduel (défense en profondeur, non bloquant)** : un **filet L3 egress réseau** au niveau déploiement (iptables / réseau docker restreint sur les conteneurs runner) couvrirait tout canal non-proxy — responsabilité opérateur, comme le strip forward-auth.
 - **Mapping groupes IdP → rôles** (3e) : dériver l'admin (ou d'autres rôles) d'un groupe/claim IdP (`X-Forwarded-Groups`) plutôt que du seul `X-Admin-Token`. Design d'autorisation.
 - **Validation OIDC JWT in-app** (3e) : valider un JWT (iss/aud/exp via JWKS) pour un Keycloak/Authentik **sans** reverse-proxy. Le forward-auth couvre déjà le cas proxifié (le plus courant).
 - **VNC-passwd par session (3b)** — durcissement supplémentaire au-delà du secret à la frontière conteneur (DES 8-char faible → à évaluer).
