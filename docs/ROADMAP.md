@@ -80,13 +80,24 @@ Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par l
 - **Provenance** : sauvegarde = hash + timestamp + `saved_by` (identité) + `turnstile_solved` ; migration SQLite idempotente. UI : bandeau whoami + provenance + contrôles verdict analyste (XSS-clean).
 - Impératif déploiement (README) : proxy DOIT stripper l'en-tête client, garder `OCULAR_TOKEN` comme filet, `web` jamais joignable en direct.
 
+## ✅ Phase 3f — Dette technique / durcissement (mergé)
+
+- **Gating Turnstile** : détection vision (~4s) seulement si un indicateur Cloudflare est présent (poll de l'indicateur car injecté async — validé live : example.com sans tentative, guatx.com `solved=True`).
+- **Dédup Camoufox** `_capture_dom` (une source) ; `final_url` retombe sur `url` sur exception.
+- **Finalisation DOM sous `asyncio.wait_for`** (résultat partiel garanti).
+- **Plafond de corps ASGI** : coupe réellement le chunked (sans Content-Length) → **413** (prouvé e2e réel ; l'ancienne version levait une exception avalée par les BaseHTTPMiddleware).
+
+> **Leçon opérationnelle (récurrente)** : un e2e complet doit rebuild **les images runner** (`docker build -f runner_*/Dockerfile`) **ET** les services compose (`docker compose up -d --build` pour web/broker). `compose up -d` seul réutilise des images stale → faux résultats (vu 2× : verdict « malicious », body-cap « 422 »).
+
 ## ⏳ Différés techniques (dette identifiée par les audits, non bloquante)
 
-- **SSRF — DNS-rebinding & suivi de redirections.** `validate_capture_url` valide au submit, mais `page.goto()` (3a/3c) suit les redirections dans le navigateur (réseau ON) → une réponse `302` vers une IP interne contourne la garde. Fix = **filtrage egress du runner** (même chantier que le DNS-rebinding). À traiter au niveau isolation réseau, pas dans le DSL.
-- **VNC-passwd par session (3b)** — actuellement absent ; le secret par session à la frontière conteneur couvre l'auth applicative, mais un mot de passe VNC par session (au-delà du DES 8-char faible) durcirait davantage.
-- **Dédup `capture_url`/`capture_scripted`** — ~20 lignes de pilotage Camoufox dupliquées (factorisation `_goto_safe`/`_capture_dom`).
-- **Plafond de corps `chunked`** — la garde 413 couvre `Content-Length` ; les corps sans `Content-Length` restent bornés seulement par `mem_limit`. Fix complet = plafond au reverse-proxy/serveur ASGI.
-- **Finalisation DOM sous timeout** — la phase `page.content()/title()` après un timeout de step n'a pas de budget propre (s'appuie sur la marge broker 60s) ; l'envelopper dans un `asyncio.wait_for` court durcirait le résultat partiel.
+Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
+- **SSRF — DNS-rebinding & suivi de redirections.** `validate_capture_url` valide au submit, mais `page.goto()` (3a/3c) suit les redirections dans le navigateur (réseau ON) → une réponse `302` vers une IP interne contourne la garde. Fix = **filtrage egress du runner** (isolation réseau / proxy egress avec allowlist). Chantier réseau, pas DSL.
+- **Mapping groupes IdP → rôles** (3e) : dériver l'admin (ou d'autres rôles) d'un groupe/claim IdP (`X-Forwarded-Groups`) plutôt que du seul `X-Admin-Token`. Design d'autorisation.
+- **Validation OIDC JWT in-app** (3e) : valider un JWT (iss/aud/exp via JWKS) pour un Keycloak/Authentik **sans** reverse-proxy. Le forward-auth couvre déjà le cas proxifié (le plus courant).
+- **VNC-passwd par session (3b)** — durcissement supplémentaire au-delà du secret à la frontière conteneur (DES 8-char faible → à évaluer).
+- **Langage d'urgence phishing multilingue** (J) : au-delà d'EN+FR (ES/DE/… ; le cluster form-externe rattrape déjà partiellement).
+- **poll `/live` → `mark_connected`** (C) : uniquement si un reconnect auto RFB est ajouté un jour (sinon sans objet).
 
 ---
 
