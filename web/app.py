@@ -97,11 +97,12 @@ async def _csp(request, call_next):
 # dizaines de Mo : Pydantic désérialiserait la totalité en mémoire AVANT que
 # `validate_steps` (qui borne à MAX_STEPS) ne s'exécute — OOM possible côté
 # conteneur web. Ce middleware rejette en 413 sur la seule base du header
-# `Content-Length`, sans lire le corps, donc avant toute désérialisation.
-# Limite connue : un corps envoyé en `Transfer-Encoding: chunked` (donc sans
-# `Content-Length`) n'est PAS couvert par cette garde — un plafond réseau/
-# proxy en amont (nginx/ingress `client_max_body_size` ou équivalent) reste
-# nécessaire pour une couverture complète ; hors scope ici.
+# `Content-Length`, sans lire le corps, donc avant toute désérialisation —
+# c'est un court-circuit rapide pour le cas courant (header présent).
+# Un corps envoyé en `Transfer-Encoding: chunked` (donc sans `Content-Length`)
+# n'est PAS couvert par ce court-circuit ; c'est `_MaxBodySizeMiddleware`
+# ci-dessous (garde F2/3f) qui comble ce trou en comptant les octets
+# réellement reçus.
 _MAX_BODY_BYTES = max_html_bytes() + 2_000_000
 
 
@@ -120,6 +121,60 @@ async def _body_size_guard(request, call_next):
             )
             return JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413)
     return await call_next(request)
+
+
+class _BodyTooLargeError(Exception):
+    """Signale, depuis `_MaxBodySizeMiddleware`, un dépassement de
+    `_MAX_BODY_BYTES` détecté en streaming (octets réellement reçus)."""
+
+
+class _MaxBodySizeMiddleware:
+    """Middleware ASGI pur (pas de `BaseHTTPMiddleware`) : filet de sécurité
+    pour les corps `Transfer-Encoding: chunked` (donc sans `Content-Length`),
+    que `_body_size_guard` ne peut pas voir puisqu'il n'inspecte que les
+    en-têtes. Enveloppe `receive` et accumule `len(body)` sur chaque message
+    `http.request` ; dès que le total dépasse `_MAX_BODY_BYTES`, il lève en
+    interne une exception (jamais propagée hors de ce middleware), coupe la
+    lecture, et répond 413 lui-même — l'app enveloppée (routes FastAPI,
+    Pydantic) n'est jamais atteinte au-delà de ce point. Ne touche pas aux
+    scopes non-http (lifespan, websocket) ni aux requêtes sans corps (GET).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        total = 0
+
+        async def _guarded_receive():
+            nonlocal total
+            message = await receive()
+            if message["type"] == "http.request":
+                total += len(message.get("body", b""))
+                if total > _MAX_BODY_BYTES:
+                    raise _BodyTooLargeError(total)
+            return message
+
+        try:
+            await self.app(scope, _guarded_receive, send)
+        except _BodyTooLargeError:
+            log.warning(
+                "body rejected (streamed) path=%s total=%d limit=%d",
+                scope.get("path"), total, _MAX_BODY_BYTES,
+            )
+            response = JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413)
+            await response(scope, receive, send)
+
+
+# Enregistré en dernier -> devient le middleware utilisateur le plus externe
+# (Starlette empile `add_middleware` en LIFO), donc la garde par comptage
+# s'applique avant `_body_size_guard`/`_csp`/`_auth` et avant tout parsing de
+# route, sur le même principe (rejeter tôt, avant tout traitement coûteux).
+app.add_middleware(_MaxBodySizeMiddleware)
 
 
 @lru_cache(maxsize=1)
