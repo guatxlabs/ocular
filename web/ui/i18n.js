@@ -87,6 +87,11 @@ const I18N_EN = {
   'Analyser quand même': 'Analyze anyway', 'Voir': 'View', 'Annuler': 'Cancel',
   // vue Admin
   'Purge des analyses sauvegardées. Actions destructives.': 'Purge saved analyses. Destructive actions.',
+  // vue Admin — gate is_admin (Phase 3h)
+  'Admin requis.': 'Admin required.',
+  'Tes groupes :': 'Your groups:',
+  'Aucun groupe détecté.': 'No group detected.',
+  'groupes': 'groups',
   'Token administrateur': 'Admin token',
   'Gardé en mémoire pour cette session uniquement — jamais stocké. Requis pour supprimer.':
     'Kept in memory for this session only — never stored. Required to delete.',

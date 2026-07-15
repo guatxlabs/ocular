@@ -2,7 +2,7 @@
 // l'en-tête X-Admin-Token EN PLUS du Bearer. Le token admin est gardé en variable
 // de MÉMOIRE (module ES singleton), JAMAIS en localStorage — il disparaît au reload.
 // Toutes les données affichées passent en textNode/attribut (jamais innerHTML).
-import { el, iconNode, openModal } from '../core.js';
+import { el, iconNode, openModal, isAdmin, getGroups } from '../core.js';
 import { listSaved, deleteSaved, flushSaved, Unauthorized } from '../api.js';
 import { verdictPill, fmtIso } from './saved.js';
 
@@ -27,6 +27,28 @@ export function renderAdmin(app) {
     el('h2', {}, 'Admin'),
     el('span.sub', {}, 'Purge des analyses sauvegardées. Actions destructives.'),
   ]));
+
+  // is_admin (Phase 3h) : gate purement ergonomique — reflète whoami() (groupe
+  // IdP admin ou identité admin résolue serveur). Le backend REST reste la vraie
+  // garde (DELETE /saved renvoie 403/503 indépendamment de ce masquage) ; on
+  // n'affiche même pas le formulaire de token/liste si le compte courant n'est
+  // pas admin, pour ne pas laisser croire qu'une action serait possible.
+  if (!isAdmin()) {
+    const groups = getGroups();
+    app.appendChild(el('div.card', {}, [
+      el('div.emptyview', {}, [
+        iconNode('shield'),
+        el('p', {}, 'Admin requis.'),
+        // libellé statique + valeur dynamique en NŒUDS SÉPARÉS (2 kids) : i18nWalk
+        // ne traduit que des textNode dont la valeur trimée matche EXACTEMENT une
+        // clé du dico — les concaténer en une seule chaîne casserait la traduction.
+        el('span.muted', {}, groups.length
+          ? ['Tes groupes :', ' ', el('b', {}, groups.join(', '))]
+          : 'Aucun groupe détecté.'),
+      ]),
+    ]));
+    return null;
+  }
 
   const notice = el('div.errbox', { role: 'alert', hidden: 'hidden' });
 

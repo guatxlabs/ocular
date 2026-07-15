@@ -26,8 +26,15 @@ from engine.ssrf import validate_capture_url
 from engine.steps import StepValidationError, validate_steps
 from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
-from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout, trust_forward_auth
-from web.identity import resolve_identity
+from ocular_settings import (
+    admin_group,
+    max_html_bytes,
+    redis_url,
+    saved_db_path,
+    session_ready_timeout,
+    trust_forward_auth,
+)
+from web.identity import has_admin_group, resolve_groups, resolve_identity
 from web.models import AnalystVerdictRequest, JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
@@ -61,12 +68,23 @@ async def _auth(request, call_next):
         request.state.auth_method = method
         if request.method == "DELETE" and request.url.path.startswith("/saved"):
             adm = os.environ.get("OCULAR_ADMIN_TOKEN")
-            if not adm:                                # fail-closed : jamais ouvert par défaut
-                log.warning("admin rejected path=%s status=%d", request.url.path, 503)
-                return JSONResponse({"detail": "OCULAR_ADMIN_TOKEN non configuré"}, status_code=503)
             provided_adm = request.headers.get("x-admin-token", "")
-            if not secrets.compare_digest(provided_adm.encode("utf-8", "ignore"), adm.encode()):
-                # jamais le header/token dans les logs, seulement path + status
+            token_ok = bool(adm) and secrets.compare_digest(
+                provided_adm.encode("utf-8", "ignore"), adm.encode()
+            )
+            # Le mécanisme groupe n'est "configuré" que si un groupe admin est
+            # défini ET que le forward-auth est de confiance (opt-in) — sinon
+            # has_admin_group() renvoie déjà False de façon anti-spoofing, mais
+            # on veut aussi distinguer "non configuré" (503) de "configuré mais
+            # non accordé" (403).
+            group_mechanism_configured = bool(admin_group()) and trust_forward_auth()
+            if not adm and not group_mechanism_configured:
+                # fail-closed : jamais ouvert par défaut, aucun mécanisme admin dispo
+                log.warning("admin rejected path=%s status=%d", request.url.path, 503)
+                return JSONResponse({"detail": "aucun mécanisme admin configuré"}, status_code=503)
+            group_ok = has_admin_group(request)
+            if not (token_ok or group_ok):
+                # jamais le header/token/groupe dans les logs, seulement path + status
                 log.warning("admin rejected path=%s status=%d", request.url.path, 403)
                 return JSONResponse({"detail": "admin requis"}, status_code=403)
     return await call_next(request)
@@ -230,9 +248,16 @@ def get_cmd_queue() -> SessionCmdQueue:
 
 @app.get("/auth/whoami")
 def whoami(request: Request) -> dict:
+    # `is_admin` reflète UNIQUEMENT l'appartenance au groupe admin IdP : un GET
+    # whoami ne porte pas d'X-Admin-Token (mécanisme par-requête propre à
+    # DELETE /saved, pas un état de session), donc il n'entre pas dans ce
+    # calcul. L'UI s'appuie sur ce champ pour masquer/afficher ses contrôles ;
+    # le backend (`_auth`, bloc DELETE /saved) reste la seule vraie garde.
     return {
         "identity": getattr(request.state, "identity", None),
         "method": getattr(request.state, "auth_method", "none"),
+        "groups": resolve_groups(request),
+        "is_admin": has_admin_group(request),
     }
 
 
