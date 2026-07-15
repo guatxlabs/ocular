@@ -224,3 +224,54 @@ def test_filter_js_exports_expected_interface():
     js = open("web/ui/filter.js").read()
     for name in ("entryHost", "entryMime", "matchChip", "filterEntries", "buildFilterBar"):
         assert f"export function {name}" in js or f"export async function {name}" in js, name
+
+
+# ---- filtre SOC des résultats réseau (Task 2 3d-2 I) : intégration détail ----
+
+def test_detail_imports_and_uses_filter_bar_in_build_network():
+    # detail.js doit importer filter.js et appeler buildFilterBar depuis
+    # buildNetwork (au-dessus du tableau, réutilise la logique de Task 1 -> DRY,
+    # pas de réimplémentation du matching).
+    js = open("web/ui/views/detail.js").read()
+    assert "from '../filter.js'" in js
+    assert "buildFilterBar" in js
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "buildFilterBar" in body
+
+
+def test_detail_network_filter_threshold_avoids_noise_on_small_results():
+    # Petit résultat (<= 8 entrées) -> pas de barre de filtre (pas de bruit) ;
+    # la barre n'apparaît qu'au-delà du seuil.
+    js = open("web/ui/views/detail.js").read()
+    assert re.search(r"net\.length\s*>\s*(NETWORK_FILTER_THRESHOLD|8)", js)
+
+
+def test_detail_network_filter_handler_makes_no_network_calls():
+    # Le handler de filtre (portion buildNetwork qui appelle buildFilterBar)
+    # ne doit déclencher aucun fetch/appel API : filtrage 100% côté client sur
+    # `net` déjà chargé.
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "fetch(" not in body
+    assert re.search(r"\bapi\.", body) is None
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+
+
+def test_detail_network_filter_rerender_uses_el_not_innerhtml():
+    # Le re-rendu déclenché par onChange (renderRows) doit repasser par el() /
+    # replaceChildren, jamais innerHTML — mêmes colonnes method/status/type/url
+    # que le rendu initial.
+    js = open("web/ui/views/detail.js").read()
+    assert "renderRows" in js
+    assert "tb.replaceChildren" in js
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_i18n_has_filter_bar_translations():
+    js = open("web/ui/i18n.js").read()
+    for term in ("Domaine", "Statut", "contient", "égal", "exclure"):
+        assert f"'{term}'" in js, term
