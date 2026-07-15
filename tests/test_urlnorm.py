@@ -1,5 +1,7 @@
 import hashlib
 
+import pytest
+
 from engine.urlnorm import normalize_url, url_input_hash
 
 
@@ -58,3 +60,46 @@ def test_explicit_http_scheme_respected():
 
 def test_explicit_https_scheme_respected():
     assert normalize_url("https://example.com") == "https://example.com/"
+
+
+# --- Bug 3i : schemes non-réseau (data:/mailto:/javascript:/...) et entrées
+# tordues ne doivent JAMAIS crasher normalize_url (plus de 500 en amont) ---
+
+
+def test_data_uri_does_not_crash_and_keeps_scheme():
+    # Avant le fix : "https://" était préfixé aveuglément -> "https://data:text/html,..."
+    # -> urlsplit().port levait ValueError("Port could not be cast...") -> 500.
+    # Un scheme connu sans "//" (ici "data:") ne doit PAS être préfixé.
+    result = normalize_url("data:text/html,<h1>x")
+    assert result.startswith("data:")
+
+
+def test_mailto_does_not_crash_and_keeps_scheme():
+    result = normalize_url("mailto:a@b.c")
+    assert result.startswith("mailto:")
+
+
+def test_javascript_scheme_does_not_crash():
+    result = normalize_url("javascript:alert(1)")
+    assert result.startswith("javascript:")
+
+
+def test_file_scheme_does_not_crash():
+    result = normalize_url("file:///etc/passwd")
+    assert result.startswith("file:")
+
+
+def test_host_port_without_scheme_still_gets_https_prefix():
+    # "example.com:8080" n'a PAS de scheme (pas de "://", pas dans la liste des
+    # schemes connus sans "//") -> ne doit pas être confondu avec un scheme,
+    # et doit bien recevoir le préfixe https:// (host:port préservé).
+    assert normalize_url("example.com:8080") == "https://example.com:8080/"
+
+
+def test_malformed_scheme_like_input_raises_value_error_not_crash():
+    # Un scheme inconnu sans "//" (ex. "abc:notaport") se fait préfixer
+    # "https://" comme un host nu -> "https://abc:notaport" -> port invalide.
+    # Le code ne doit jamais laisser fuiter la ValueError brute d'urlsplit :
+    # il doit lever une ValueError explicite et documentée ("URL invalide").
+    with pytest.raises(ValueError):
+        normalize_url("abc:notaport")
