@@ -21,9 +21,6 @@ import { buildFilterBar, filterEntries } from '../filter.js';
 const POLL_INTERVAL_MS = 2000;
 // Fermeture auto silencieuse (C2) : onglet caché en continu au-delà de ce délai.
 const SESSION_HIDDEN_CLOSE_MS = 60000;
-// Même seuil que le tableau réseau du résultat figé (detail.js) : pas de
-// barre de filtre sur un petit résultat (bruit inutile).
-const NETWORK_FILTER_THRESHOLD = 8;
 
 const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
 const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
@@ -39,6 +36,12 @@ function wsUrlFor(sessionId) {
 // AUCUNE réimplémentation du matching) + liste des findings. `update(data)` est
 // appelé à chaque tour de poll avec la réponse de `liveSession`. XSS-clean :
 // tout passe par el()/textContent, jamais innerHTML.
+//
+// La barre de filtre et le tableau réseau sont construits UNE SEULE FOIS (hors
+// de toute boucle de poll) : `getLastNetwork` renvoie la réf mutable des données
+// courantes, et `bar.refresh()` ré-applique les chips DÉJÀ posés par l'analyste
+// sur ces nouvelles données à chaque poll — les chips PERSISTENT (plus de reset
+// toutes les 2s).
 function buildLivePanel(getLastNetwork) {
   const netCountEl = el('b', {}, '0');
   const findCountEl = el('b', {}, '0');
@@ -51,42 +54,43 @@ function buildLivePanel(getLastNetwork) {
     verdictEl,
   ]);
 
-  const netWrap = el('div.livenet');
   const findWrap = el('div.livefindings');
 
-  function renderNetwork(net) {
-    netWrap.replaceChildren();
-    if (!net.length) { netWrap.appendChild(el('p.muted', {}, 'aucune requête réseau')); return; }
-    const table = el('table.qtable');
-    const thead = el('thead', {}, [el('tr', {}, [
-      el('th', {}, 'method'), el('th', {}, 'status'), el('th', {}, 'type'), el('th', {}, 'url'),
-    ])]);
-    const tb = el('tbody');
-    // Même rendu de ligne que le tableau réseau du résultat figé (detail.js) —
-    // XSS-clean, jamais innerHTML.
-    const renderRows = (rows) => {
-      tb.replaceChildren(...rows.map((n) => el('tr', {}, [
-        el('td', {}, n.method || ''),
-        el('td', {}, n.status != null ? String(n.status) : '—'),
-        el('td', {}, n.resource_type || ''),
-        el('td', { title: n.url || '' }, n.url || ''),
-      ])));
-    };
-    table.appendChild(thead); table.appendChild(tb);
-    if (net.length > NETWORK_FILTER_THRESHOLD) {
-      // Barre de filtre SOC réutilisée telle quelle (filter.js, Task 1 3d-2 I).
-      // Le canal live re-poll toutes les 2s : `getLastNetwork` referme sur les
-      // données les plus fraîches, `renderRows` re-rend le <tbody> — DRY, pas
-      // de réimplémentation du matching. Reconstruite à chaque tour (filter.js
-      // n'expose pas de hook de rafraîchissement externe pour un jeu de chips
-      // déjà posé) : compromis assumé pour un panneau live qui doit refléter
-      // l'état courant du réseau à chaque poll.
-      const bar = buildFilterBar(getLastNetwork, renderRows, { el });
-      netWrap.appendChild(el('div.filter-slot', {}, [bar]));
-    } else {
-      renderRows(filterEntries(net, []));
-    }
-    netWrap.appendChild(el('div.card', {}, [el('div.plscroll', {}, [table])]));
+  // ---- tableau réseau + barre de filtre : construits UNE FOIS ----
+  const table = el('table.qtable');
+  const thead = el('thead', {}, [el('tr', {}, [
+    el('th', {}, 'method'), el('th', {}, 'status'), el('th', {}, 'type'), el('th', {}, 'url'),
+  ])]);
+  const tb = el('tbody');
+  // Même rendu de ligne que le tableau réseau du résultat figé (detail.js) —
+  // XSS-clean, jamais innerHTML.
+  const renderRows = (rows) => {
+    tb.replaceChildren(...rows.map((n) => el('tr', {}, [
+      el('td', {}, n.method || ''),
+      el('td', {}, n.status != null ? String(n.status) : '—'),
+      el('td', {}, n.resource_type || ''),
+      el('td', { title: n.url || '' }, n.url || ''),
+    ])));
+  };
+  table.appendChild(thead); table.appendChild(tb);
+
+  // Barre de filtre SOC réutilisée telle quelle (filter.js, Task 1 3d-2 I) :
+  // `getLastNetwork` referme sur les données les PLUS FRAÎCHES (réf mutable),
+  // `renderRows` re-rend le <tbody> — DRY, aucune réimplémentation du matching.
+  // Construite ici, une seule fois : le poll appelle `bar.refresh()` (voir
+  // `refreshNetwork`), il ne reconstruit JAMAIS la barre -> chips préservés.
+  const bar = buildFilterBar(getLastNetwork, renderRows, { el });
+  const netSection = el('div.detsec', {}, [
+    el('h3', {}, 'Réseau'),
+    el('div.filter-slot', {}, [bar]),
+    el('div.card', {}, [el('div.plscroll', {}, [table])]),
+  ]);
+
+  // Rafraîchit le tableau réseau en préservant les chips : délègue au refresh
+  // interne de la barre (fallback sûr si `.refresh` absent — filtre neutre).
+  function refreshNetwork() {
+    if (typeof bar.refresh === 'function') bar.refresh();
+    else renderRows(filterEntries(getLastNetwork(), []));
   }
 
   function renderFindings(findings) {
@@ -100,6 +104,9 @@ function buildLivePanel(getLastNetwork) {
     });
   }
 
+  // Appelé à chaque poll. `getLastNetwork()` a déjà été mis à jour par
+  // l'appelant (pollLive) : ici on rafraîchit les compteurs/findings/verdict
+  // (pas d'état utilisateur) et on relance le filtre réseau (chips conservés).
   function update(data) {
     const counts = (data && data.counts) || {};
     const network = Array.isArray(data && data.network) ? data.network : [];
@@ -109,13 +116,13 @@ function buildLivePanel(getLastNetwork) {
     const verdict = (data && data.verdict) || 'unknown';
     verdictEl.textContent = verdict;
     verdictEl.className = 'livesumverdict ' + (VERDICT_CLASS[verdict] || 'v-unknown');
-    renderNetwork(network);
+    refreshNetwork();
     renderFindings(findings);
   }
 
   const node = el('div.livepanel', {}, [
     summary,
-    el('div.detsec', {}, [el('h3', {}, 'Réseau'), netWrap]),
+    netSection,
     el('div.detsec', {}, [el('h3', {}, 'Détections statiques'), findWrap]),
   ]);
 
