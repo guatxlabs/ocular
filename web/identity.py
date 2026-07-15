@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from starlette.requests import Request
 
-from ocular_settings import forward_auth_user_header, trust_forward_auth
+from ocular_settings import (
+    admin_group,
+    forward_auth_groups_header,
+    forward_auth_user_header,
+    trust_forward_auth,
+)
 
 
 def resolve_identity(request: Request, *, bearer_ok: bool) -> tuple[bool, str | None, str]:
@@ -43,3 +48,24 @@ def resolve_identity(request: Request, *, bearer_ok: bool) -> tuple[bool, str | 
         return True, forward_identity, "forward-auth"
 
     return False, None, "none"
+
+
+def resolve_groups(request: Request) -> list[str]:
+    """Retourne les groupes IdP portés par l'en-tête forward-auth groupes,
+    UNIQUEMENT si `trust_forward_auth()` est actif — même invariant
+    anti-spoofing que `resolve_identity` : l'en-tête n'est ni lu, ni même son
+    nom résolu, si l'opt-in est désactivé (défaut). Sinon `[]`."""
+    if not trust_forward_auth():
+        return []
+    header_name = forward_auth_groups_header()
+    raw = request.headers.get(header_name, "")
+    return [g.strip() for g in raw.split(",") if g.strip()]
+
+
+def has_admin_group(request: Request) -> bool:
+    """True si le groupe admin configuré (`OCULAR_ADMIN_GROUP`) est présent
+    parmi les groupes résolus. False si `admin_group()` est vide (admin-par-
+    groupe désactivé) ou si l'opt-in forward-auth est désactivé (via
+    `resolve_groups`, qui renvoie `[]` dans ce cas)."""
+    g = admin_group()
+    return bool(g) and g in resolve_groups(request)
