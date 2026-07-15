@@ -166,8 +166,18 @@ async def _ensure_browser() -> None:
         return
     from camoufox.async_api import AsyncCamoufox
 
+    # WebRTC OFF (audit 3g C1) : identique au tier batch — le moteur ICE/STUN
+    # de Firefox sort en UDP DIRECT hors du garde egress (proxy TCP), donc une
+    # page hostile pourrait joindre une IP interne via `RTCPeerConnection` +
+    # `stun:`. La pref `media.peerconnection.enabled=false` rend
+    # `RTCPeerConnection` indisponible dans la page -> vecteur UDP fermé (cf.
+    # runner_recon/capture.py::_CAMOUFOX_LAUNCH_KWARGS pour le détail).
     launch_kwargs: dict[str, Any] = dict(
-        headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
+        headless=False,
+        os="linux",
+        humanize=0.3,
+        i_know_what_im_doing=True,
+        firefox_user_prefs={"media.peerconnection.enabled": False},
     )
     if egress_guard_enabled():
         guard = EgressGuard()

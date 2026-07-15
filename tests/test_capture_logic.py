@@ -676,6 +676,8 @@ async def test_capture_url_starts_egress_guard_and_routes_camoufox_through_proxy
 
     assert len(calls) == 1
     assert calls[0]["proxy"] == {"server": f"http://127.0.0.1:{guard.port}"}
+    # WebRTC OFF (audit 3g C1) : ferme le bypass UDP ICE/STUN du garde egress.
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -695,6 +697,7 @@ async def test_capture_scripted_starts_egress_guard_and_routes_camoufox_through_
 
     assert len(calls) == 1
     assert calls[0]["proxy"] == {"server": f"http://127.0.0.1:{guard.port}"}
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -715,6 +718,10 @@ async def test_capture_url_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
     assert _FakeEgressGuard.instances == []
     assert len(calls) == 1
     assert "proxy" not in calls[0]
+    # WebRTC OFF est un durcissement de base, INDÉPENDANT du garde : reste
+    # appliqué même quand OCULAR_EGRESS_GUARD=0 (le bypass UDP ICE est fermé
+    # en toutes circonstances).
+    assert calls[0]["firefox_user_prefs"]["media.peerconnection.enabled"] is False
 
 
 @pytest.mark.asyncio
