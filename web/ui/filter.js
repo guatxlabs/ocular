@@ -4,18 +4,14 @@
 // (entryHost/entryMime/matchChip/filterEntries) + UI (buildFilterBar), XSS-clean
 // via el()/textContent (jamais innerHTML de données non fiables).
 //
-// NB : `el()` est importé dynamiquement (lazy) plutôt qu'en import statique.
-// core.js exécute du code de bootstrap dépendant du navigateur dès son chargement
-// (state.js lit `localStorage` au niveau module, `core.js` appelle `boot()`) — un
-// import statique casserait le chargement de ce module en environnement non-DOM
-// (ex. `node tests/filter_test.mjs`, qui exerce uniquement la logique pure). Le
-// chargement dynamique confine cette dépendance à `buildFilterBar`, seule
-// fonction qui construit réellement du DOM.
-let elPromise = null;
-function loadEl() {
-  if (!elPromise) elPromise = import('./core.js').then((m) => m.el);
-  return elPromise;
-}
+// NB : AUCUN import (statique OU dynamique) de core.js ici. core.js exécute du
+// bootstrap dépendant du navigateur dès son chargement (state.js lit
+// `localStorage` au niveau module, core.js appelle `boot()`), ce qui casserait
+// le chargement de ce module en environnement non-DOM (ex.
+// `node tests/filter_test.mjs`, qui n'exerce que la logique pure). `el` est donc
+// INJECTÉ par l'appelant dans `buildFilterBar` — la barre est ainsi construite de
+// façon SYNCHRONE (indispensable pour que le `i18nWalk` synchrone de core.js
+// couvre les libellés de la barre).
 
 // ---- logique pure ----
 
@@ -96,8 +92,13 @@ function chipLabel(chip) {
   return `${prefix}${chip.field}${opSym}${chip.value}`;
 }
 
-export async function buildFilterBar(getEntries, onChange, opts = {}) {
-  const el = await loadEl();
+export function buildFilterBar(getEntries, onChange, opts = {}) {
+  // `el` est injecté par l'appelant (jamais importé ici : voir en-tête). La barre
+  // est donc construite de façon SYNCHRONE -> insérée avant i18nWalk().
+  const el = opts.el;
+  if (typeof el !== 'function') {
+    throw new TypeError('buildFilterBar: opts.el (fabrique de nœuds) requis');
+  }
   const fields = Array.isArray(opts.fields) && opts.fields.length
     ? FIELDS.filter((f) => opts.fields.includes(f.value))
     : FIELDS;

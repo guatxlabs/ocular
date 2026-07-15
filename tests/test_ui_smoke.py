@@ -226,6 +226,21 @@ def test_filter_js_exports_expected_interface():
         assert f"export function {name}" in js or f"export async function {name}" in js, name
 
 
+def test_build_filter_bar_is_synchronous_no_core_import():
+    # buildFilterBar doit être SYNCHRONE (pas `async`) et ne contenir AUCUN
+    # import (statique OU dynamique `import(`) de core.js : `el` est injecté par
+    # l'appelant. C'est indispensable pour que la barre soit insérée AVANT le
+    # i18nWalk() synchrone (sinon libellés jamais traduits en LANG='en'), et pour
+    # que les fonctions pures restent importables par le test node sans core.js.
+    js = open("web/ui/filter.js").read()
+    assert "export async function buildFilterBar" not in js
+    assert "export function buildFilterBar" in js
+    assert "import(" not in js  # aucun import dynamique
+    # aucun import top-level de core.js (statique) — el vient uniquement du param
+    assert "from './core.js'" not in js
+    assert "'./core.js'" not in js
+
+
 # ---- filtre SOC des résultats réseau (Task 2 3d-2 I) : intégration détail ----
 
 def test_detail_imports_and_uses_filter_bar_in_build_network():
@@ -269,6 +284,19 @@ def test_detail_network_filter_rerender_uses_el_not_innerhtml():
     assert "renderRows" in js
     assert "tb.replaceChildren" in js
     assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_detail_inserts_filter_bar_synchronously():
+    # detail.js doit insérer la barre de façon SYNCHRONE (pas de `.then(` autour
+    # de buildFilterBar) : el importé synchrone est injecté et la barre est
+    # ajoutée avant le retour de renderResult (donc avant i18nWalk).
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildNetwork introuvable dans detail.js"
+    body = m.group(0)
+    assert "buildFilterBar(() => net, renderRows, { el })" in body
+    # aucune promesse chaînée sur buildFilterBar (plus d'insertion asynchrone)
+    assert ".then(" not in body
 
 
 def test_i18n_has_filter_bar_translations():

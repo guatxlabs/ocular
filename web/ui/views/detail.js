@@ -299,7 +299,6 @@ function mount(app, id, src) {
         el('td', { title: n.url || '' }, n.url || ''),
       ])));
     };
-    renderRows(net);
     table.appendChild(thead); table.appendChild(tb);
     const card = el('div.card', {}, [el('div.plscroll', {}, [table])]);
 
@@ -309,13 +308,18 @@ function mount(app, id, src) {
     // `onChange` re-rend le <tbody> via `renderRows` — AUCUN fetch/appel réseau
     // n'est jamais déclenché par le filtre.
     if (net.length > NETWORK_FILTER_THRESHOLD) {
-      const filterSlot = el('div.filter-slot', { 'aria-label': 'Filtre réseau' });
-      sec.appendChild(filterSlot);
-      buildFilterBar(() => net, renderRows, {}).then((bar) => {
-        const counter = bar.querySelector('.filter-count');
-        if (counter) counter.setAttribute('aria-label', 'correspondances');
-        filterSlot.appendChild(bar);
-      });
+      // `el` (importé synchrone) est injecté -> buildFilterBar renvoie le nœud
+      // immédiatement, inséré AVANT le retour de renderResult donc AVANT le
+      // i18nWalk(app) synchrone de core.js (barre traduite en LANG='en').
+      // buildFilterBar fait déjà un refresh()/onChange initial qui appelle
+      // renderRows -> le tableau est peuplé par ce refresh, pas de renderRows
+      // manuel ici (évite un double rendu initial).
+      const bar = buildFilterBar(() => net, renderRows, { el });
+      const counter = bar.querySelector('.filter-count');
+      if (counter) counter.setAttribute('aria-label', 'correspondances');
+      sec.appendChild(el('div.filter-slot', {}, [bar]));
+    } else {
+      renderRows(net); // pas de barre -> rendu initial direct
     }
 
     sec.appendChild(card);
