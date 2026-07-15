@@ -12,6 +12,13 @@ services:
       OCULAR_ADMIN_TOKEN: "${OCULAR_ADMIN_TOKEN:-}"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
       OCULAR_SAVED_DB: "/saved/saved.db"
+      # Identité IdP (phase 3e) — forward-auth OPT-IN. Par défaut désactivé
+      # (seul le Bearer authentifie). À activer UNIQUEMENT derrière un
+      # reverse-proxy authentifié qui STRIPPE les copies client de l'en-tête
+      # d'identité (sinon spoofing de X-Forwarded-User). Cf. README §identité.
+      OCULAR_TRUST_FORWARD_AUTH: "${OCULAR_TRUST_FORWARD_AUTH:-}"
+      OCULAR_FORWARD_USER_HEADER: "${OCULAR_FORWARD_USER_HEADER:-X-Forwarded-User}"
+      OCULAR_FORWARD_EMAIL_HEADER: "${OCULAR_FORWARD_EMAIL_HEADER:-X-Forwarded-Email}"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: ["ALL"]

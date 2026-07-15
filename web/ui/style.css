@@ -86,6 +86,12 @@ header h1{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800
 .k-theme:hover{border-color:var(--acc);color:var(--acc)}
 .k-theme .ic{width:16px;height:16px}
 
+/* bandeau whoami « connecté : <identity> » (Phase 3e, GET /auth/whoami) */
+.whoami{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);background:var(--acc-bg);border:1px solid color-mix(in srgb,var(--acc) 30%,transparent);border-radius:var(--pill);padding:5px 12px}
+.whoami .ic{width:14px;height:14px;color:var(--acc)}
+.whoami-label::after{content:" : "}
+.whoami-id{color:var(--hd);font-family:var(--font-mono);font-weight:700;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* mise en page : sidebar repliable */
 [hidden]{display:none!important}
 .hidden{display:none}
@@ -1159,6 +1165,44 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .savepanel .savedlink:hover{color:var(--hd)}
 /* hash tronqué (liste Sauvegardes / Admin) */
 .savedhash{font-family:var(--font-mono);font-size:11px;color:var(--mut);flex:0 0 auto}
+
+/* ---- provenance + verdict analyste (Phase 3e) ---- */
+/* provenance compacte dans une ligne de liste (saved.js) */
+.provenance-mini{display:inline-flex;align-items:center;gap:8px;font-size:11px;color:var(--mut);flex:0 0 auto}
+.provenance-mini .prov-ts.ok{color:var(--ok)} .provenance-mini .prov-ts.bad{color:var(--bad)}
+.analyst-pill{text-transform:none}
+/* pastille verdict analyste (liste) */
+.jobrow .pending-pill,.jobrow .analyst-pill{flex:0 0 auto}
+/* provenance détaillée (panneau détail) */
+.provenance{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 14px;font-size:12px;color:var(--mut)}
+.prov-item{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:var(--pill);border:1px solid var(--bd);background:var(--card2)}
+.prov-item b{color:var(--hd);font-family:var(--font-mono)}
+.prov-item.prov-ts{border:1px solid var(--bd)}
+.prov-item.prov-ts .ic{width:14px;height:14px}
+.prov-item.prov-ts.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent);background:color-mix(in srgb,var(--ok) 12%,transparent)}
+.prov-item.prov-ts.bad{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 40%,transparent);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+/* panneau de classification analyste */
+.analystpanel{margin:0 0 18px;padding:14px 16px;border:1px solid var(--bd);border-left:3px solid var(--acc);border-radius:var(--radius);background:var(--card)}
+.analystpanel h4{margin:0 0 10px;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600}
+.analyst-current{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px}
+.analyst-badge{font-family:var(--font-mono);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:4px 12px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut);background:var(--card2)}
+.analyst-badge.av-legitimate{color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.analyst-badge.av-suspicious{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.analyst-badge.av-malicious{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
+.analyst-by{font-size:12px;color:var(--mut)}
+.analyst-by b{color:var(--hd)}
+.analyst-note{flex-basis:100%;margin:0;padding:8px 12px;border-radius:9px;background:var(--card2);border:1px solid var(--bd);color:var(--fg);font-size:13px;white-space:pre-wrap;word-break:break-word}
+.verdict-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.verdict-lead{font-size:13px;font-weight:600;color:var(--hd);margin-right:2px}
+.verdict-btn{background:var(--card2);color:var(--fg);border:1px solid var(--bd);border-radius:var(--pill);padding:7px 14px;cursor:pointer;font-size:12px;font-weight:600;transition:border-color .15s,color .15s,background .15s}
+.verdict-btn:hover{border-color:var(--acc);color:var(--acc)}
+.verdict-btn:disabled{opacity:.5;cursor:progress}
+.verdict-btn.vb-legitimate:hover{border-color:var(--ok);color:var(--ok)}
+.verdict-btn.vb-suspicious:hover{border-color:var(--warn);color:var(--warn)}
+.verdict-btn.vb-malicious:hover{border-color:var(--bad);color:var(--bad)}
+.verdict-controls input{flex:1 1 200px;min-width:140px;background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:9px 12px;font-size:13px}
+.verdict-controls input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.analystpanel .errbox{margin:12px 0 0}
 /* Admin : registre « privilégié / destructif » signalé par l'accent danger */
 .admtoken{border-left:3px solid var(--bad);margin-bottom:16px}
 .admlead{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--hd);margin-bottom:6px}
