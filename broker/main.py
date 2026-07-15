@@ -7,12 +7,15 @@ from datetime import datetime, timezone
 
 import redis
 
+from broker.gc import collect
 from broker.launcher import run_job
 from broker.sessions import launch_session, reap, stop_session
 from bus.queue import RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
 from ocular_logging import get_logger
 from ocular_settings import (
+    artifacts_dir,
+    gc_interval,
     reaper_interval,
     redis_url,
     result_ttl,
@@ -109,12 +112,41 @@ def _start_reaper(client) -> threading.Thread:
     return t
 
 
+def _gc_loop(client, stop_event=None) -> None:
+    """Boucle de garbage-collection des artefacts : appelle `collect` à
+    intervalle régulier (`gc_interval()`). `stop_event` permet un arrêt
+    propre en test (une seule itération) ; en production (`stop_event=None`)
+    tourne indéfiniment dans un thread démon. Les erreurs de `collect` sont
+    capturées pour que le GC survive à un incident Redis/disque transitoire
+    (les artefacts s'accumuleraient sinon jusqu'au prochain redémarrage)."""
+    while stop_event is None or not stop_event.is_set():
+        try:
+            collect(artifacts_dir(), client)
+        except Exception as exc:  # le GC survit à une erreur transitoire
+            log.error("gc error err=%s", str(exc)[:200])
+        if stop_event is not None:
+            if stop_event.wait(gc_interval()):
+                break
+        else:
+            _time.sleep(gc_interval())
+
+
+def _start_gc(client) -> threading.Thread:
+    """Démarre le GC des artefacts dans un thread démon (n'empêche jamais
+    l'arrêt du process broker). Réutilise le client Redis déjà créé par
+    `run_forever` (pas de connexion supplémentaire)."""
+    t = threading.Thread(target=_gc_loop, args=(client,), daemon=True, name="ocular-gc")
+    t.start()
+    return t
+
+
 def run_forever() -> None:
     client = redis.Redis.from_url(redis_url())
     queue = RedisJobQueue(client)
     cmd_queue = SessionCmdQueue(client)
     registry = SessionRegistry(client)
     _start_reaper(client)
+    _start_gc(client)
     while True:
         # Timeouts courts (au lieu d'un unique blpop bloquant longtemps sur
         # `ocular:jobs`) pour que la file de commandes de session ne soit
