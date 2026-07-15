@@ -281,7 +281,7 @@ async def _goto_with_fallback(page: Any, url: str, timeout_ms: int, console: lis
 _DOM_FINALIZE_TIMEOUT_S = 15
 
 
-async def _capture_dom(page: Any) -> tuple[bytes, str, str]:
+async def _capture_dom(page: Any, url: str) -> tuple[bytes, str, str]:
     """Extraction DOM finale — factorisée entre `capture_url` (3a) et
     `capture_scripted` (3c) : avant (phase3f-F1), ces deux fonctions
     dupliquaient ~5 lignes identiques (`page.content()`/`title()`/`url` sous
@@ -289,17 +289,21 @@ async def _capture_dom(page: Any) -> tuple[bytes, str, str]:
     implémentation désormais.
 
     Ne lève JAMAIS : toute exception (driver Camoufox mort, page hostile) est
-    absorbée ici, loguée, et remplacée par des valeurs vides — même politique
-    d'erreur qu'avant le factoring (résultat partiel plutôt qu'un crash qui
-    priverait le broker de tout résultat)."""
+    absorbée ici, loguée (avec le contexte `url` forensique), et remplacée par
+    dom/title vides — même politique d'erreur qu'avant le factoring (résultat
+    partiel plutôt qu'un crash qui priverait le broker de tout résultat).
+    `final_url` retombe sur `url` (l'URL cible), PAS sur `""` : avant le
+    refactor les appelants prédéclaraient `final_url = url` et ne l'écrasaient
+    qu'en cas de succès -> même comportement ici, cohérent avec
+    `_error_wrapper` (qui restaure aussi `final_url=url`)."""
     try:
         dom_html = (await page.content()).encode()
         title = await page.title()
         final_url = page.url
         return dom_html, title, final_url
     except Exception as exc:
-        log.warning("dom capture failed err=%s", type(exc).__name__)
-        return b"", "", ""
+        log.warning("url=%s dom capture failed err=%s", url, type(exc).__name__)
+        return b"", "", url
 
 
 async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, dict[str, bytes]]:
@@ -339,7 +343,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
         except Exception as exc:
             capture.console.append({"level": "warning", "text": f"turnstile: {type(exc).__name__}"})
 
-        dom_html, title, final_url = await _capture_dom(page)
+        dom_html, title, final_url = await _capture_dom(page, url)
 
     return build_result(
         url, screenshots, capture.network, capture.console, dom_html, title,
@@ -429,7 +433,7 @@ async def capture_scripted(
         # garanti, jamais de stdout vide).
         try:
             dom_html, title, final_url = await asyncio.wait_for(
-                _capture_dom(page), timeout=_DOM_FINALIZE_TIMEOUT_S
+                _capture_dom(page, url), timeout=_DOM_FINALIZE_TIMEOUT_S
             )
         except asyncio.TimeoutError:
             dom_html, title, final_url = b"", "", url

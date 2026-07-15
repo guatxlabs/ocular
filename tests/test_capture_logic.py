@@ -351,7 +351,7 @@ class _FakeDomPage:
 async def test_capture_dom_returns_html_title_url_on_success():
     page = _FakeDomPage(content="<p>hi</p>", title="Hello", url="https://example.com/x")
 
-    dom_html, title, final_url = await _capture_dom(page)
+    dom_html, title, final_url = await _capture_dom(page, "https://example.com/x")
 
     assert dom_html == b"<p>hi</p>"
     assert title == "Hello"
@@ -359,25 +359,27 @@ async def test_capture_dom_returns_html_title_url_on_success():
 
 
 @pytest.mark.asyncio
-async def test_capture_dom_content_raises_returns_empty_values_no_crash():
+async def test_capture_dom_content_raises_falls_back_to_url_no_crash():
+    # dom/title vides sur exception, MAIS final_url retombe sur l'URL cible
+    # (pas "") — cohérent avec _error_wrapper, comportement d'avant le refactor.
     page = _FakeDomPage(raise_on="content")
 
-    dom_html, title, final_url = await _capture_dom(page)
+    dom_html, title, final_url = await _capture_dom(page, "https://target.example/p")
 
     assert dom_html == b""
     assert title == ""
-    assert final_url == ""
+    assert final_url == "https://target.example/p"
 
 
 @pytest.mark.asyncio
-async def test_capture_dom_title_raises_returns_empty_values_no_crash():
+async def test_capture_dom_title_raises_falls_back_to_url_no_crash():
     page = _FakeDomPage(raise_on="title")
 
-    dom_html, title, final_url = await _capture_dom(page)
+    dom_html, title, final_url = await _capture_dom(page, "https://target.example/p")
 
     assert dom_html == b""
     assert title == ""
-    assert final_url == ""
+    assert final_url == "https://target.example/p"
 
 
 # --- Task F1c : finalisation DOM sous timeout (capture_scripted) ---
@@ -455,3 +457,104 @@ async def test_capture_scripted_finalization_timeout_still_returns_partial_resul
     assert any(
         c.level == "warning" and "timeout" in c.text for c in result.console
     )
+
+
+def _install_fake_camoufox(monkeypatch, page):
+    """Installe un `camoufox.async_api` mocké dont `new_page` renvoie `page`."""
+    import sys
+    import types
+
+    class FakeCtx:
+        async def new_page(self):
+            return page
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeAsyncCamoufox:
+        def __init__(self, **k):
+            pass
+
+        async def __aenter__(self):
+            return FakeCtx()
+
+        async def __aexit__(self, *a):
+            return False
+
+    fake_async_api = types.ModuleType("camoufox.async_api")
+    fake_async_api.AsyncCamoufox = FakeAsyncCamoufox
+    fake_camoufox = types.ModuleType("camoufox")
+    fake_camoufox.async_api = fake_async_api
+    monkeypatch.setitem(sys.modules, "camoufox", fake_camoufox)
+    monkeypatch.setitem(sys.modules, "camoufox.async_api", fake_async_api)
+
+
+@pytest.mark.asyncio
+async def test_capture_scripted_dom_extraction_raises_final_url_falls_back_to_url(monkeypatch):
+    # Régression dédup : quand l'extraction DOM finale LÈVE (driver mort /
+    # page hostile), `_capture_dom` absorbe l'exception mais `dom.final_url`
+    # DOIT retomber sur l'URL cible (pas ""), comme avant le refactor.
+    class FakePage:
+        url = "https://target.example/x"
+
+        async def goto(self, url, **k):
+            pass
+
+        async def content(self):
+            raise RuntimeError("driver dead")  # extraction DOM en échec
+
+        async def title(self):
+            return "t"
+
+        async def screenshot(self, **k):
+            return b"PNG"
+
+        def on(self, event, handler):
+            pass
+
+    _install_fake_camoufox(monkeypatch, FakePage())
+
+    result, blobs = await cap.capture_scripted("https://target.example/x", [])
+
+    assert result.dom.title == ""            # dom vide (exception absorbée)
+    assert result.dom.final_url == "https://target.example/x"  # PAS "" : fallback URL
+
+
+@pytest.mark.asyncio
+async def test_capture_url_dom_extraction_raises_final_url_falls_back_to_url(monkeypatch):
+    # Même garantie côté chemin 3a (`capture_url`) : extraction DOM en échec
+    # -> `dom.final_url` = URL cible, jamais "".
+    class FakePage:
+        url = "https://target.example/y"
+
+        async def goto(self, url, **k):
+            pass
+
+        async def content(self):
+            raise RuntimeError("driver dead")
+
+        async def title(self):
+            return "t"
+
+        async def screenshot(self, **k):
+            return b"PNG"
+
+        def on(self, event, handler):
+            pass
+
+    _install_fake_camoufox(monkeypatch, FakePage())
+    # `capture_url` fait `import vision` : neutralise le gating Turnstile pour
+    # éviter d'exécuter la vision (pas installée dans ce venv). Un module
+    # `vision` minimal suffit : le gating poll `page.evaluate` -> ici la
+    # FakePage n'a pas `evaluate`, donc on court-circuite solve_turnstile.
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "vision", types.ModuleType("vision"))
+
+    result, blobs = await cap.capture_url("https://target.example/y")
+
+    assert result.dom.title == ""
+    assert result.dom.final_url == "https://target.example/y"
