@@ -239,15 +239,23 @@ LDAP fronté par un proxy…), sans verrouillage.
 - Quand activé, une requête proxifiée porteuse de l'en-tête d'identité est autorisée
   automatiquement (l'analyste derrière l'IdP n'a **aucun jeton à coller**) ; l'identité alimente
   `saved_by` et le verdict analyste. `GET /auth/whoami` renvoie l'identité de l'appelant.
+- **Rôle admin via groupe IdP** (opt-in, nécessite aussi `OCULAR_TRUST_FORWARD_AUTH=1`) :
+  définir `OCULAR_ADMIN_GROUP=<nom-de-groupe>` accorde le rôle admin (`DELETE /saved`) à tout
+  appelant dont l'en-tête de groupes (`OCULAR_FORWARD_GROUPS_HEADER`, défaut `X-Forwarded-Groups`,
+  liste séparée par des virgules) **contient exactement** ce groupe (comparaison sensible à la
+  casse, sans espaces parasites — un `OCULAR_ADMIN_GROUP=" admins"` ne matchera pas `admins`).
+  `X-Admin-Token` reste un fallback valable en parallèle. Vide (défaut) → admin uniquement via
+  `X-Admin-Token`. `GET /auth/whoami` expose `groups` et `is_admin` (l'UI masque les contrôles
+  admin aux non-admins — mais le backend reste la vraie garde).
 
 > ⚠️ **IMPÉRATIF de sécurité.** N'activez `OCULAR_TRUST_FORWARD_AUTH` **que** derrière un
-> reverse-proxy qui **authentifie ET supprime (strip) toute copie de l'en-tête d'identité
-> venant du client**. Sinon, un client peut usurper `X-Forwarded-User: admin` et obtenir un
-> accès. Recommandations : (1) gardez `OCULAR_TOKEN` défini même en mode forward-auth (filet
-> réseau) ; (2) assurez-vous que le conteneur `web` n'est **jamais** joignable en direct, seul
-> le proxy l'atteint ; (3) le proxy doit écraser l'en-tête, pas seulement l'ajouter.
-> L'action admin (`DELETE /saved`) reste protégée séparément par `OCULAR_ADMIN_TOKEN` — le
-> forward-auth ne l'escalade jamais.
+> reverse-proxy qui **authentifie ET supprime (strip) toute copie des en-têtes de confiance
+> venant du client** — au minimum `X-Forwarded-User` **ET `X-Forwarded-Groups`** (et l'en-tête
+> d'email/de groupes que vous configurez). Sinon, un client peut usurper `X-Forwarded-User: x`
+> ou, si `OCULAR_ADMIN_GROUP` est activé, `X-Forwarded-Groups: <groupe-admin>` et **escalader en
+> admin**. Recommandations : (1) gardez `OCULAR_TOKEN`/`OCULAR_ADMIN_TOKEN` définis même en mode
+> forward-auth (filet) ; (2) le conteneur `web` n'est **jamais** joignable en direct, seul le
+> proxy l'atteint ; (3) le proxy doit **écraser** ces en-têtes, pas seulement les ajouter.
 
 ## Déployer
 
