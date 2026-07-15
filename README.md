@@ -26,6 +26,23 @@ capture live (profil `capture` : Camoufox anti-detect + Xvfb, résolution auto d
 Cloudflare via vision) dans le conteneur durci — `--cap-drop ALL`, seccomp dédié, `--read-only`,
 utilisateur non-root — et affiche le résultat JSON (verdict statique calculé sur le DOM capturé).
 
+**Auto-résolution Turnstile.** Repose sur un rendu headed réel dans le Xvfb du conteneur
+(`runner_recon/vision.py` + `xdotool`) : template matching sur le screenshot pour localiser la
+case, puis clic **OS** (X11 réel, pas `page.mouse`) pour franchir la vérification `isTrusted`
+d'un widget interactif. Le widget se chargeant dans une iframe async, `solve_turnstile`
+(`runner_recon/capture.py`) retente la détection ~6 fois sur ~4s avant de conclure à l'absence de
+Turnstile. Les coordonnées de clic sont mappées du repère **image** (viewport du screenshot,
+ce que renvoie `vision.detect()`) au repère **écran** (ce qu'attend `xdotool`) via
+`window.mozInnerScreenX/Y` (offset du chrome Firefox, API Gecko) et `devicePixelRatio`
+(`vision.image_to_screen`) — sans cet offset le clic tombe à côté de la case. Après le clic,
+une nouvelle détection vérifie que la case a bien disparu avant de marquer `turnstile_solved`
+(jamais un `True` optimiste non vérifié). **Limite connue** : le mapping, la boucle de retry et
+la logique de vérification sont couverts par des tests unitaires (page/vision mockées, cf.
+`tests/test_vision_coords.py` et `tests/test_capture_logic.py`) et par le smoke d'intégration
+docker sur une page sans Turnstile (`tests/test_deploy_images.py::test_runner_recon_image_builds_and_navigates`),
+mais la résolution effective d'un **vrai** challenge Cloudflare n'a pas pu être validée en bout
+en bout dans cet environnement — à confirmer contre une cible réelle.
+
 **⚠️ Avertissement — exposition IP.** Contrairement au profil `analysis` (`--network none`),
 le profil `capture` a le réseau **activé** : le conteneur `ocular-runner-recon` effectue une
 vraie requête sortante vers l'URL cible, ce qui expose l'IP de la machine qui exécute Ocular à
