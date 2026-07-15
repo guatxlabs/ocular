@@ -1,0 +1,25 @@
+# Image de test UNITAIRE (tests marqués "not integration") — exécute pytest en
+# conteneur, sans venv natif sur l'hôte. Les tests unitaires mockent
+# camoufox/playwright/redis (fakeredis) : aucun navigateur ni service requis.
+# Les tests d'INTÉGRATION (marqueur `integration`) restent sur l'hôte car ils
+# orchestrent Docker (build/run d'images) — pas de docker-in-docker ici.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Dépendances runtime + dev. À garder en phase avec pyproject.toml
+# ([project.dependencies] + [project.optional-dependencies].dev). playwright est
+# installé en tant que PAQUET seulement (aucun navigateur téléchargé) : les tests
+# unitaires ne lancent jamais de vrai navigateur.
+RUN pip install --no-cache-dir \
+    "pydantic>=2.6" "fastapi>=0.110" "uvicorn>=0.29" "redis>=5.0" "playwright>=1.41" \
+    "jsonschema>=4.21" "websockets>=12" \
+    "pytest>=8.0" "pytest-asyncio>=0.24" "fakeredis>=2.21" "httpx>=0.27"
+
+# Le code est copié (pas installé comme paquet) ; pytest le résout via
+# pythonpath=["."] (cf. pyproject [tool.pytest.ini_options]).
+COPY . .
+
+# Par défaut : la suite unitaire. Surchargez au run pour cibler
+# (ex. `docker run --rm ocular-test pytest tests/test_steps.py -q`).
+CMD ["pytest", "-m", "not integration", "-q"]
