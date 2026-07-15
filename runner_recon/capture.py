@@ -6,6 +6,7 @@ import json
 import sys
 import time
 from typing import Any, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo
 from engine.static import analyze_html
@@ -118,6 +119,43 @@ def build_result(
     )
 
 
+async def _goto_with_fallback(page: Any, url: str, timeout_ms: int, console: list[dict]) -> None:
+    """Navigue `page` vers `url` ; si CETTE PREMIÈRE tentative lève ET que le
+    schéma est `https`, retente UNE SEULE fois avec le même hôte/chemin/query
+    en `http://` (jamais de boucle : au plus un fallback). Journalise l'échec
+    initial (`console` "error", comme avant — inchangé) puis, si le fallback
+    réussit, un `console` "warning" `scheme-fallback https->http` (jamais
+    l'URL en clair). Un `goto` déjà en `http` qui échoue n'a PAS de fallback
+    (il n'y a pas de schéma plus permissif à essayer).
+
+    Factorisé entre `capture_url` (chemin 3a) et `capture_scripted` (chemin
+    3c) : même politique de résilience réseau, une seule implémentation.
+    Pas de valeur de retour : `page` porte déjà l'état de navigation (succès
+    ou dernier échec) que les appelants lisent ensuite via `page.url` /
+    `page.content()` / `page.title()`, exactement comme avant l'introduction
+    du fallback."""
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        return
+    except Exception as exc:
+        console.append({"level": "error", "text": f"goto: {type(exc).__name__}"})
+
+    scheme = urlsplit(url).scheme.lower()
+    if scheme != "https":
+        return
+
+    parts = urlsplit(url)
+    fallback_url = urlunsplit(("http", parts.netloc, parts.path, parts.query, parts.fragment))
+
+    try:
+        await page.goto(fallback_url, wait_until="domcontentloaded", timeout=timeout_ms)
+    except Exception as exc:
+        console.append({"level": "error", "text": f"goto: {type(exc).__name__}"})
+        return
+
+    console.append({"level": "warning", "text": "scheme-fallback https->http"})
+
+
 async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, dict[str, bytes]]:
     """Pilote Camoufox (anti-detect Firefox headed, Xvfb) : navigue vers `url`,
     tente de résoudre un Turnstile interactif via la vision (template matching)
@@ -138,10 +176,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
         page = await ctx.new_page()
         capture.attach(page)
 
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        except Exception as exc:
-            capture.console.append({"level": "error", "text": f"goto: {type(exc).__name__}"})
+        await _goto_with_fallback(page, url, timeout_ms, capture.console)
 
         png0 = await page.screenshot(full_page=False)
         screenshots.append((0, "initial", png0))
@@ -231,10 +266,7 @@ async def capture_scripted(
         page = await ctx.new_page()
         capture.attach(page)
 
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        except Exception as exc:
-            capture.console.append({"level": "error", "text": f"goto: {type(exc).__name__}"})
+        await _goto_with_fallback(page, url, timeout_ms, capture.console)
 
         journal = await run_steps(
             page, validated_steps, screenshot_cb=screenshot_cb, deadline=deadline
