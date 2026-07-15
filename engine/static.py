@@ -22,7 +22,7 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"<form[^>]*action\s*=\s*[\"']([^\"']+)[\"']", "Form action URL", "critical"),
     (r"<form[^>]*method\s*=\s*[\"']post[\"']", "POST form detected", "critical"),
     (r"<img[^>]*src\s*=\s*[\"']https?://([^\"']+)[\"']", "External image", "medium"),
-    (r"<script[^>]*src\s*=\s*[\"']https?://([^\"']+)[\"']", "External script", "critical"),
+    (r"<script[^>]*src\s*=\s*[\"']https?://([^\"']+)[\"']", "External script", "medium"),
     (r"document\.cookie", "Cookie access", "high"),
     (r"localStorage\.getItem\s*\(\s*[\"']([^\"']+)[\"']", "Local storage read", "medium"),
     (r"sessionStorage\.getItem\s*\(\s*[\"']([^\"']+)[\"']", "Session storage read", "medium"),
