@@ -100,7 +100,8 @@ Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
 - ~~**Mapping groupes IdP → rôles (admin)**~~ → **✅ FAIT (phase 3h)** : `OCULAR_ADMIN_GROUP` + `X-Forwarded-Groups` (opt-in strict, membership exact) accorde l'admin ; `X-Admin-Token` reste fallback ; `whoami` expose `is_admin`/`groups` ; UI masque les contrôles admin. Audité (pas d'escalade/spoofing) + e2e. *(Reste possible : rôles plus fins que admin/non-admin — viewer/analyst — si besoin futur.)*
 - **Validation OIDC JWT in-app** (3e) : valider un JWT (iss/aud/exp via JWKS) pour un Keycloak/Authentik **sans** reverse-proxy. Le forward-auth couvre déjà le cas proxifié (le plus courant).
 - **VNC-passwd par session (3b)** — durcissement supplémentaire au-delà du secret à la frontière conteneur (DES 8-char faible → à évaluer).
-- **Langage d'urgence phishing multilingue** (J) : au-delà d'EN+FR (ES/DE/… ; le cluster form-externe rattrape déjà partiellement).
+- ~~**Langage d'urgence phishing multilingue**~~ → **✅ FAIT (phase 3i)** : EN/FR/**ES/DE/PT** (12 patterns rejoignant le cluster `_URGENCY`, ReDoS-safe, anti-faux-positif). *(Autres langues au besoin.)*
+- ~~**Bug `urlnorm` sur `data:`**~~ → **✅ FAIT (phase 3i)** : `normalize_url` robuste (schemes non-réseau/malformé → rejet propre 400, plus de crash 500).
 - **poll `/live` → `mark_connected`** (C) : uniquement si un reconnect auto RFB est ajouté un jour (sinon sans objet).
 
 ---
