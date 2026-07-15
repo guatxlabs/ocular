@@ -43,7 +43,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(saved_analysis)")}
     for name, col_type in _NEW_COLUMNS:
         if name not in existing:
-            conn.execute(f"ALTER TABLE saved_analysis ADD COLUMN {name} {col_type}")
+            try:
+                conn.execute(f"ALTER TABLE saved_analysis ADD COLUMN {name} {col_type}")
+            except sqlite3.OperationalError:
+                # course au 1er upgrade sous accès concurrents : une autre connexion
+                # a déjà ajouté la colonne entre notre PRAGMA et cet ALTER
+                # (« duplicate column name »). Idempotent -> on ignore.
+                pass
     conn.commit()
 
 
