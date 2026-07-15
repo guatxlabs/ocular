@@ -173,6 +173,85 @@ def test_ws_registry_touch_called_on_activity(monkeypatch):
     assert touched == ["s1"]
 
 
+def test_ws_connect_marks_session_connected(monkeypatch):
+    client, registry = _client(monkeypatch)
+    _seed_session(registry)
+    _install_fake_upstream(monkeypatch)
+
+    marked = []
+    orig_mark_connected = registry.mark_connected
+
+    def spy_mark_connected(sid):
+        marked.append(sid)
+        return orig_mark_connected(sid)
+
+    monkeypatch.setattr(registry, "mark_connected", spy_mark_connected)
+
+    with client.websocket_connect(
+        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+    ) as ws:
+        ws.send_bytes(b"ping")
+        ws.receive_bytes()
+
+    assert marked == ["s1"]
+
+
+def test_ws_disconnect_marks_session_disconnected(monkeypatch):
+    client, registry = _client(monkeypatch)
+    _seed_session(registry)
+    _install_fake_upstream(monkeypatch)
+
+    marked = []
+    orig_mark_disconnected = registry.mark_disconnected
+
+    def spy_mark_disconnected(sid, now_epoch):
+        marked.append((sid, now_epoch))
+        return orig_mark_disconnected(sid, now_epoch)
+
+    monkeypatch.setattr(registry, "mark_disconnected", spy_mark_disconnected)
+
+    with client.websocket_connect(
+        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+    ) as ws:
+        ws.send_bytes(b"ping")
+        ws.receive_bytes()
+    # sortie du bloc `with` -> déconnexion (finally du proxy) déjà traitée
+
+    assert len(marked) == 1
+    assert marked[0][0] == "s1"
+    assert isinstance(marked[0][1], float)
+
+    # la marque de déconnexion doit être visible côté registre (grâce reaper)
+    sess = registry.get("s1")
+    assert sess is not None
+    assert float(sess["disconnected_at"]) > 0
+
+
+def test_ws_rejected_before_accept_does_not_mark_disconnected(monkeypatch):
+    """Un rejet fail-closed (token invalide, avant `accept()`) ne doit jamais
+    invoquer `mark_disconnected` : la session n'a jamais été marquée
+    connectée, ce serait fabriquer un `disconnected_at` factice."""
+    client, registry = _client(monkeypatch)
+    _seed_session(registry)
+
+    marked = []
+    orig_mark_disconnected = registry.mark_disconnected
+
+    def spy_mark_disconnected(sid, now_epoch):
+        marked.append(sid)
+        return orig_mark_disconnected(sid, now_epoch)
+
+    monkeypatch.setattr(registry, "mark_disconnected", spy_mark_disconnected)
+
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(
+            "/sessions/s1/ws", subprotocols=["binary", "ocular.session.wrong-token"]
+        ):
+            pass
+
+    assert marked == []
+
+
 def test_ws_token_never_logged(monkeypatch, caplog):
     client, registry = _client(monkeypatch)
     _seed_session(registry)

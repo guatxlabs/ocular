@@ -60,6 +60,31 @@ def test_endpoint_fail_closed_when_secret_unset(monkeypatch, path, body):
     assert r.status_code == 403
 
 
+def test_live_rejects_missing_secret(client):
+    r = client.get("/live")
+    assert r.status_code == 403
+
+
+def test_live_rejects_wrong_secret(client):
+    r = client.get("/live", headers={"X-Session-Secret": "wrong"})
+    assert r.status_code == 403
+
+
+def test_live_fail_closed_when_secret_unset(monkeypatch):
+    # Aucun OCULAR_SESSION_SECRET côté conteneur => jamais ouvert, même avec un
+    # header (fail-closed).
+    monkeypatch.delenv("OCULAR_SESSION_SECRET", raising=False)
+    ss._state.update(cm=None, page=None, cap=None, target=None, kind=None, html_input="")
+    c = TestClient(ss.app)
+    r = c.get("/live", headers={"X-Session-Secret": "anything"})
+    assert r.status_code == 403
+
+
+def test_live_passes_auth_with_correct_secret(client):
+    r = client.get("/live", headers={"X-Session-Secret": _SECRET})
+    assert r.status_code == 200
+
+
 def test_capture_passes_auth_then_409_without_active_session(client):
     # Le bon secret franchit l'auth : /capture arrive à la logique métier et
     # renvoie 409 (aucune session active) — preuve que l'auth a laissé passer.

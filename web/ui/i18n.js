@@ -118,6 +118,8 @@ const I18N_EN = {
   'Capturer': 'Capture', 'capture…': 'capturing…', 'Fermer': 'Close',
   'Capture enregistrée': 'Capture saved', 'Voir l\'analyse': 'View the analysis',
   'Capture échouée — la session ne répond pas.': 'Capture failed — the session is not responding.',
+  // interactif — panneau live (Task C3 3d-2 C, poll /sessions/{id}/live)
+  'appels réseau': 'network calls', 'verdict inconnu': 'unknown verdict',
   // detail — filtre SOC du tableau réseau (Task 2 3d-2 I, réutilise filter.js)
   'Filtre réseau': 'Network filter', 'correspondances': 'matches',
   'Domaine': 'Domain', 'Type': 'Type', 'Statut': 'Status',

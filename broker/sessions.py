@@ -77,16 +77,17 @@ def stop_session(container: str) -> None:
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
 
 
-def reap(registry, now_epoch: float, ttl: float, idle: float) -> int:
-    """Détruit les sessions expirées (TTL absolu ou inactivité) : pour
-    chaque id retourné par `registry.expired`, stoppe le conteneur par son
-    nom **déterministe** `ocular-sess-{id}` (dérivé du session_id, jamais via
-    `registry.get` qui peut renvoyer None sur une course entre l'expiration
-    et le reap — le conteneur existe toujours indépendamment de l'état du
-    registre) puis retire la session du registre. Retourne le nombre de
-    sessions réellement traitées."""
+def reap(registry, now_epoch: float, ttl: float, idle: float, disconnect_grace=None) -> int:
+    """Détruit les sessions expirées (TTL absolu, inactivité, ou — si
+    `disconnect_grace` fourni — fermeture brutale du navigateur au-delà de la
+    grâce) : pour chaque id retourné par `registry.expired`, stoppe le
+    conteneur par son nom **déterministe** `ocular-sess-{id}` (dérivé du
+    session_id, jamais via `registry.get` qui peut renvoyer None sur une
+    course entre l'expiration et le reap — le conteneur existe toujours
+    indépendamment de l'état du registre) puis retire la session du registre.
+    Retourne le nombre de sessions réellement traitées."""
     count = 0
-    for session_id in registry.expired(now_epoch, ttl, idle):
+    for session_id in registry.expired(now_epoch, ttl, idle, disconnect_grace=disconnect_grace):
         stop_session(_session_name(session_id))
         registry.delete(session_id)
         count += 1
