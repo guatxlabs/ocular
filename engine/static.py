@@ -14,8 +14,11 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"document\.location\s*=\s*[\"']([^\"']+)[\"']", "Forced navigation", "low"),
     (r"eval\s*\(\s*([^)]+)\)", "Dynamic code evaluation", "high"),
     (r"Function\s*\(\s*[\"']([^\"']*)[\"']", "Dynamic function creation", "high"),
-    (r"setTimeout\s*\(\s*[\"']([^\"']+)[\"']", "Delayed code execution", "medium"),
-    (r"setInterval\s*\(\s*[\"']([^\"']+)[\"']", "Repeated code execution", "medium"),
+    # setTimeout/setInterval avec une chaîne = exécution de code par chaîne
+    # (équivalent d'un eval différé) -> signal fort "high", et membres de _OBF
+    # côté verdict (cf. engine/verdict.py).
+    (r"setTimeout\s*\(\s*[\"']([^\"']+)[\"']", "Delayed code execution", "high"),
+    (r"setInterval\s*\(\s*[\"']([^\"']+)[\"']", "Repeated code execution", "high"),
     (r"document\.write\s*\(\s*([^)]+)\)", "Direct DOM write", "medium"),
     (r"innerHTML\s*=\s*([^;]+)", "HTML injection", "low"),
     (r"outerHTML\s*=\s*([^;]+)", "Complete HTML replacement", "low"),
@@ -40,6 +43,9 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"onsubmit\s*=", "Form submit handler", "low"),
     (r"oncopy\s*=\s*[\"']return\s+false[\"']", "Copy disabled", "low"),
     (r"onpaste\s*=", "Paste handler", "low"),
+    # Iframe/object/embed restent "medium" (pas "high") : les embeds tiers
+    # (YouTube, maps, widgets, pubs) sont extrêmement courants sur des pages
+    # légitimes -> choix anti-faux-positif assumé.
     (r"<iframe[^>]*src\s*=\s*[\"']([^\"']+)[\"']", "Embedded iframe", "medium"),
     (r"<object[^>]*data\s*=\s*[\"']([^\"']+)[\"']", "Embedded object", "medium"),
     (r"<embed[^>]*src\s*=\s*[\"']([^\"']+)[\"']", "Embedded content", "medium"),
@@ -53,10 +59,20 @@ PATTERNS: list[tuple[str, str, Severity]] = [
     (r"<input[^>]*name\s*=\s*[\"']pass", "Password field (name)", "low"),
     (r"<input[^>]*name\s*=\s*[\"']email", "Email input field", "low"),
     (r"<input[^>]*name\s*=\s*[\"']user", "Username input field", "low"),
+    # Langage d'urgence (phishing) — couverture EN + FR. Les patterns FR sont
+    # mappés sur les MÊMES `rule` names que l'anglais pour rejoindre le cluster
+    # _URGENCY côté verdict. Quantificateurs bornés `.{0,20}` (pas d'imbrication)
+    # -> ReDoS-safe. Les autres langues restent une dette connue ; le fix
+    # "cred + form externe -> suspicious" rattrape déjà le cas form-externe
+    # quelle que soit la langue.
     (r"verify.*account", "Account verification text", "medium"),
     (r"confirm.*identity", "Identity confirmation text", "medium"),
     (r"update.*payment", "Payment update text", "medium"),
     (r"suspended.*account", "Account suspended text", "medium"),
+    (r"v[eé]rifi\w*.{0,20}(compte|identit)", "Account verification text", "medium"),
+    (r"confirm\w*.{0,20}(identit|compte)", "Identity confirmation text", "medium"),
+    (r"(mett|mise).{0,20}jour.{0,20}paiement", "Payment update text", "medium"),
+    (r"compte.{0,20}(suspendu|bloqu[eé]|d[eé]sactiv)", "Account suspended text", "medium"),
 ]
 
 _COMPILED = [(re.compile(p, re.IGNORECASE), d, s) for p, d, s in PATTERNS]

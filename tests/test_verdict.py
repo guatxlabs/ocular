@@ -93,3 +93,55 @@ def test_obfuscated_malware_cluster_is_malicious():
 def test_external_script_alone_is_benign():
     findings = [_rf("External script", "medium")]
     assert compute_verdict(findings) == "benign"
+
+
+# --- Audit 3d-J : faux négatifs corrigés ---
+
+
+def test_bare_harvester_cred_plus_external_form_is_suspicious():
+    # Credentials postés vers un domaine externe SANS langage d'urgence : signal
+    # fort (harvester minimaliste) qui doit sortir suspicious, plus benign.
+    # Reste suspicious (pas malicious) car un OAuth/SSO légitime poste aussi en
+    # externe.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Email input field", "low"),
+        _rf("External form action", "medium"),
+    ]
+    assert compute_verdict(findings) == "suspicious"
+
+
+def test_full_phishing_kit_still_malicious_after_bare_rule():
+    # cred + urgency + external form -> malicious doit toujours passer AVANT la
+    # règle cred+ext_form -> suspicious.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Account verification text", "medium"),
+        _rf("External form action", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_settimeout_string_alone_is_suspicious():
+    # Exécution de code par chaîne (comme eval) : high isolé -> suspicious.
+    findings = [_rf("Delayed code execution", "high")]
+    assert compute_verdict(findings) == "suspicious"
+
+
+def test_settimeout_string_plus_eval_is_malicious():
+    # setTimeout("code") est dans _OBF : eval + setTimeout -> cluster >=2 -> malicious.
+    findings = [
+        _rf("Dynamic code evaluation", "high"),
+        _rf("Delayed code execution", "high"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_french_full_phishing_is_malicious():
+    # credential + form externe + urgence FR (« compte suspendu ») -> kit complet.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("External form action", "medium"),
+        _rf("Account suspended text", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
