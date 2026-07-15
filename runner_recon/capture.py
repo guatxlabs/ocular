@@ -2,24 +2,40 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import sys
 import time
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlsplit, urlunsplit
 
-from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo
-from engine.static import analyze_html
-from engine.steps import validate_steps
-from engine.urlnorm import url_input_hash
-from engine.verdict import compute_verdict
-from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper
 from ocular_logging import get_logger
-from runner_recon.steps_exec import run_steps
 
 # CRITIQUE : comme runner_analysis/render.py — stdout = wrapper JSON pur consommé
 # par broker/launcher.py. Tous les logs partent sur stderr.
+#
+# DOIT s'exécuter AVANT tout import qui déclenche, indirectement, un premier
+# appel à `ocular_logging.get_logger(...)` SANS préciser `stream` — notamment
+# `engine.egress_guard` (plan 3g Task G2), qui fait `logger = get_logger(
+# "egress_guard")` À SON IMPORT. `get_logger` configure un handler UNIQUE,
+# partagé par tout le process (`ocular_logging._CONFIGURED`, cf. docstring
+# du module) : le PREMIER appelant gagne le `stream` pour TOUS les loggers
+# "ocular.*" ultérieurs, y compris celui-ci. Sans cet ordre, les logs du
+# garde (ex. "egress blocked host=...") atterriraient sur stdout et
+# corrompraient le JSON du wrapper que lit `broker/launcher.py` — régression
+# réelle observée empiriquement en intégration avant ce fix (cf.
+# tests/test_egress_integration.py, échec `JSONDecodeError: Extra data`).
 log = get_logger("runner-recon", stream=sys.stderr)
+
+from engine.egress_guard import EgressGuard  # noqa: E402 (cf. commentaire ci-dessus)
+from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo  # noqa: E402
+from engine.static import analyze_html  # noqa: E402
+from engine.steps import validate_steps  # noqa: E402
+from engine.urlnorm import url_input_hash  # noqa: E402
+from engine.verdict import compute_verdict  # noqa: E402
+from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper  # noqa: E402
+from ocular_settings import egress_guard_enabled  # noqa: E402
+from runner_recon.steps_exec import run_steps  # noqa: E402
 
 # Budget wall-clock TOTAL de l'exécution des steps scriptés (3c Global
 # Constraint : « timeout d'exécution total 120s -> arrêt + résultat partiel »).
@@ -306,6 +322,77 @@ async def _capture_dom(page: Any, url: str) -> tuple[bytes, str, str]:
         return b"", "", url
 
 
+# Options de lancement communes Camoufox (3a et 3c) : navigateur headed
+# (Xvfb), anti-detect, curseur humanisé. Factorisées ici (une seule fois),
+# le `proxy` egress guard y est mergé conditionnellement par
+# `_camoufox_session` ci-dessous.
+#
+# WebRTC OFF (audit 3g C1) : le garde egress est un proxy TCP HTTP/CONNECT ;
+# le moteur ICE/STUN de Firefox (WebRTC) sort en UDP DIRECT, HORS proxy — une
+# page hostile pourrait donc joindre une IP interne via
+# `new RTCPeerConnection({iceServers:[{urls:"stun:169.254.169.254:3478"}]})`,
+# contournant totalement le garde. On désactive WebRTC via la préférence
+# Firefox `media.peerconnection.enabled=false` (passée en `firefox_user_prefs`,
+# que Camoufox merge tel quel dans `playwright.firefox.launch`, cf.
+# camoufox.utils.launch_options) : `RTCPeerConnection` devient alors
+# indisponible dans la page -> vecteur UDP fermé. (Équivaut au paramètre
+# `block_webrtc=True` de Camoufox, qui pose exactement cette même pref ; on
+# passe la pref explicitement pour rendre l'intention et le test unitaire
+# lisibles.) Vérifié empiriquement : Turnstile (guatx.com) reste résolu et
+# `typeof RTCPeerConnection === "undefined"` dans le DOM capturé (cf.
+# tests/test_egress_integration.py).
+_CAMOUFOX_LAUNCH_KWARGS: dict[str, Any] = dict(
+    headless=False,
+    os="linux",
+    humanize=0.3,
+    i_know_what_im_doing=True,
+    firefox_user_prefs={"media.peerconnection.enabled": False},
+)
+
+
+@contextlib.asynccontextmanager
+async def _camoufox_session() -> AsyncIterator[Any]:
+    """Lance Camoufox (headed, anti-detect) routé — quand
+    `ocular_settings.egress_guard_enabled()` est vrai (défaut) — à travers
+    un `engine.egress_guard.EgressGuard` local, factorisé entre `capture_url`
+    (3a) et `capture_scripted` (3c) : même pilotage réseau, une seule
+    implémentation (DRY, cf. plan 3g Task G2).
+
+    **Voie proxy retenue (vérifiée empiriquement)** : `AsyncCamoufox` déroule
+    ses `**launch_options` directement dans `playwright.firefox.launch(...)`
+    (cf. camoufox.utils.launch_options / camoufox.async_api.AsyncNewBrowser)
+    — le paramètre `proxy` est donc le `ProxySettings` STANDARD de Playwright
+    (`{"server": "http://host:port"}`), pas un hack `firefox_user_prefs`.
+    C'est la voie utilisée ici : `proxy={"server": f"http://127.0.0.1:{port}"}`.
+
+    **Fail-safe (décision tranchée)** : si le garde ne démarre pas
+    (`guard.start()` lève), l'exception REMONTE — on ne bascule JAMAIS sur un
+    lancement Camoufox sans proxy (ce serait un fetch direct non filtré,
+    silencieusement moins sûr que ce que `egress_guard_enabled()` a demandé).
+    Les appelants (`capture_url`/`capture_scripted`, via `main()`) traitent
+    déjà toute exception de ce type comme un échec propre (`_error_wrapper`,
+    wrapper `OcularResult` valide sur stdout) — pas de crash silencieux, pas
+    de bypass silencieux.
+
+    Le garde est arrêté en `finally`, que la session Camoufox se termine
+    normalement ou lève."""
+    from camoufox.async_api import AsyncCamoufox
+
+    guard: Optional[EgressGuard] = None
+    launch_kwargs = dict(_CAMOUFOX_LAUNCH_KWARGS)
+    if egress_guard_enabled():
+        guard = EgressGuard()
+        port = await guard.start()
+        launch_kwargs["proxy"] = {"server": f"http://127.0.0.1:{port}"}
+
+    try:
+        async with AsyncCamoufox(**launch_kwargs) as ctx:
+            yield ctx
+    finally:
+        if guard is not None:
+            await guard.stop()
+
+
 async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, dict[str, bytes]]:
     """Pilote Camoufox (anti-detect Firefox headed, Xvfb) : navigue vers `url`,
     tente de résoudre un Turnstile interactif via la vision (template matching)
@@ -313,7 +400,6 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
     YesWeHack/toolkit/browser-automation), capture screenshots/réseau/DOM, puis
     délègue l'assemblage du résultat à `build_result`."""
     import vision  # copié dans runner_recon/, sur le PYTHONPATH du conteneur
-    from camoufox.async_api import AsyncCamoufox
 
     capture = NetworkCapture()
     screenshots: list[tuple[int, str, bytes]] = []
@@ -322,9 +408,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
     # ne lève jamais, donc la seule affectation qui compte est celle après le
     # `async with` ci-dessous — cf. `_capture_dom`.)
 
-    async with AsyncCamoufox(
-        headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
-    ) as ctx:
+    async with _camoufox_session() as ctx:
         page = await ctx.new_page()
         capture.attach(page)
 
@@ -384,8 +468,6 @@ async def capture_scripted(
     # ne tue le conteneur (cf. SCRIPTED_EXEC_TIMEOUT_S ci-dessus).
     deadline = _scripted_deadline()
 
-    from camoufox.async_api import AsyncCamoufox
-
     capture = NetworkCapture()
     builder = ResultBuilder()
     # refs des screenshots `capture` empilées DANS L'ORDRE des appels (une par
@@ -402,9 +484,7 @@ async def capture_scripted(
         capture_refs.append(ref)
         shot_idx += 1
 
-    async with AsyncCamoufox(
-        headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
-    ) as ctx:
+    async with _camoufox_session() as ctx:
         page = await ctx.new_page()
         capture.attach(page)
 
