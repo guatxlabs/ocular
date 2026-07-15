@@ -157,7 +157,11 @@ function mount(app, id, src) {
       } catch (ex) {
         if (ex instanceof Unauthorized) return;
         btn.disabled = false;
-        err.textContent = ex && ex.expired
+        // XSS-clean : toujours textContent, jamais innerHTML (le message peut
+        // provenir d'un ex.message serveur non fiable dans le cas générique).
+        err.textContent = ex && ex.duplicateLabel
+          ? 'Nom déjà utilisé — choisis une autre étiquette.'
+          : ex && ex.expired
           ? 'Artefacts expirés — relance l\'analyse avant de sauvegarder.'
           : String(ex.message || ex);
         err.hidden = false;

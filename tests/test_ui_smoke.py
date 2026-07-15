@@ -99,3 +99,27 @@ def test_detail_renders_dynamic_steps_without_innerhtml_on_untrusted_data():
     # dans une chaîne de markup.
     assert "el('span.action-verb', {}, s.action" in js
     assert "el('span.action-err', {}, s.error" in js
+
+
+# ---- unicité du nom des sauvegardes (Task D 3d-1) : affichage du 409 côté UI ----
+
+def test_save_analysis_distinguishes_duplicate_label_409():
+    # api.js doit distinguer un 409 « nom déjà pris » d'un 409 « artefacts
+    # expirés » (les deux passent par POST /saved) pour permettre un message
+    # d'erreur distinct côté vue.
+    js = open("web/ui/api.js").read()
+    assert "duplicateLabel" in js
+    assert "expired" in js
+
+
+def test_detail_shows_duplicate_label_error_via_textcontent_not_innerhtml():
+    js = open("web/ui/views/detail.js").read()
+    assert "duplicateLabel" in js
+    assert "err.textContent" in js
+    import re
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_i18n_has_duplicate_label_translation():
+    js = open("web/ui/i18n.js").read()
+    assert "Nom déjà utilisé" in js

@@ -32,6 +32,12 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+class DuplicateLabelError(ValueError):
+    """Levée quand un `label` (nom) non vide est déjà utilisé par une sauvegarde
+    portant un `input_hash` différent. Le re-save du MÊME `input_hash` (UPSERT)
+    n'est jamais bloqué, même avec un label identique."""
+
+
 def refs_of(result: dict) -> list[str]:
     refs: list[str] = []
     for s in result.get("screenshots", []) or []:
@@ -51,6 +57,17 @@ def save(conn: sqlite3.Connection, result: dict, blobs: dict, label: Optional[st
     input_hash = result["input_hash"]
     kind = "url" if result.get("profile") == "capture" else "html"
     with conn:  # transaction atomique
+        if label:
+            # unicité du nom : un label non vide ne peut pas être réutilisé par un
+            # input_hash différent. Vérifié DANS la transaction (pas de round-trip
+            # séparé) pour éviter un TOCTOU entre le check et l'INSERT ci-dessous ;
+            # le re-save du MÊME input_hash (UPSERT) est explicitement exclu.
+            dup = conn.execute(
+                "SELECT 1 FROM saved_analysis WHERE label = ? AND input_hash != ?",
+                (label, input_hash),
+            ).fetchone()
+            if dup:
+                raise DuplicateLabelError(f"label déjà utilisé: {label!r}")
         conn.execute("DELETE FROM saved_analysis WHERE input_hash = ?", (input_hash,))  # UPSERT
         cur = conn.execute(
             "INSERT INTO saved_analysis (input_hash, input_kind, job_id, verdict, label, result_json, saved_at)"
