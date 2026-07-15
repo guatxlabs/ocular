@@ -19,8 +19,13 @@ def test_render_benign_html_produces_screenshot_and_dom():
 
 @pytest.mark.integration
 def test_render_populates_static_findings():
+    # eval(...) + atob("...") = cluster obfuscation/exécution (>=2 rules dans
+    # _OBF) -> corroboré, donc malicious même sans severity "critical" (le
+    # re-tier 3d-2j a supprimé "critical" des patterns statiques).
     r, _ = render.render_html("<script>eval(atob('x'))</script>", "job-2")
-    assert any(f.severity == "critical" for f in r.static_findings)
+    rules = {f.rule for f in r.static_findings}
+    assert {"Dynamic code evaluation", "Base64 decode"} <= rules
+    assert any(f.severity == "high" for f in r.static_findings)
     assert r.verdict == "malicious"
 
 
@@ -29,4 +34,5 @@ def test_render_hostile_hanging_html_still_returns_result_with_static_findings()
     r, _ = render.render_html("<script>eval(atob('x')); while(true){}</script>", "job-hang",
                            render_timeout_ms=2000)
     assert r.job_id == "job-hang"
-    assert any(f.severity == "critical" for f in r.static_findings)  # static toujours calculé
+    rules = {f.rule for f in r.static_findings}
+    assert {"Dynamic code evaluation", "Base64 decode"} <= rules  # static toujours calculé
