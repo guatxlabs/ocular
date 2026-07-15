@@ -31,6 +31,8 @@ Légende : ✅ fait & mergé · 🔜 à faire (priorisé) · ⏳ différé (dett
 
 Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par la méthode (spec courte → SDD → e2e).
 
+> **État** : le batch **3d-1** (✅ A verdict · D nom unique · E GC planifié · F upload .htm/.html · G bandeau CSS · H schéma URL+fallback) est **implémenté** (branche `feat/phase3d-correctness-ux`, en cours d'audit/merge). Reste : **B** (Turnstile), **C** (cycle de vie + analyse interactif), **I** (filtrage SOC), **J** (recalibration détecteurs).
+
 ### A. Correctness du verdict
 - **A1 — Script externe seul ≠ malveillant.** `engine/static.py:25` classe **tout** `<script src=https://…>` en `critical` → `compute_verdict` renvoie `malicious`. Une page légitime avec un CDN est donc « malicious ». **Attendu** : un script externe seul ne doit **pas** faire basculer en `suspicious`/`malicious`. Fix : abaisser la sévérité de ce détecteur (`low`/`info`, reste visible comme finding) et/ou ne l'élever que combiné à d'autres signaux (obfuscation, `eval`, exfil). Revoir dans la foulée les autres détecteurs à sévérité trop agressive.
 
@@ -54,6 +56,16 @@ Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par l
 
 ### G. UI / finition
 - **G1 — Bandeau « IP exposée ».** `.livewarn` (`web/ui/style.css:1163`) : retirer l'élément/décoration à gauche qui **dépasse du rectangle** de la carte — pas de surplus de CSS, garder la carte propre dans ses bords.
+
+### H. Schéma URL
+- **H1 — Détection auto http/https + fallback.** `example.com` → `https://` par défaut (normalisation à la soumission via `normalize_url`) ; `http://`/`https://` respectés ; si `https` échoue à la capture → repli **une** fois en `http` (runner). `final_url` reflète l'URL atteinte.
+
+### I. Filtrage & recherche des résultats (intégration SOC)
+- **I1 — Recherche/filtre efficace des résultats.** Un résultat peut contenir des **centaines d'entrées réseau** ; il faut pouvoir chercher/filtrer sans scroller : par **type MIME**, par **pattern d'URL**, par **domaine**, avec **inclusions ET exclusions** (négation), filtres **cumulables**. Piloter cela « façon SOC » (rapide, clavier, compteurs de correspondances). Applicable aussi aux findings statiques / console.
+- **I2 — Sécurité du filtrage (impératif).** Pas de **ReDoS** : ne pas exposer une regex utilisateur non bornée. Préférer des **filtres structurés** (`domaine =`, `mime contient`, `url contient`, `statut =`) + éventuellement un glob borné ; si regex, la **compiler avec limites** (longueur, complexité) et l'appliquer **côté client** sur les données déjà chargées (pas de nouvelle surface serveur / pas de requête réinjectée). Aucune fuite : le filtre ne doit pas exfiltrer ni logger de contenu sensible.
+
+### J. Calibration des détecteurs (dette découverte en Task A)
+- **J1 — Recalibrer le verdict au-delà d'`External script`.** `engine/static.py` classe en `critical`/`high` beaucoup de signaux **bénins en isolation** (formulaires, champ password, `fetch`, storage…) → une page de login légitime ressort `malicious`. Décision de **modèle de menace** à prendre : un verdict `malicious`/`suspicious` devrait exiger une **corroboration** (combinaison de signaux : password + form action externe + texte de harponnage ; ou obfuscation `eval`/`atob`+`Function`), pas un signal isolé. À spécifier séparément (impacte la sémantique cœur).
 
 ---
 

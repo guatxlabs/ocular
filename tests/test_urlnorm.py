@@ -43,3 +43,18 @@ def test_ipv6_host_lowercased():
 
 def test_ipv6_default_port_stripped():
     assert normalize_url("https://[::1]:443/a") == "https://[::1]/a"
+
+
+# --- Task H : normalisation à la soumission (domaine nu -> https, scheme respecté) ---
+
+
+def test_bare_domain_gets_https_prefix():
+    assert normalize_url("example.com") == "https://example.com/"
+
+
+def test_explicit_http_scheme_respected():
+    assert normalize_url("http://example.com") == "http://example.com/"
+
+
+def test_explicit_https_scheme_respected():
+    assert normalize_url("https://example.com") == "https://example.com/"

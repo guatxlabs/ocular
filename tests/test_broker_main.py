@@ -1,7 +1,7 @@
 import json
 
 import broker.main as main_mod
-from broker.main import _reaper_loop, _start_reaper, error_result
+from broker.main import _gc_loop, _reaper_loop, _start_gc, _start_reaper, error_result
 
 
 class _FakeStopEvent:
@@ -84,3 +84,52 @@ def test_start_reaper_starts_a_daemon_thread(monkeypatch):
     assert t.name == "ocular-reaper"
     assert started["called"] is True
     assert started["registry"] == ("registry-for", client)
+
+
+def test_gc_loop_calls_collect_once_with_stop_event(monkeypatch):
+    calls = []
+    stop_event = _FakeStopEvent()
+
+    def fake_collect(artifacts_dir, client):
+        calls.append((artifacts_dir, client))
+
+    monkeypatch.setattr(main_mod, "collect", fake_collect)
+    monkeypatch.setattr(main_mod, "artifacts_dir", lambda: "/some/artifacts")
+    monkeypatch.setattr(main_mod, "gc_interval", lambda: 600)
+
+    client = object()
+    _gc_loop(client, stop_event=stop_event)  # une seule itération puis sort via wait()
+
+    assert calls == [("/some/artifacts", client)]
+
+
+def test_gc_loop_survives_collect_exception(monkeypatch):
+    def boom(artifacts_dir, client):
+        raise RuntimeError("disk down")
+
+    monkeypatch.setattr(main_mod, "collect", boom)
+    monkeypatch.setattr(main_mod, "artifacts_dir", lambda: "/some/artifacts")
+    monkeypatch.setattr(main_mod, "gc_interval", lambda: 600)
+
+    stop_event = _FakeStopEvent()
+
+    _gc_loop(object(), stop_event=stop_event)  # ne doit PAS lever, malgré l'exception
+
+
+def test_start_gc_starts_a_daemon_thread(monkeypatch):
+    started = {}
+
+    def fake_gc_loop(client, stop_event=None):
+        started["client"] = client
+        started["called"] = True
+
+    monkeypatch.setattr(main_mod, "_gc_loop", fake_gc_loop)
+
+    client = object()
+    t = _start_gc(client)
+    t.join(timeout=2)
+
+    assert t.daemon is True
+    assert t.name == "ocular-gc"
+    assert started["called"] is True
+    assert started["client"] is client

@@ -74,6 +74,33 @@ def test_capture_ssrf_url_rejected(monkeypatch):
     assert r.status_code == 400
 
 
+# --- Task H : normalisation schéma URL à la soumission (avant SSRF, avant enqueue) ---
+
+
+def test_capture_bare_domain_normalized_to_https_before_enqueue(monkeypatch):
+    client, q = _client(monkeypatch)
+    r = client.post("/jobs", json={"profile": "capture", "url": "example.com"})
+    assert r.status_code == 200
+    job = q.dequeue(timeout=1)
+    assert job.url == "https://example.com/"
+
+
+def test_capture_explicit_http_scheme_respected_at_submission(monkeypatch):
+    client, q = _client(monkeypatch)
+    r = client.post("/jobs", json={"profile": "capture", "url": "http://example.com"})
+    assert r.status_code == 200
+    job = q.dequeue(timeout=1)
+    assert job.url == "http://example.com/"
+
+
+def test_capture_bare_private_ip_still_ssrf_rejected_after_normalization(monkeypatch):
+    # La normalisation ne doit PAS contourner la garde SSRF : un domaine nu
+    # désignant une IP privée reste rejeté une fois "https://" préfixé.
+    c = _client(monkeypatch)[0]
+    r = c.post("/jobs", json={"profile": "capture", "url": "127.0.0.1"})
+    assert r.status_code == 400
+
+
 def test_web_package_never_imports_docker():
     import pathlib
     for f in pathlib.Path("web").rglob("*.py"):
