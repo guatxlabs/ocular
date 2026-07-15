@@ -10,7 +10,7 @@
 //     JAMAIS apparaître dans wsUrl (anti-fuite logs/referrer/historique).
 //   • Anti-XSS : tout le contenu variable passe par des textNodes (el()/textContent),
 //     jamais innerHTML (seules les icônes statiques via iconNode le sont, dans core.js).
-import { el, iconNode } from '../core.js';
+import { el, iconNode, esc } from '../core.js';
 import {
   createSession, deleteSession, captureSession, liveSession, saveAnalysis, Unauthorized,
 } from '../api.js';
@@ -45,16 +45,23 @@ function wsUrlFor(sessionId) {
 function buildLivePanel(getLastNetwork) {
   const netCountEl = el('b', {}, '0');
   const findCountEl = el('b', {}, '0');
+  const consCountEl = el('b', {}, '0');
   const verdictEl = el('span.livesumverdict.v-unknown', {}, 'verdict inconnu');
   const summary = el('div.livesummary', {}, [
     el('span.livesumitem', {}, [netCountEl, ' appels réseau']),
     el('span.livesumsep', {}, '·'),
     el('span.livesumitem', {}, [findCountEl, ' findings']),
     el('span.livesumsep', {}, '·'),
+    el('span.livesumitem', {}, [consCountEl, ' console']),
+    el('span.livesumsep', {}, '·'),
     verdictEl,
   ]);
 
   const findWrap = el('div.livefindings');
+  // Console live (parité 3b/3c avec le résultat statique, cf. detail.js::
+  // buildConsole) : mêmes classes CSS (`.conslist`/`.consline`), XSS-clean —
+  // uniquement el()/textContent, jamais innerHTML.
+  const consWrap = el('div.conslist');
 
   // ---- tableau réseau + barre de filtre : construits UNE FOIS ----
   const table = el('table.qtable');
@@ -104,26 +111,44 @@ function buildLivePanel(getLastNetwork) {
     });
   }
 
+  // Même rendu que buildConsole (detail.js) : level/text posés en textNode,
+  // jamais innerHTML — la console d'une page hostile est du contenu non fiable.
+  function renderConsole(cons) {
+    consWrap.replaceChildren();
+    if (!cons.length) { consWrap.appendChild(el('p.muted', {}, 'console vide')); return; }
+    cons.forEach((c) => {
+      consWrap.appendChild(el('div.consline', {}, [
+        el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
+        el('span.ctext', {}, c.text || ''),
+      ]));
+    });
+  }
+
   // Appelé à chaque poll. `getLastNetwork()` a déjà été mis à jour par
-  // l'appelant (pollLive) : ici on rafraîchit les compteurs/findings/verdict
-  // (pas d'état utilisateur) et on relance le filtre réseau (chips conservés).
+  // l'appelant (pollLive) : ici on rafraîchit les compteurs/findings/console/
+  // verdict (pas d'état utilisateur) et on relance le filtre réseau (chips
+  // conservés).
   function update(data) {
     const counts = (data && data.counts) || {};
     const network = Array.isArray(data && data.network) ? data.network : [];
     const findings = Array.isArray(data && data.findings) ? data.findings : [];
+    const console_ = Array.isArray(data && data.console) ? data.console : [];
     netCountEl.textContent = String(counts.network != null ? counts.network : network.length);
     findCountEl.textContent = String(counts.findings != null ? counts.findings : findings.length);
+    consCountEl.textContent = String(counts.console != null ? counts.console : console_.length);
     const verdict = (data && data.verdict) || 'unknown';
     verdictEl.textContent = verdict;
     verdictEl.className = 'livesumverdict ' + (VERDICT_CLASS[verdict] || 'v-unknown');
     refreshNetwork();
     renderFindings(findings);
+    renderConsole(console_);
   }
 
   const node = el('div.livepanel', {}, [
     summary,
     netSection,
     el('div.detsec', {}, [el('h3', {}, 'Détections statiques'), findWrap]),
+    el('div.detsec', {}, [el('h3', {}, 'Console'), el('div.card', {}, [consWrap])]),
   ]);
 
   return { node, update };
