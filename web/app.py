@@ -543,6 +543,10 @@ async def session_ws_proxy(
         return
 
     await websocket.accept(subprotocol="binary")
+    # session activement connectée (WS ouvert) : efface toute marque de
+    # déconnexion antérieure pour que le reaper (règle de grâce) ne la
+    # nettoie jamais tant qu'elle reste connectée.
+    registry.mark_connected(sid)
 
     upstream_url = f"ws://{sess['container']}:6080/websockify"
     try:
@@ -557,6 +561,10 @@ async def session_ws_proxy(
     except Exception:  # noqa: BLE001 - erreurs réseau/upstream : jamais de détail sensible loggé
         pass
     finally:
+        # déconnexion (propre ou brutale, y compris crash navigateur) : marque
+        # l'heure pour le reaper (grâce `session_disconnect_grace`), qui
+        # nettoiera une session abandonnée sans navigateur pour la reconnecter.
+        registry.mark_disconnected(sid, time.time())
         if websocket.client_state != WebSocketState.DISCONNECTED:
             try:
                 await websocket.close()

@@ -161,6 +161,76 @@ def test_list_active_never_leaks_secret():
         assert "secret" not in sess
 
 
+def test_expired_with_disconnect_grace_includes_stale_disconnected_session():
+    reg = _registry()
+    reg.create(
+        "disconnected", container="c1", kind="recon-vnc", target="t", token="tok",
+        now_iso="2026-07-13T10:00:00+00:00",
+    )
+    reg.touch("disconnected", now_iso="2026-07-13T10:00:00+00:00")
+    now_epoch = sessions_mod._iso_to_epoch("2026-07-13T10:00:00+00:00")
+    reg.mark_disconnected("disconnected", now_epoch - 100)  # déconnectée il y a 100s
+    # ttl/idle très larges : seule la règle de grâce doit déclencher
+    result = reg.expired(now_epoch, ttl=100000, idle=100000, disconnect_grace=45)
+    assert "disconnected" in result
+
+
+def test_expired_with_disconnect_grace_excludes_recently_disconnected_session():
+    reg = _registry()
+    reg.create(
+        "disconnected-fresh", container="c1", kind="recon-vnc", target="t", token="tok",
+        now_iso="2026-07-13T10:00:00+00:00",
+    )
+    now_epoch = sessions_mod._iso_to_epoch("2026-07-13T10:00:00+00:00")
+    reg.mark_disconnected("disconnected-fresh", now_epoch - 10)  # déconnectée il y a 10s < grâce
+    result = reg.expired(now_epoch, ttl=100000, idle=100000, disconnect_grace=45)
+    assert "disconnected-fresh" not in result
+
+
+def test_mark_connected_clears_disconnected_at_so_not_reaped_by_grace():
+    reg = _registry()
+    reg.create(
+        "reconnected", container="c1", kind="recon-vnc", target="t", token="tok",
+        now_iso="2026-07-13T10:00:00+00:00",
+    )
+    now_epoch = sessions_mod._iso_to_epoch("2026-07-13T10:00:00+00:00")
+    reg.mark_disconnected("reconnected", now_epoch - 1000)  # bien au-delà de la grâce
+    reg.mark_connected("reconnected")
+    result = reg.expired(now_epoch, ttl=100000, idle=100000, disconnect_grace=45)
+    assert "reconnected" not in result
+
+
+def test_expired_never_connected_session_not_reaped_by_grace_but_still_by_idle():
+    reg = _registry()
+    # jamais connectée (pas de disconnected_at) : la règle de grâce ne doit
+    # jamais la reaper, seules ttl/idle s'appliquent toujours.
+    reg.create(
+        "never-connected", container="c1", kind="recon-vnc", target="t", token="tok",
+        now_iso="2026-07-13T09:00:00+00:00",
+    )
+    now_epoch = sessions_mod._iso_to_epoch("2026-07-13T10:00:00+00:00")
+    # ttl/idle larges : pas reaper malgré disconnect_grace fourni (pas de disconnected_at)
+    result = reg.expired(now_epoch, ttl=100000, idle=100000, disconnect_grace=45)
+    assert "never-connected" not in result
+    # mais idle dépassé -> reaper par la règle idle existante, disconnect_grace fourni ou non
+    result_idle = reg.expired(now_epoch, ttl=100000, idle=600, disconnect_grace=45)
+    assert "never-connected" in result_idle
+
+
+def test_expired_disconnect_grace_default_none_keeps_backward_compat():
+    reg = _registry()
+    reg.create(
+        "disconnected-no-grace-arg", container="c1", kind="recon-vnc", target="t", token="tok",
+        now_iso="2026-07-13T10:00:00+00:00",
+    )
+    now_epoch = sessions_mod._iso_to_epoch("2026-07-13T10:00:00+00:00")
+    reg.mark_disconnected("disconnected-no-grace-arg", now_epoch - 1000)
+    # appel sans disconnect_grace (signature rétro-compatible) : la règle de
+    # grâce ne s'applique pas, seules ttl/idle comptent (ici larges -> pas reaper).
+    result = reg.expired(now_epoch, ttl=100000, idle=100000)
+    assert "disconnected-no-grace-arg" not in result
+
+
 def test_valid_token_uses_constant_time_compare(monkeypatch):
     reg = _registry()
     reg.create(

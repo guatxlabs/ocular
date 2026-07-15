@@ -19,6 +19,7 @@ from ocular_settings import (
     reaper_interval,
     redis_url,
     result_ttl,
+    session_disconnect_grace,
     session_idle,
     session_ttl,
 )
@@ -92,7 +93,7 @@ def _reaper_loop(registry, stop_event=None) -> None:
     reaper survive à un incident Redis/Docker transitoire."""
     while stop_event is None or not stop_event.is_set():
         try:
-            reap(registry, _time.time(), session_ttl(), session_idle())
+            reap(registry, _time.time(), session_ttl(), session_idle(), session_disconnect_grace())
         except Exception as exc:  # le reaper survit à une erreur transitoire
             log.error("reaper error err=%s", str(exc)[:200])
         if stop_event is not None:
