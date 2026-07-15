@@ -51,6 +51,22 @@ def admin_token() -> str | None:
     return os.environ.get("OCULAR_ADMIN_TOKEN")
 
 
+def trust_forward_auth() -> bool:
+    """Opt-in strict : par défaut False → l'en-tête d'identité forward-auth
+    n'est JAMAIS lu (anti-spoofing, comportement bearer inchangé)."""
+    return os.environ.get("OCULAR_TRUST_FORWARD_AUTH", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def forward_auth_user_header() -> str:
+    return os.environ.get("OCULAR_FORWARD_USER_HEADER", "X-Forwarded-User")
+
+
+def forward_auth_email_header() -> str:
+    return os.environ.get("OCULAR_FORWARD_EMAIL_HEADER", "X-Forwarded-Email")
+
+
 def session_ttl() -> int:
     return int(os.environ.get("OCULAR_SESSION_TTL", "1800"))     # 30 min absolu
 
