@@ -130,6 +130,16 @@ const I18N_EN = {
   // verdicts
   'Verdict': 'Verdict',
   'chargement…': 'loading…', 'Réessayer': 'Retry',
+  // bandeau whoami (Phase 3e — GET /auth/whoami) : réutilise la clé 'connecté'
+  // déjà déclarée plus haut (statut de session interactive) — même mot, même sens.
+  // provenance de sauvegarde (Phase 3e) — 'Turnstile passé' déjà traduit plus haut
+  'sauvé par': 'saved by', 'classé par': 'classified by',
+  'Turnstile non passé': 'Turnstile not solved',
+  // verdict analyste (Phase 3e — POST /saved/{id}/verdict)
+  'Verdict analyste': 'Analyst verdict', 'Pas de verdict analyste.': 'No analyst verdict yet.',
+  'Classer': 'Classify', 'légitime': 'legitimate', 'suspect': 'suspicious', 'malveillant': 'malicious',
+  'note (optionnelle)': 'note (optional)', 'Note analyste': 'Analyst note',
+  'Verdict invalide.': 'Invalid verdict.',
 };
 
 export function i18nWalk(root) {

@@ -400,3 +400,132 @@ def test_i18n_has_live_panel_translations():
     js = open("web/ui/i18n.js").read()
     assert "'appels réseau'" in js
     assert "'verdict inconnu'" in js
+
+
+# ---- Phase 3e : identité (whoami) + provenance + verdict analyste (Task 4) ----
+
+def test_api_exposes_whoami_and_set_analyst_verdict():
+    # api.js doit exposer whoami() (GET /auth/whoami) et setAnalystVerdict()
+    # (POST /saved/{sid}/verdict), tous deux passés par authFetch comme le reste
+    # des appels (pas de fetch nu, pas de duplication de la logique Bearer).
+    js = open("web/ui/api.js").read()
+    assert "export async function whoami" in js
+    assert "authFetch('/auth/whoami')" in js
+    assert "export async function setAnalystVerdict" in js
+    assert "authFetch('/saved/' + encodeURIComponent(sid) + '/verdict'" in js
+    assert "export async function getSavedMeta" in js
+
+
+def test_core_calls_whoami_at_boot_and_wires_banner():
+    # Le bandeau whoami est appelé « au chargement » (avant le premier routage) et
+    # construit dynamiquement (index.html non modifiable dans ce plan) via el().
+    js = open("web/ui/core.js").read()
+    assert "from './api.js'" in js
+    assert "await refreshWhoami();" in js
+    assert "async function boot()" in js
+    assert "el('span.whoami'" in js
+
+
+def test_core_whoami_identity_rendered_via_el_never_innerhtml():
+    # `identity` (donnée potentiellement hostile — en-tête forward-auth relayé par
+    # un proxy) doit être posée en textNode via el()/iconNode, jamais innerHTML.
+    js = open("web/ui/core.js").read()
+    m = re.search(r"async function refreshWhoami\(\)\s*\{.*?\n\}\n", js, re.S)
+    assert m, "refreshWhoami introuvable dans core.js"
+    body = m.group(0)
+    assert "who.identity" in body
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+    assert "el('b.whoami-id', {}, (who && who.identity) || '?')" in body
+
+
+def test_core_forward_auth_confirms_session_without_local_token():
+    # Un whoami() réussi doit AUSSI autoriser la navigation côté routeur, même sans
+    # jeton Bearer local stocké : c'est ce qui évite l'invite de jeton quand
+    # l'identité vient uniquement du forward-auth (opt-in serveur actif).
+    js = open("web/ui/core.js").read()
+    assert "identityConfirmed" in js
+    assert "const authed = !!getToken() || identityConfirmed;" in js
+
+
+def test_saved_list_shows_provenance_and_analyst_verdict():
+    js = open("web/ui/views/saved.js").read()
+    assert "export function provenanceLine" in js
+    assert "export function analystPill" in js
+    assert "provenanceLine(m)" in js
+    assert "analystPill(m.analyst_verdict)" in js
+
+
+def test_saved_list_never_uses_innerhtml():
+    js = open("web/ui/views/saved.js").read()
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+    assert "m.saved_by" in js
+
+
+def test_detail_shows_provenance_and_analyst_verdict_controls():
+    js = open("web/ui/views/detail.js").read()
+    assert "function buildProvenance" in js
+    assert "function buildAnalystPanel" in js
+    assert "getSavedMeta" in js
+    assert "setAnalystVerdict(sid, value, noteInput.value.trim())" in js
+    assert "meta.saved_by" in js
+    assert "m.analyst_verdict" in js
+    for v in ("legitimate", "suspicious", "malicious"):
+        assert f"'{v}'" in js
+
+
+def test_detail_auto_verdict_hero_always_rendered_analyst_panel_conditional():
+    # Le verdict AUTO (hero) est construit inconditionnellement dans renderResult ;
+    # seul le panneau analyste (meta) est conditionnel — le verdict auto n'est
+    # jamais masqué/remplacé par le verdict analyste.
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function renderResult\(r, meta\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "renderResult introuvable"
+    body = m.group(0)
+    assert "verdict-hero" in body
+    assert re.search(r"if \(meta\) \{\s*\n\s*const prov = buildProvenance", body)
+    # le hero est appendé avant le bloc conditionnel `if (meta)`
+    assert body.index("verdict-hero") < body.index("if (meta)")
+
+
+def test_detail_analyst_panel_never_uses_innerhtml_on_untrusted_fields():
+    # `analyst`/`analyst_note` (identité forward-auth / texte libre saisi par un
+    # analyste) doivent être posés en textNode via el(), jamais innerHTML.
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildAnalystPanel\(sid, meta\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildAnalystPanel introuvable"
+    body = m.group(0)
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+    assert "el('b', {}, m.analyst || '?')" in body
+    assert "el('p.analyst-note', {}, m.analyst_note)" in body
+
+
+def test_detail_provenance_never_uses_innerhtml_on_saved_by():
+    js = open("web/ui/views/detail.js").read()
+    m = re.search(r"function buildProvenance\(meta\)\s*\{.*?\n  \}\n", js, re.S)
+    assert m, "buildProvenance introuvable"
+    body = m.group(0)
+    assert not re.search(r"\.innerHTML\s*[=(]", body)
+    assert "el('b', {}, meta.saved_by)" in body
+
+
+def test_detail_hot_updates_analyst_panel_after_classification():
+    # Classer (bouton verdict) doit repeindre le panneau SANS recharger la page
+    # (mise à jour à chaud) : la réponse de setAnalystVerdict est repassée à
+    # paintCurrent, pas de location.reload()/re-fetch du résultat entier.
+    js = open("web/ui/views/detail.js").read()
+    assert "const updated = await setAnalystVerdict(sid, value, noteInput.value.trim());" in js
+    assert "paintCurrent(updated);" in js
+
+
+def test_i18n_has_phase3e_translations():
+    js = open("web/ui/i18n.js").read()
+    for term in ("sauvé par", "classé par", "Verdict analyste", "Classer", "légitime", "Turnstile non passé"):
+        assert f"'{term}'" in js, term
+
+
+def test_style_has_whoami_provenance_and_verdict_controls_css():
+    css = open("web/ui/style.css").read()
+    assert ".whoami{" in css
+    assert ".provenance{" in css
+    assert ".analystpanel{" in css
+    assert ".verdict-btn{" in css

@@ -3,6 +3,7 @@
 // zéro build. Importé une fois par index.html (<script type="module">).
 import { getToken, clearToken, LANG, setLang, getTheme, setTheme } from './state.js';
 import { i18nWalk } from './i18n.js';
+import { whoami, Unauthorized } from './api.js';
 import { renderLogin } from './views/login.js';
 import { renderSubmit } from './views/submit.js';
 import { renderInteractive } from './views/interactive.js';
@@ -92,13 +93,68 @@ export function fmtTs(ms) {
   return new Date(ms).toLocaleString(loc);
 }
 
+// ---- bandeau whoami « connecté : <identity> » (Phase 3e) --------------------
+// Un whoami() réussi authentifie AUSSI le routeur (identityConfirmed) : couvre le
+// cas forward-auth pur (opt-in serveur actif, aucun jeton Bearer stocké côté
+// navigateur — l'identité vient du proxy sur chaque requête). Si un jeton Bearer
+// local existe déjà, le routeur reste authentifié comme avant (comportement
+// bearer inchangé, identityConfirmed ne fait qu'AJOUTER un chemin d'accès).
+let whoamiEl = null;
+let identityConfirmed = false;
+let authMethod = null;
+let whoamiLoaded = false;
+let whoamiPromise = null;
+
+function ensureWhoamiEl() {
+  if (whoamiEl) return whoamiEl;
+  const tools = $('.hdr-tools');
+  if (!tools) return null;
+  whoamiEl = el('span.whoami', { id: 'whoami', hidden: 'hidden' });
+  tools.insertBefore(whoamiEl, tools.firstChild);
+  return whoamiEl;
+}
+
+// `who.identity` vient du serveur : bearer -> "token", ou identité forward-auth
+// (en-tête client relayé par un proxy de confiance) sinon — donnée potentiellement
+// hostile -> posée en textNode via el(...)/iconNode, JAMAIS innerHTML.
+async function refreshWhoami() {
+  const wEl = ensureWhoamiEl();
+  try {
+    const who = await whoami();
+    identityConfirmed = true;
+    authMethod = who && who.method;
+    whoamiLoaded = true;
+    if (wEl) {
+      wEl.replaceChildren(
+        iconNode('shield'),
+        el('span.whoami-label', {}, 'connecté'),
+        el('b.whoami-id', {}, (who && who.identity) || '?'),
+      );
+      wEl.hidden = false;
+    }
+  } catch (ex) {
+    if (!(ex instanceof Unauthorized)) { /* réseau/serveur : bandeau reste masqué, pas de routage cassé */ }
+    identityConfirmed = false;
+    authMethod = null;
+    if (wEl) { wEl.hidden = true; wEl.replaceChildren(); }
+  }
+}
+
+// Charge le whoami une seule fois par session authentifiée (évite un appel réseau
+// à chaque changement de route) ; ré-appelable après logout via whoamiLoaded=false.
+function ensureWhoamiLoaded() {
+  if (whoamiLoaded || whoamiPromise) return;
+  whoamiPromise = refreshWhoami().finally(() => { whoamiPromise = null; });
+}
+
 // ---- chrome : nav active + visibilité selon l'état de connexion ----
-function updateChrome(view) {
-  const authed = !!getToken();
+function updateChrome(view, authed) {
   const nav = $('#topnav');
   const logout = $('#logout');
   if (nav) nav.hidden = !authed;
-  if (logout) logout.hidden = !authed;
+  // forward-auth : identité gérée par le proxy -> pas de bouton de déconnexion
+  // côté client (rien à "oublier" localement).
+  if (logout) logout.hidden = !authed || authMethod === 'forward-auth';
   document.querySelectorAll('#topnav a').forEach((a) =>
     a.classList.toggle('on', a.dataset.route === view || (view === 'job' && a.dataset.route === 'jobs')));
 }
@@ -108,14 +164,15 @@ let cleanup = null;
 function route() {
   if (cleanup) { try { cleanup(); } catch { /* noop */ } cleanup = null; }
   const app = $('#app');
-  const token = getToken();
+  const authed = !!getToken() || identityConfirmed;
   const parts = (location.hash || '').replace(/^#\/?/, '').split('/');
   const view = parts[0] || '';
 
-  if (!token && view !== 'login') { location.hash = '#/login'; return; }
-  if (token && (view === '' || view === 'login')) { location.hash = '#/jobs'; return; }
+  if (!authed && view !== 'login') { location.hash = '#/login'; return; }
+  if (authed && (view === '' || view === 'login')) { location.hash = '#/jobs'; return; }
 
-  updateChrome(view);
+  updateChrome(view, authed);
+  if (authed) ensureWhoamiLoaded();
   app.replaceChildren();
   if (view === 'login') cleanup = renderLogin(app);
   else if (view === 'submit') cleanup = renderSubmit(app);
@@ -131,7 +188,7 @@ function route() {
 }
 
 // ---- boot ----
-function boot() {
+async function boot() {
   // thème appliqué tôt (aussi posé en ligne dans index.html pour éviter le flash)
   document.documentElement.setAttribute('data-theme', getTheme());
 
@@ -154,9 +211,17 @@ function boot() {
   }
 
   const logout = $('#logout');
-  if (logout) logout.addEventListener('click', () => { clearToken(); location.hash = '#/login'; });
+  if (logout) logout.addEventListener('click', () => {
+    clearToken();
+    identityConfirmed = false; authMethod = null; whoamiLoaded = false;
+    location.hash = '#/login';
+  });
 
   window.addEventListener('hashchange', route);
+  // whoami au chargement (Phase 3e), AVANT le premier routage : c'est ce qui permet
+  // au forward-auth pur (aucun jeton local) de ne jamais voir l'écran de connexion —
+  // le routeur lit `identityConfirmed` posé ci-dessus dès sa première décision.
+  await refreshWhoami();
   route();
   i18nWalk(document.querySelector('header'));
 
