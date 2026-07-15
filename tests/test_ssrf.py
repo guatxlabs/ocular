@@ -56,6 +56,18 @@ def test_ipv6_loopback_rejected():
         validate_capture_url("http://[::1]")
 
 
+def test_multicast_ipv4_rejected():
+    # Durcissement audit 3g I1 : le multicast doit aussi être rejeté au submit
+    # (cohérent avec is_ip_allowed, source unique).
+    with pytest.raises(ValueError):
+        validate_capture_url("http://239.255.255.250/")
+
+
+def test_multicast_ipv6_rejected():
+    with pytest.raises(ValueError):
+        validate_capture_url("http://[ff02::1]/")
+
+
 def test_public_url_accepted():
     validate_capture_url("https://example.com")
 
@@ -99,10 +111,23 @@ def test_ipv4_mapped_ipv6_loopback_rejected():
         "fe80::1",
         "fd00::1",
         "0.0.0.0",
+        # multicast (audit 3g I1) : `is_global` seul les laissait passer.
+        "224.0.0.1",            # multicast local IPv4
+        "239.255.255.250",      # SSDP (découverte de services internes)
+        "ff02::1",              # multicast link-local IPv6 (all-nodes)
+        "ff02::fb",             # mDNS IPv6
     ],
 )
 def test_is_ip_allowed_rejects_internal(ip):
     assert is_ip_allowed(ip) is False
+
+
+def test_is_ip_allowed_rejects_multicast_objects():
+    import ipaddress
+
+    assert is_ip_allowed(ipaddress.ip_address("224.0.0.1")) is False
+    assert is_ip_allowed(ipaddress.ip_address("239.255.255.250")) is False
+    assert is_ip_allowed(ipaddress.ip_address("ff02::1")) is False
 
 
 @pytest.mark.parametrize(

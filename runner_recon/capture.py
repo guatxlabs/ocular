@@ -326,8 +326,27 @@ async def _capture_dom(page: Any, url: str) -> tuple[bytes, str, str]:
 # (Xvfb), anti-detect, curseur humanisé. Factorisées ici (une seule fois),
 # le `proxy` egress guard y est mergé conditionnellement par
 # `_camoufox_session` ci-dessous.
+#
+# WebRTC OFF (audit 3g C1) : le garde egress est un proxy TCP HTTP/CONNECT ;
+# le moteur ICE/STUN de Firefox (WebRTC) sort en UDP DIRECT, HORS proxy — une
+# page hostile pourrait donc joindre une IP interne via
+# `new RTCPeerConnection({iceServers:[{urls:"stun:169.254.169.254:3478"}]})`,
+# contournant totalement le garde. On désactive WebRTC via la préférence
+# Firefox `media.peerconnection.enabled=false` (passée en `firefox_user_prefs`,
+# que Camoufox merge tel quel dans `playwright.firefox.launch`, cf.
+# camoufox.utils.launch_options) : `RTCPeerConnection` devient alors
+# indisponible dans la page -> vecteur UDP fermé. (Équivaut au paramètre
+# `block_webrtc=True` de Camoufox, qui pose exactement cette même pref ; on
+# passe la pref explicitement pour rendre l'intention et le test unitaire
+# lisibles.) Vérifié empiriquement : Turnstile (guatx.com) reste résolu et
+# `typeof RTCPeerConnection === "undefined"` dans le DOM capturé (cf.
+# tests/test_egress_integration.py).
 _CAMOUFOX_LAUNCH_KWARGS: dict[str, Any] = dict(
-    headless=False, os="linux", humanize=0.3, i_know_what_im_doing=True
+    headless=False,
+    os="linux",
+    humanize=0.3,
+    i_know_what_im_doing=True,
+    firefox_user_prefs={"media.peerconnection.enabled": False},
 )
 
 

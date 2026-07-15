@@ -27,7 +27,14 @@ def is_ip_allowed(ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
             addr = ipaddress.ip_address(ip)
         except (ValueError, TypeError):
             return False
-    return addr.is_global
+    # `is_global` seul NE rejette PAS le multicast (224.0.0.0/4, ff00::/8) :
+    # ces adresses ne sont pas "privées" au sens `is_private`, donc
+    # `is_global` les laisse passer alors qu'elles n'ont aucun sens pour un
+    # fetch/CONNECT sortant et peuvent servir à joindre des services de
+    # découverte internes (SSDP 239.255.255.250, mDNS ff02::fb, ...). On les
+    # rejette explicitement (durcissement audit 3g I1) — cohérent avec le
+    # docstring ci-dessus qui annonçait déjà le rejet du multicast.
+    return addr.is_global and not addr.is_multicast
 
 
 def resolve_allowed_ip(host: str, port: int = 0) -> str | None:
