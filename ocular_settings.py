@@ -67,6 +67,14 @@ def gc_interval() -> int:
     return int(os.environ.get("OCULAR_GC_INTERVAL", "600"))
 
 
+def session_disconnect_grace() -> int:
+    """Délai (secondes) laissé à une session dont le WS s'est déconnecté
+    (y compris brutalement) avant que le reaper ne la nettoie — distinct de
+    `session_idle()` : une session activement pollée via `/live` reste
+    connectée (mark_connected efface `disconnected_at`)."""
+    return int(os.environ.get("OCULAR_SESSION_DISCONNECT_GRACE", "45"))
+
+
 def session_ready_timeout() -> float:
     """Délai global (secondes) laissé au broker pour lancer le conteneur de
     session + au session_server pour répondre `/health`, avant de renvoyer

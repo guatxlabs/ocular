@@ -130,7 +130,7 @@ class _FakeRegistry:
         self._expired_ids = expired_ids
         self.deleted = []
 
-    def expired(self, now_epoch, ttl, idle):
+    def expired(self, now_epoch, ttl, idle, disconnect_grace=None):
         return self._expired_ids
 
     def get(self, session_id):
