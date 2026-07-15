@@ -147,6 +147,33 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.get("/live", dependencies=[Depends(require_session_secret)])
+async def live() -> dict[str, Any]:
+    """Panneau live (canal données séparé du flux pixels VNC, ~C4) : appels
+    réseau capturés jusqu'ici + analyse statique du DOM COURANT (pas figée à
+    la dernière `/capture`). Réutilise `analyze_html`/`compute_verdict`
+    exactement comme `/capture` — aucune duplication de la mécanique.
+    Bornage `[-500:]` sur le réseau (charge/DoS ; le compte total non borné
+    reste dans `counts`)."""
+    page, cap = _state["page"], _state["cap"]
+    if page is None:
+        return {"network": [], "findings": [], "counts": {"network": 0, "findings": 0}, "verdict": "benign"}
+
+    try:
+        dom = await page.content()
+    except Exception:  # pragma: no cover - dépend de l'état réel de la page
+        dom = ""
+
+    findings = analyze_html(dom)
+    network = cap.network if cap else []
+    return {
+        "network": network[-500:],
+        "findings": [f.model_dump(mode="json") for f in findings],
+        "counts": {"network": len(network), "findings": len(findings)},
+        "verdict": compute_verdict(findings),
+    }
+
+
 @app.post("/capture", dependencies=[Depends(require_session_secret)])
 async def capture(body: dict[str, Any]) -> dict[str, Any]:
     page, cap = _state["page"], _state["cap"]

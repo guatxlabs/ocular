@@ -1,3 +1,7 @@
+import pytest
+from fastapi.testclient import TestClient
+
+import runner_recon_vnc.session_server as ss
 from runner_recon_vnc.session_server import build_capture_result
 
 
@@ -53,3 +57,87 @@ def test_build_capture_result_no_screenshot_no_dom():
     assert r.artifacts.dom_html_ref is None
     assert r.static_findings == []
     assert r.verdict == "benign"
+
+
+_LIVE_SECRET = "the-live-secret"
+
+
+@pytest.fixture
+def live_client(monkeypatch):
+    monkeypatch.setenv("OCULAR_SESSION_SECRET", _LIVE_SECRET)
+    ss._state.update(cm=None, page=None, cap=None, target=None, kind=None, html_input="")
+    return TestClient(ss.app)
+
+
+def test_live_no_active_session_returns_empty_structure(live_client):
+    r = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET})
+    assert r.status_code == 200
+    assert r.json() == {
+        "network": [],
+        "findings": [],
+        "counts": {"network": 0, "findings": 0},
+        "verdict": "benign",
+    }
+
+
+def test_live_with_page_returns_network_findings_counts_verdict(live_client):
+    dom_html = '<html><body><script src="https://evil.example/a.js"></script></body></html>'
+    network_entries = [{"url": "https://evil.example/a.js", "method": "GET", "status": 200}]
+
+    class _FakePage:
+        async def content(self):
+            return dom_html
+
+    class _FakeCap:
+        network = network_entries
+
+    ss._state.update(page=_FakePage(), cap=_FakeCap())
+
+    r = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET})
+    assert r.status_code == 200
+    body = r.json()
+
+    # reflète le réseau capturé et l'analyse statique du DOM courant — mêmes
+    # fonctions que /capture (aucune duplication de la mécanique).
+    expected_findings = ss.analyze_html(dom_html)
+    assert body["network"] == network_entries
+    assert len(body["findings"]) == len(expected_findings) > 0
+    assert body["counts"] == {"network": len(network_entries), "findings": len(expected_findings)}
+    assert body["verdict"] == ss.compute_verdict(expected_findings)
+
+
+def test_live_dom_content_failure_falls_back_to_empty_dom(live_client):
+    class _FakePage:
+        async def content(self):
+            raise RuntimeError("page closed")
+
+    class _FakeCap:
+        network = []
+
+    ss._state.update(page=_FakePage(), cap=_FakeCap())
+
+    r = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["findings"] == []
+    assert body["counts"] == {"network": 0, "findings": 0}
+    assert body["verdict"] == "benign"
+
+
+def test_live_network_bounded_to_last_500(live_client):
+    network_entries = [{"url": f"https://x/{i}", "method": "GET", "status": 200} for i in range(600)]
+
+    class _FakePage:
+        async def content(self):
+            return "<html></html>"
+
+    class _FakeCap:
+        network = network_entries
+
+    ss._state.update(page=_FakePage(), cap=_FakeCap())
+
+    r = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET})
+    body = r.json()
+    assert len(body["network"]) == 500
+    assert body["network"] == network_entries[-500:]
+    assert body["counts"]["network"] == 600

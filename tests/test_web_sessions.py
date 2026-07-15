@@ -269,6 +269,71 @@ def test_capture_session_server_error_returns_502(monkeypatch):
     assert r.status_code == 502
 
 
+def test_live_unknown_session_returns_404(monkeypatch):
+    client, *_ = _client(monkeypatch)
+    r = client.get("/sessions/does-not-exist/live")
+    assert r.status_code == 404
+
+
+def test_live_requires_auth(monkeypatch):
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
+    redis_client = fakeredis.FakeStrictRedis()
+    app.dependency_overrides[get_session_registry] = lambda: SessionRegistry(redis_client)
+    app.dependency_overrides[get_cmd_queue] = lambda: SessionCmdQueue(redis_client)
+    app.dependency_overrides[get_queue] = lambda: RedisJobQueue(redis_client)
+    client = TestClient(app)
+    r = client.get("/sessions/s1/live")
+    assert r.status_code == 401
+
+
+def test_live_happy_path_proxies_and_touches(monkeypatch, caplog):
+    client, registry, _ = _client(monkeypatch)
+    registry.create(
+        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
+    )
+    live_payload = {
+        "network": [{"url": "https://example.com/x", "method": "GET", "status": 200}],
+        "findings": [],
+        "counts": {"network": 1, "findings": 0},
+        "verdict": "benign",
+    }
+    calls = []
+
+    def fake_get_json(url, secret, timeout=5.0):
+        calls.append((url, secret))
+        return live_payload
+
+    monkeypatch.setattr(app_mod, "_internal_get_json", fake_get_json)
+
+    r = client.get("/sessions/s1/live")
+    assert r.status_code == 200
+    assert r.json() == live_payload
+    # le web signe /live avec le secret conteneur lu dans le registre
+    assert calls == [("http://ocular-sess-s1:8090/live", "live-secret")]
+    # touch : last_activity rafraîchi vers l'heure réelle de la requête
+    sess = registry.get("s1")
+    assert sess["last_activity"] != sess["created_at"]
+    # secret jamais dans les logs
+    assert "live-secret" not in caplog.text
+
+
+def test_live_server_error_returns_502(monkeypatch):
+    client, registry, _ = _client(monkeypatch)
+    registry.create(
+        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
+    )
+
+    def boom(url, secret, timeout=5.0):
+        raise app_mod._CaptureError("boom")
+
+    monkeypatch.setattr(app_mod, "_internal_get_json", boom)
+
+    r = client.get("/sessions/s1/live")
+    assert r.status_code == 502
+
+
 def test_web_sessions_module_never_imports_docker():
     import pathlib
     for f in pathlib.Path("web").rglob("*.py"):

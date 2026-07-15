@@ -271,6 +271,27 @@ def _internal_capture(url: str, secret: str, timeout: float = 30.0) -> dict:
         raise _CaptureError("réponse capture invalide") from exc
 
 
+def _internal_get_json(url: str, secret: str, timeout: float = 5.0) -> dict:
+    """GET interne (données, pas health) vers le `session_server` (`/live`),
+    calqué sur `_internal_capture` : bibliothèque standard uniquement, signé
+    avec `X-Session-Secret` (jamais loggé), échec réseau/HTTP/JSON traduit en
+    `_CaptureError` (-> 502 côté route)."""
+    req = urllib.request.Request(
+        url,
+        headers={"X-Session-Secret": secret},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
+            body = resp.read()
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise _CaptureError(str(exc)) from exc
+    try:
+        return json.loads(body)
+    except (ValueError, TypeError) as exc:
+        raise _CaptureError("réponse live invalide") from exc
+
+
 _SESSION_POLL_INTERVAL = 0.5
 
 
@@ -411,6 +432,31 @@ def capture_session(
     registry.touch(session_id, datetime.now(timezone.utc).isoformat())
     log.info("session capture session_id=%s result_id=%s", session_id, result_id)
     return result
+
+
+@app.get("/sessions/{session_id}/live")
+def session_live(
+    session_id: str,
+    registry: SessionRegistry = Depends(get_session_registry),
+) -> dict:
+    """Proxy vers `GET /live` du `session_server` (panneau live, C4) : appels
+    réseau + analyse statique en continu, canal données séparé du flux
+    pixels VNC. Même schéma d'accès que `capture_session` (secret conteneur
+    lu au registre, jamais régénéré ici, jamais renvoyé/loggé)."""
+    sess = registry.get(session_id)
+    if sess is None:
+        raise HTTPException(status_code=404, detail="session inconnue")
+
+    url = f"http://{_session_host(session_id)}:8090/live"
+    secret = registry.get_secret(session_id) or ""
+    try:
+        live = _internal_get_json(url, secret)
+    except _CaptureError:
+        log.warning("session live failed session_id=%s", session_id)
+        raise HTTPException(status_code=502, detail="live échoué")
+
+    registry.touch(session_id, datetime.now(timezone.utc).isoformat())
+    return live
 
 
 _WS_SUBPROTOCOL_PREFIX = "ocular.session."
