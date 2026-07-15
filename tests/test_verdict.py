@@ -6,6 +6,10 @@ def _f(sev):
     return StaticFinding(rule="r", severity=sev, match="m", line=1, context="c")
 
 
+def _rf(rule, sev):
+    return StaticFinding(rule=rule, severity=sev, match="m", line=1, context="c")
+
+
 def test_critical_is_malicious():
     assert compute_verdict([_f("low"), _f("critical")]) == "malicious"
 
@@ -20,3 +24,72 @@ def test_only_low_medium_is_benign():
 
 def test_empty_is_benign():
     assert compute_verdict([]) == "benign"
+
+
+def test_legitimate_login_is_benign():
+    # password + email fields, relative form action, POST form — all "low"
+    # structural signals in isolation, no credential+urgency+external-form
+    # corroboration.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Email input field", "low"),
+        _rf("Form action URL", "low"),
+        _rf("POST form detected", "low"),
+    ]
+    assert compute_verdict(findings) == "benign"
+
+
+def test_legitimate_spa_is_benign():
+    # fetch + addEventListener + innerHTML= — common SPA plumbing, no
+    # obfuscation cluster, no credentials/urgency.
+    findings = [
+        _rf("Fetch request", "low"),
+        _rf("Event listener", "low"),
+        _rf("HTML injection", "low"),
+    ]
+    assert compute_verdict(findings) == "benign"
+
+
+def test_eval_alone_is_suspicious():
+    # A single "high" obfuscation signal isolated — not corroborated but
+    # notable enough to flag.
+    findings = [_rf("Dynamic code evaluation", "high")]
+    assert compute_verdict(findings) == "suspicious"
+
+
+def test_full_phishing_kit_is_malicious():
+    # credentials + urgency language + external form action = corroborated
+    # phishing kit.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Account verification text", "medium"),
+        _rf("External form action", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_partial_phishing_signal_is_suspicious():
+    # credentials + urgency language, but form posts internally (no external
+    # form action) — not fully corroborated.
+    findings = [
+        _rf("Password input field", "low"),
+        _rf("Payment update text", "medium"),
+        _rf("Form action URL", "low"),
+    ]
+    assert compute_verdict(findings) == "suspicious"
+
+
+def test_obfuscated_malware_cluster_is_malicious():
+    # eval + atob "..." + String.fromCharCode -> 3 obfuscation/exec rules
+    # corroborate each other (>=2 cluster).
+    findings = [
+        _rf("Dynamic code evaluation", "high"),
+        _rf("Base64 decode", "medium"),
+        _rf("String construction", "medium"),
+    ]
+    assert compute_verdict(findings) == "malicious"
+
+
+def test_external_script_alone_is_benign():
+    findings = [_rf("External script", "medium")]
+    assert compute_verdict(findings) == "benign"
