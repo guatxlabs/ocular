@@ -122,80 +122,93 @@ def test_normal_body_unaffected_by_size_guard(monkeypatch):
 
 
 # --- F2 (3f) : garde ASGI qui compte les octets réels (couvre chunked, sans Content-Length) ---
+#
+# NB : le vrai juge est l'e2e (POST `Transfer-Encoding: chunked` > plafond
+# contre uvicorn -> 413 ; cf. commit). `TestClient`/httpx envoie TOUJOURS un
+# `Content-Length` (jamais chunked), donc les tests via `_client` ne peuvent
+# PAS exercer le chemin chunked ; on teste ici l'unité ASGI directement.
+# Contrat vérifié : le middleware compte les octets `http.request`, émet
+# LUI-MÊME un 413 via `send` au dépassement, coupe l'app via `http.disconnect`,
+# et avale la réponse tardive de l'app (pas de double réponse).
 
-def test_max_body_size_middleware_cuts_streamed_body_over_limit():
-    # Unité : le middleware ASGI pur reçoit des chunks `http.request` dont le
-    # total dépasse _MAX_BODY_BYTES SANS jamais déclarer de Content-Length
-    # (simule un corps chunked). Il doit répondre 413 et la garde doit couper
-    # AVANT que le handler de route enveloppé ne soit atteint.
+def test_max_body_size_middleware_emits_413_and_cuts_on_streamed_overflow():
     from web.app import _MAX_BODY_BYTES, _MaxBodySizeMiddleware
 
-    chunk = b"x" * (_MAX_BODY_BYTES // 2 + 1)
+    chunk = b"x" * (_MAX_BODY_BYTES // 2 + 1)  # 2 chunks -> total > plafond
     messages = [
         {"type": "http.request", "body": chunk, "more_body": True},
         {"type": "http.request", "body": chunk, "more_body": False},
     ]
 
     async def receive():
-        return messages.pop(0)
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
 
     sent = []
 
     async def send(message):
         sent.append(message)
 
-    endpoint_reached = False
+    received_types = []
 
-    async def inner_app(scope, receive, send):
-        # Comme le vrai empilement Starlette/FastAPI : le corps est tiré via
-        # `receive` (parsing Pydantic) AVANT que le handler de route ne soit
-        # atteint. Le dépassement doit couper pendant ce tirage, donc le
-        # handler de route (`endpoint_reached`) ne doit jamais s'exécuter.
-        nonlocal endpoint_reached
-        more = True
-        while more:
-            message = await receive()
-            more = message.get("more_body", False)
-        endpoint_reached = True  # jamais atteint si la garde a coupé avant
+    async def inner_app(scope, rcv, snd):
+        # Imite un lecteur de corps (parsing route) : tire `receive` jusqu'à
+        # fin de corps OU déconnexion. Sur déconnexion (le middleware a coupé),
+        # tente une réponse d'erreur tardive — qui DOIT être avalée.
+        while True:
+            m = await rcv()
+            received_types.append(m["type"])
+            if m["type"] == "http.disconnect":
+                await snd({"type": "http.response.start", "status": 400, "headers": []})
+                await snd({"type": "http.response.body", "body": b"late"})
+                return
+            if not m.get("more_body", False):  # corps complet -> route atteinte
+                await snd({"type": "http.response.start", "status": 200, "headers": []})
+                await snd({"type": "http.response.body", "body": b"ok"})
+                return
 
-    middleware = _MaxBodySizeMiddleware(inner_app)
     scope = {"type": "http", "path": "/jobs", "method": "POST", "headers": []}
-
     import asyncio
-    asyncio.run(middleware(scope, receive, send))
+    asyncio.run(_MaxBodySizeMiddleware(inner_app)(scope, receive, send))
 
-    assert endpoint_reached is False  # coupé avant d'atteindre la route
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    assert start["status"] == 413
+    # le middleware a émis un 413...
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1  # exactement une réponse (pas de double)
+    assert starts[0]["status"] == 413
+    # ...et l'app a été coupée (elle a reçu un http.disconnect, jamais le corps complet)
+    assert "http.disconnect" in received_types
 
 
 def test_max_body_size_middleware_lets_small_streamed_body_through():
-    # Unité : total sous le plafond -> l'app enveloppée est bien appelée,
-    # aucun 413 n'est émis par le middleware lui-même.
+    # Unité : total sous le plafond -> l'app enveloppée est appelée, lit son
+    # corps complet, et SA réponse 200 passe (le middleware ne coupe pas).
     from web.app import _MaxBodySizeMiddleware
 
     messages = [{"type": "http.request", "body": b"small", "more_body": False}]
 
     async def receive():
-        return messages.pop(0)
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    sent = []
 
     async def send(message):
-        pass
+        sent.append(message)
 
-    inner_app_called = False
+    async def inner_app(scope, rcv, snd):
+        m = await rcv()
+        assert m["type"] == "http.request" and m.get("more_body", False) is False
+        await snd({"type": "http.response.start", "status": 200, "headers": []})
+        await snd({"type": "http.response.body", "body": b"ok"})
 
-    async def inner_app(scope, receive, send):
-        nonlocal inner_app_called
-        inner_app_called = True
-        await receive()  # consomme le seul message, comme le ferait une vraie route
-
-    middleware = _MaxBodySizeMiddleware(inner_app)
     scope = {"type": "http", "path": "/jobs", "method": "POST", "headers": []}
-
     import asyncio
-    asyncio.run(middleware(scope, receive, send))
+    asyncio.run(_MaxBodySizeMiddleware(inner_app)(scope, receive, send))
 
-    assert inner_app_called is True
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    assert start["status"] == 200  # réponse de l'app, non altérée
 
 
 def test_small_post_reaches_route_normally(monkeypatch):

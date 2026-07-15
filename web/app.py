@@ -123,9 +123,9 @@ async def _body_size_guard(request, call_next):
     return await call_next(request)
 
 
-class _BodyTooLargeError(Exception):
-    """Signale, depuis `_MaxBodySizeMiddleware`, un dépassement de
-    `_MAX_BODY_BYTES` détecté en streaming (octets réellement reçus)."""
+_BODY_TOO_LARGE_PAYLOAD = json.dumps(
+    {"detail": "corps de requête trop volumineux"}, ensure_ascii=False
+).encode("utf-8")
 
 
 class _MaxBodySizeMiddleware:
@@ -133,11 +133,24 @@ class _MaxBodySizeMiddleware:
     pour les corps `Transfer-Encoding: chunked` (donc sans `Content-Length`),
     que `_body_size_guard` ne peut pas voir puisqu'il n'inspecte que les
     en-têtes. Enveloppe `receive` et accumule `len(body)` sur chaque message
-    `http.request` ; dès que le total dépasse `_MAX_BODY_BYTES`, il lève en
-    interne une exception (jamais propagée hors de ce middleware), coupe la
-    lecture, et répond 413 lui-même — l'app enveloppée (routes FastAPI,
-    Pydantic) n'est jamais atteinte au-delà de ce point. Ne touche pas aux
-    scopes non-http (lifespan, websocket) ni aux requêtes sans corps (GET).
+    `http.request`.
+
+    Dès que le total dépasse `_MAX_BODY_BYTES`, il émet LUI-MÊME la réponse
+    413 via `send` puis renvoie un `http.disconnect` à l'app enveloppée pour
+    qu'elle cesse de lire. On NE lève PAS d'exception : une exception levée
+    depuis le `receive` enveloppé ne remonte pas jusqu'ici — elle est avalée
+    par le parsing de corps de FastAPI/Starlette (et par le `coro()` des
+    `BaseHTTPMiddleware` intermédiaires qui la stockent en `app_exc`), et
+    ressort en 400/422 côté route, jamais en 413. Envoyer la réponse
+    directement depuis `receive` est le seul chemin fiable.
+
+    Anti double-réponse : `send` enveloppé (`_guarded_send`) laisse passer les
+    messages tant que NOUS n'avons pas déjà répondu 413 ; une fois notre 413
+    émis, les `send` ultérieurs de l'app (p.ex. son propre 400 sur
+    `ClientDisconnect`) sont ignorés. On ne peut émettre le 413 que si l'app
+    n'a pas déjà commencé sa réponse (cas normal d'un POST : le corps est lu
+    avant toute réponse). Ne touche pas aux scopes non-http (lifespan,
+    websocket) ni aux requêtes sans corps (GET).
     """
 
     def __init__(self, app):
@@ -149,25 +162,46 @@ class _MaxBodySizeMiddleware:
             return
 
         total = 0
+        state = {"our_413_sent": False, "app_response_started": False}
+
+        async def _guarded_send(message):
+            # Une fois notre 413 émis, on avale tout ce que l'app tente
+            # d'envoyer pour éviter une double réponse ASGI.
+            if state["our_413_sent"]:
+                return
+            if message["type"] == "http.response.start":
+                state["app_response_started"] = True
+            await send(message)
 
         async def _guarded_receive():
             nonlocal total
             message = await receive()
             if message["type"] == "http.request":
                 total += len(message.get("body", b""))
-                if total > _MAX_BODY_BYTES:
-                    raise _BodyTooLargeError(total)
+                if total > _MAX_BODY_BYTES and not state["our_413_sent"]:
+                    # L'app n'a pas encore répondu (POST : corps lu avant la
+                    # réponse) -> on émet le 413 nous-mêmes, directement.
+                    if not state["app_response_started"]:
+                        log.warning(
+                            "body rejected (streamed) path=%s total=%d limit=%d",
+                            scope.get("path"), total, _MAX_BODY_BYTES,
+                        )
+                        await send({
+                            "type": "http.response.start",
+                            "status": 413,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(_BODY_TOO_LARGE_PAYLOAD)).encode()),
+                            ],
+                        })
+                        await send({"type": "http.response.body", "body": _BODY_TOO_LARGE_PAYLOAD})
+                        state["our_413_sent"] = True
+                    # Coupe la lecture : l'app voit un client déconnecté et
+                    # cesse de consommer le corps.
+                    return {"type": "http.disconnect"}
             return message
 
-        try:
-            await self.app(scope, _guarded_receive, send)
-        except _BodyTooLargeError:
-            log.warning(
-                "body rejected (streamed) path=%s total=%d limit=%d",
-                scope.get("path"), total, _MAX_BODY_BYTES,
-            )
-            response = JSONResponse({"detail": "corps de requête trop volumineux"}, status_code=413)
-            await response(scope, receive, send)
+        await self.app(scope, _guarded_receive, _guarded_send)
 
 
 # Enregistré en dernier -> devient le middleware utilisateur le plus externe
