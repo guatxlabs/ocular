@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 import saved_store as ss
@@ -88,3 +90,160 @@ def test_empty_or_none_label_has_no_uniqueness_constraint():
     ss.save(c, _result(h="sha256:" + "f" * 64), {}, "", "t2")
     ss.save(c, _result(h="sha256:" + "9" * 64), {}, None, "t3")
     assert len(ss.list_all(c)) == 3
+
+
+# ---- migration idempotente + rétro-compat (Phase 3e — Task 2) --------------
+
+_OLD_SCHEMA = """
+CREATE TABLE saved_analysis (
+  id INTEGER PRIMARY KEY,
+  input_hash TEXT NOT NULL UNIQUE,
+  input_kind TEXT NOT NULL,
+  job_id TEXT,
+  verdict TEXT,
+  label TEXT,
+  result_json TEXT NOT NULL,
+  saved_at TEXT NOT NULL
+);
+CREATE TABLE saved_artifact (
+  saved_id INTEGER NOT NULL REFERENCES saved_analysis(id) ON DELETE CASCADE,
+  ref TEXT NOT NULL,
+  bytes BLOB NOT NULL,
+  PRIMARY KEY (saved_id, ref)
+);
+"""
+
+_NEW_COLUMN_NAMES = {
+    "saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at", "analyst_note",
+}
+
+
+def _column_names(path):
+    raw = sqlite3.connect(path)
+    try:
+        return {row[1] for row in raw.execute("PRAGMA table_info(saved_analysis)")}
+    finally:
+        raw.close()
+
+
+def test_migration_adds_missing_columns_to_existing_old_schema_db(tmp_path):
+    db_path = str(tmp_path / "old.sqlite3")
+    raw = sqlite3.connect(db_path)
+    raw.executescript(_OLD_SCHEMA)
+    raw.close()
+    assert not _NEW_COLUMN_NAMES.issubset(_column_names(db_path))
+
+    c = ss.connect(db_path)
+    c.close()
+
+    assert _NEW_COLUMN_NAMES.issubset(_column_names(db_path))
+
+
+def test_migration_is_idempotent_on_existing_db(tmp_path):
+    db_path = str(tmp_path / "old2.sqlite3")
+    raw = sqlite3.connect(db_path)
+    raw.executescript(_OLD_SCHEMA)
+    raw.close()
+
+    ss.connect(db_path).close()
+    ss.connect(db_path).close()  # 2e connect() successif — ne doit pas lever
+
+    assert _NEW_COLUMN_NAMES.issubset(_column_names(db_path))
+
+
+def test_migration_is_idempotent_on_fresh_db(tmp_path):
+    db_path = str(tmp_path / "fresh.sqlite3")
+    ss.connect(db_path).close()
+    ss.connect(db_path).close()  # idempotent sur base neuve aussi
+
+    assert _NEW_COLUMN_NAMES.issubset(_column_names(db_path))
+
+
+# ---- save : provenance (saved_by, turnstile_solved) -------------------------
+
+def test_save_turnstile_solved_true():
+    c = _conn()
+    r = {**_result(), "stealth": {"turnstile_solved": True}}
+    sid = ss.save(c, r, {}, None, "t")
+    assert ss.get_meta(c, sid)["turnstile_solved"] == 1
+
+
+def test_save_turnstile_solved_false():
+    c = _conn()
+    r = {**_result(), "stealth": {"turnstile_solved": False}}
+    sid = ss.save(c, r, {}, None, "t")
+    assert ss.get_meta(c, sid)["turnstile_solved"] == 0
+
+
+def test_save_no_stealth_gives_null_turnstile_solved():
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t")
+    assert ss.get_meta(c, sid)["turnstile_solved"] is None
+
+
+def test_save_stores_and_returns_saved_by():
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t", saved_by="alice")
+    assert ss.get_meta(c, sid)["saved_by"] == "alice"
+    assert ss.get_by_hash(c, _result()["input_hash"])["saved_by"] == "alice"
+
+
+def test_save_saved_by_defaults_to_none_retro_compat():
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t")  # ancienne signature positionnelle
+    assert ss.get_meta(c, sid)["saved_by"] is None
+
+
+# ---- set_analyst_verdict -----------------------------------------------------
+
+@pytest.mark.parametrize("verdict", ["legitimate", "suspicious", "malicious"])
+def test_set_analyst_verdict_valid_values(verdict):
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t")
+    ok = ss.set_analyst_verdict(c, sid, verdict, "bob", "2026-07-15T00:00:00Z", note="ras")
+    assert ok is True
+    meta = ss.get_meta(c, sid)
+    assert meta["analyst_verdict"] == verdict
+    assert meta["analyst"] == "bob"
+    assert meta["analyst_at"] == "2026-07-15T00:00:00Z"
+    assert meta["analyst_note"] == "ras"
+
+
+def test_set_analyst_verdict_invalid_raises_value_error():
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t")
+    with pytest.raises(ValueError):
+        ss.set_analyst_verdict(c, sid, "bogus", "bob", "t")
+
+
+def test_set_analyst_verdict_unknown_sid_returns_false():
+    c = _conn()
+    assert ss.set_analyst_verdict(c, 999999, "legitimate", "bob", "t") is False
+
+
+def test_set_analyst_verdict_note_is_truncated_to_2000():
+    c = _conn()
+    sid = ss.save(c, _result(), {}, None, "t")
+    ss.set_analyst_verdict(c, sid, "legitimate", "bob", "t", note="x" * 3000)
+    assert len(ss.get_meta(c, sid)["analyst_note"]) == 2000
+
+
+# ---- list_all / get_by_hash exposent les nouveaux champs --------------------
+
+def test_list_all_and_get_by_hash_expose_new_fields():
+    c = _conn()
+    r = {**_result(), "stealth": {"turnstile_solved": True}}
+    sid = ss.save(c, r, {}, None, "t", saved_by="alice")
+    ss.set_analyst_verdict(c, sid, "malicious", "bob", "2026-07-15T00:00:00Z")
+
+    row = ss.list_all(c)[0]
+    for field in ("saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at"):
+        assert field in row
+    assert row["saved_by"] == "alice"
+    assert row["turnstile_solved"] == 1
+    assert row["analyst_verdict"] == "malicious"
+    assert row["analyst"] == "bob"
+
+    meta = ss.get_by_hash(c, _result()["input_hash"])
+    for field in ("saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at"):
+        assert field in meta

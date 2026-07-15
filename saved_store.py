@@ -24,11 +24,35 @@ CREATE TABLE IF NOT EXISTS saved_artifact (
 """
 
 
+# Colonnes ajoutées après le schéma initial (Phase 3e). Ajoutées via ALTER TABLE
+# idempotent dans connect() : couvre à la fois les bases neuves (le CREATE TABLE
+# IF NOT EXISTS reste minimal) et les bases existantes créées à l'ancien schéma.
+_NEW_COLUMNS = [
+    ("saved_by", "TEXT"),
+    ("turnstile_solved", "INTEGER"),
+    ("analyst_verdict", "TEXT"),
+    ("analyst", "TEXT"),
+    ("analyst_at", "TEXT"),
+    ("analyst_note", "TEXT"),
+]
+
+_ANALYST_VERDICTS = {"legitimate", "suspicious", "malicious"}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(saved_analysis)")}
+    for name, col_type in _NEW_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE saved_analysis ADD COLUMN {name} {col_type}")
+    conn.commit()
+
+
 def connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
 
 
@@ -53,9 +77,18 @@ def refs_of(result: dict) -> list[str]:
     return list(dict.fromkeys(refs))  # dédup en gardant l'ordre
 
 
-def save(conn: sqlite3.Connection, result: dict, blobs: dict, label: Optional[str], now_iso: str) -> int:
+def save(
+    conn: sqlite3.Connection,
+    result: dict,
+    blobs: dict,
+    label: Optional[str],
+    now_iso: str,
+    saved_by: Optional[str] = None,
+) -> int:
     input_hash = result["input_hash"]
     kind = "url" if result.get("profile") == "capture" else "html"
+    stealth = result.get("stealth")
+    turnstile_solved = 1 if (stealth or {}).get("turnstile_solved") else (0 if stealth is not None else None)
     with conn:  # transaction atomique
         if label:
             # unicité du nom : un label non vide ne peut pas être réutilisé par un
@@ -70,10 +103,11 @@ def save(conn: sqlite3.Connection, result: dict, blobs: dict, label: Optional[st
                 raise DuplicateLabelError(f"label déjà utilisé: {label!r}")
         conn.execute("DELETE FROM saved_analysis WHERE input_hash = ?", (input_hash,))  # UPSERT
         cur = conn.execute(
-            "INSERT INTO saved_analysis (input_hash, input_kind, job_id, verdict, label, result_json, saved_at)"
-            " VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO saved_analysis"
+            " (input_hash, input_kind, job_id, verdict, label, result_json, saved_at, saved_by, turnstile_solved)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (input_hash, kind, result.get("job_id"), result.get("verdict"),
-             label, json.dumps(result), now_iso),
+             label, json.dumps(result), now_iso, saved_by, turnstile_solved),
         )
         sid = cur.lastrowid
         for ref in refs_of(result):
@@ -85,9 +119,15 @@ def save(conn: sqlite3.Connection, result: dict, blobs: dict, label: Optional[st
     return sid
 
 
+_META_COLUMNS = (
+    "id, input_hash, verdict, label, saved_at, saved_by, turnstile_solved,"
+    " analyst_verdict, analyst, analyst_at"
+)
+
+
 def get_by_hash(conn, input_hash: str) -> Optional[dict]:
     row = conn.execute(
-        "SELECT id, input_hash, verdict, label, saved_at FROM saved_analysis WHERE input_hash = ?",
+        f"SELECT {_META_COLUMNS} FROM saved_analysis WHERE input_hash = ?",
         (input_hash,),
     ).fetchone()
     return dict(row) if row else None
@@ -98,9 +138,37 @@ def get_result(conn, sid: int) -> Optional[dict]:
     return json.loads(row["result_json"]) if row else None
 
 
+def get_meta(conn, sid: int) -> Optional[dict]:
+    row = conn.execute(
+        f"SELECT {_META_COLUMNS}, analyst_note FROM saved_analysis WHERE id = ?",
+        (sid,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def set_analyst_verdict(
+    conn: sqlite3.Connection,
+    sid: int,
+    analyst_verdict: str,
+    analyst: Optional[str],
+    analyst_at: str,
+    note: Optional[str] = None,
+) -> bool:
+    if analyst_verdict not in _ANALYST_VERDICTS:
+        raise ValueError(f"analyst_verdict invalide: {analyst_verdict!r}")
+    if note is not None:
+        note = note[:2000]
+    with conn:
+        cur = conn.execute(
+            "UPDATE saved_analysis SET analyst_verdict=?, analyst=?, analyst_at=?, analyst_note=? WHERE id=?",
+            (analyst_verdict, analyst, analyst_at, note, sid),
+        )
+    return cur.rowcount > 0
+
+
 def list_all(conn) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, input_hash, verdict, label, saved_at FROM saved_analysis ORDER BY id DESC"
+        f"SELECT {_META_COLUMNS} FROM saved_analysis ORDER BY id DESC"
     ).fetchall()
     return [dict(r) for r in rows]
 
