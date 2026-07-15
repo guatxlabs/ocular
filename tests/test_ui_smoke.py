@@ -553,27 +553,32 @@ def test_core_resets_admin_state_on_whoami_failure_and_logout():
     assert js.count("adminFlag = false") >= 2  # catch whoami + logout
 
 
-def test_core_hides_admin_nav_link_for_non_admins():
+def test_core_shows_admin_nav_link_when_authenticated():
+    # L'admin par X-Admin-Token se saisit DANS la page admin : le lien ne doit PAS
+    # être masqué sur le seul flag de groupe (sinon un admin par token n'y accéderait
+    # jamais — régression 3h). Visible dès qu'authentifié ; le backend reste la garde.
     js = open("web/ui/core.js").read()
     assert 'querySelector(\'#topnav a[data-route="admin"]\')' in js
-    assert "adminLink.hidden = !authed || !adminFlag" in js
+    assert "adminLink.hidden = !authed" in js
+    assert "adminLink.hidden = !authed || !adminFlag" not in js
 
 
-def test_admin_view_gates_flush_delete_controls_on_is_admin():
-    # La vue Admin (flush/delete) doit conditionner TOUT son rendu (token,
-    # liste, boutons de suppression) sur isAdmin() importé de core.js — check
-    # placé avant toute construction du token/de la liste, avec un retour
-    # anticipé si non-admin.
+def test_admin_view_always_shows_token_form():
+    # La page admin (formulaire X-Admin-Token) est TOUJOURS accessible : pas de
+    # early-return qui la masque aux non-membres du groupe admin (régression 3h
+    # corrigée). isAdmin() ne sert qu'à signaler que le token est facultatif.
     js = open("web/ui/views/admin.js").read()
-    assert "isAdmin, getGroups" in js or ("isAdmin" in js and "getGroups" in js)
-    assert "if (!isAdmin())" in js
-    # le early-return doit précéder la carte token (flush/delete inaccessibles)
-    assert js.index("if (!isAdmin())") < js.index("tokenCard")
+    assert "isAdmin" in js and "getGroups" in js
+    assert "if (!isAdmin())" not in js   # plus de blocage de la page
+    assert "tokenCard" in js             # le formulaire token est rendu
 
 
-def test_admin_view_shows_admin_required_message_when_not_admin():
+def test_admin_view_notes_group_admin_token_optional():
+    # Un admin via groupe IdP voit une note "token facultatif" ; plus de message
+    # bloquant "Admin requis.".
     js = open("web/ui/views/admin.js").read()
-    assert "Admin requis." in js
+    assert "facultatif" in js
+    assert "Admin requis." not in js
 
 
 def test_admin_view_renders_groups_via_el_never_innerhtml():
