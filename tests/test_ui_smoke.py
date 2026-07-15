@@ -303,3 +303,75 @@ def test_i18n_has_filter_bar_translations():
     js = open("web/ui/i18n.js").read()
     for term in ("Domaine", "Statut", "contient", "égal", "exclure"):
         assert f"'{term}'" in js, term
+
+
+# ---- panneau live + auto-fermeture onglet + sauvegarde (Task C3 3d-2 C) ----
+
+def test_api_exposes_live_session():
+    # GET /sessions/{id}/live, mêmes en-têtes auth (authFetch) que les autres
+    # appels sessions — pas de fetch nu, pas de duplication de la logique Bearer.
+    js = open("web/ui/api.js").read()
+    assert "export async function liveSession" in js
+    assert "authFetch('/sessions/' + encodeURIComponent(id) + '/live')" in js
+
+
+def test_interactive_imports_filter_js_and_polls_live():
+    js = open("web/ui/views/interactive.js").read()
+    assert "from '../filter.js'" in js
+    assert "buildFilterBar" in js
+    assert "liveSession" in js
+    assert "setInterval(pollLive, POLL_INTERVAL_MS)" in js
+    assert "POLL_INTERVAL_MS = 2000" in js
+
+
+def test_interactive_live_panel_never_uses_innerhtml_or_regex_on_data():
+    # Le panneau live (réseau + findings) doit rester XSS-clean (el()/textContent
+    # uniquement) et ne jamais matcher les données réseau par regex — le
+    # filtrage passe exclusivement par filter.js (String.includes).
+    js = open("web/ui/views/interactive.js").read()
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+    assert "new RegExp" not in js
+
+
+def test_interactive_hidden_tab_auto_close():
+    # C2 : onglet caché en continu >= 60s -> deleteSession + teardown RFB +
+    # arrêt du poll (armé/désarmé via visibilitychange).
+    js = open("web/ui/views/interactive.js").read()
+    assert "visibilitychange" in js
+    assert "SESSION_HIDDEN_CLOSE_MS = 60000" in js
+    assert "document.hidden" in js
+    assert "deleteSession" in js
+
+
+def test_interactive_beforeunload_best_effort_close():
+    js = open("web/ui/views/interactive.js").read()
+    assert "beforeunload" in js
+    assert "sendBeacon" in js
+    assert "keepalive" in js
+
+
+def test_interactive_teardown_clears_timers_and_listeners():
+    # Pas de setInterval/setTimeout/listener fantôme entre deux navigations de
+    # vue : le poll live, le timer de fermeture auto et les listeners globaux
+    # (visibilitychange/beforeunload) doivent tous être nettoyés au teardown.
+    js = open("web/ui/views/interactive.js").read()
+    assert "clearInterval(pollTimer)" in js
+    assert "clearTimeout(hiddenTimer)" in js
+    assert "removeEventListener('visibilitychange', onVisibilityChange)" in js
+    assert "removeEventListener('beforeunload', onBeforeUnload)" in js
+
+
+def test_interactive_save_button_calls_save_analysis():
+    # C3 : bouton Sauvegarder sur le panneau de capture, à côté de « Voir
+    # l'analyse » — même flux POST /saved (saveAnalysis) que le résultat figé,
+    # gère le 409 (nom déjà pris) avec un message clair.
+    js = open("web/ui/views/interactive.js").read()
+    assert "saveAnalysis(jobId, saveLabelInput.value.trim())" in js
+    assert "duplicateLabel" in js
+    assert "Sauvegarder" in js
+
+
+def test_i18n_has_live_panel_translations():
+    js = open("web/ui/i18n.js").read()
+    assert "'appels réseau'" in js
+    assert "'verdict inconnu'" in js

@@ -96,6 +96,16 @@ export async function captureSession(id) {
   return res.json();
 }
 
+// GET /sessions/{id}/live -> {network, findings, counts:{network,findings}, verdict}.
+// Canal de DONNÉES séparé du flux pixels VNC (poll ~2s côté vue interactive,
+// panneau live C4) : appels réseau capturés jusqu'ici + analyse statique du DOM
+// courant. 404 = session inconnue, 502 = conteneur ne répond pas.
+export async function liveSession(id) {
+  const res = await authFetch('/sessions/' + encodeURIComponent(id) + '/live');
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  return res.json();
+}
+
 // ---- analyses sauvegardées (feature « saved ») ----------------------------
 
 // POST /saved {job_id, label?} -> {id, input_hash}. 409 recouvre DEUX causes
