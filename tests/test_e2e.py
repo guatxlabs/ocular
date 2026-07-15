@@ -12,5 +12,8 @@ def test_end_to_end_analysis_via_broker():
                                html="<script>eval(atob('x'))</script>"))
     result = json.loads(out)
     assert result["profile"] == "analysis"
-    assert any(f["severity"] == "critical" for f in result["static_findings"])
+    # eval(atob(...)) = cluster obfuscation (eval=high + atob decode=medium, >=2 _OBF)
+    # -> verdict corroboré `malicious` (cf. engine/verdict.py, recalibration 3d-J).
+    assert result["verdict"] == "malicious"
+    assert any(f["rule"] == "Dynamic code evaluation" for f in result["static_findings"])
     assert result["screenshots"][0]["image_ref"].startswith("sha256:")
