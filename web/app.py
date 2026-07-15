@@ -28,7 +28,7 @@ from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout, trust_forward_auth
 from web.identity import resolve_identity
-from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
+from web.models import AnalystVerdictRequest, JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
 log = get_logger("web")
@@ -607,7 +607,7 @@ def _read_artifact_bytes(ref: str) -> bytes | None:
 
 
 @app.post("/saved")
-def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
+def create_saved(body: dict, request: Request, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     from datetime import datetime, timezone
     job_id = body.get("job_id")
     result_json = queue.get_result(job_id) if job_id else None
@@ -623,13 +623,36 @@ def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     conn = _saved_conn()
     try:
         sid = saved_store.save(conn, result, blobs, body.get("label"),
-                               datetime.now(timezone.utc).isoformat())
+                               datetime.now(timezone.utc).isoformat(),
+                               saved_by=getattr(request.state, "identity", None))
     except saved_store.DuplicateLabelError:
         raise HTTPException(status_code=409, detail="nom déjà utilisé")
     finally:
         conn.close()
     log.info("saved job_id=%s id=%s verdict=%s", job_id, sid, result.get("verdict"))
     return {"id": sid, "input_hash": result.get("input_hash")}
+
+
+@app.post("/saved/{sid}/verdict")
+def set_saved_verdict(sid: int, body: AnalystVerdictRequest, request: Request) -> dict:
+    # Route non-admin : un bearer/forward-auth normal suffit pour classer une
+    # sauvegarde ; seul DELETE /saved (flush) exige X-Admin-Token (cf. middleware _auth).
+    analyst = getattr(request.state, "identity", None)
+    analyst_at = datetime.now(timezone.utc).isoformat()
+    note = (body.note or "")[:2000]
+    conn = _saved_conn()
+    try:
+        try:
+            ok = saved_store.set_analyst_verdict(conn, sid, body.analyst_verdict, analyst, analyst_at, note)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="verdict analyste invalide")
+        if not ok:
+            raise HTTPException(status_code=404, detail="sauvegarde inconnue")
+        meta = saved_store.get_meta(conn, sid)
+    finally:
+        conn.close()
+    log.info("saved verdict id=%s analyst_verdict=%s", sid, body.analyst_verdict)
+    return meta
 
 
 @app.post("/saved/lookup")

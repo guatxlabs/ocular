@@ -135,3 +135,98 @@ def test_saved_artifact_nosniff_and_dom_attachment(tmp_path, monkeypatch):
     assert r.headers["x-content-type-options"] == "nosniff"
     assert c.get(f"/saved/{sid}/artifact/sha256:{'A'*64}").status_code == 400  # anti-traversal
     assert c.get(f"/saved/{sid}/artifact/sha256:{'f'*64}").status_code == 404  # absent
+
+
+# --- Task 3 : provenance (saved_by) + verdict analyste --------------------
+
+
+def _client_forward_auth(tmp_path, monkeypatch, user):
+    """Client authentifié uniquement via forward-auth (opt-in ON, pas de bearer)."""
+    monkeypatch.setenv("OCULAR_TOKEN", "t")
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    monkeypatch.setenv("OCULAR_SAVED_DB", str(tmp_path / "saved.db"))
+    monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path / "artifacts"))
+    (tmp_path / "artifacts").mkdir()
+    q = RedisJobQueue(fakeredis.FakeStrictRedis())
+    app.dependency_overrides[get_queue] = lambda: q
+    c = TestClient(app)
+    c.headers.update({"X-Forwarded-User": user})
+    return c, q, tmp_path
+
+
+def test_save_records_saved_by_from_forward_auth_identity(tmp_path, monkeypatch):
+    c, q, tp = _client_forward_auth(tmp_path, monkeypatch, "alice")
+    _seed_job(q, tp)
+    r = c.post("/saved", json={"job_id": "jx", "label": "note"})
+    assert r.status_code == 200
+    sid = r.json()["id"]
+    entries = c.get("/saved").json()
+    entry = next(x for x in entries if x["id"] == sid)
+    assert entry["saved_by"] == "alice"
+
+
+def test_save_records_saved_by_token_for_plain_bearer(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx", "label": "note"}).json()["id"]
+    entry = next(x for x in c.get("/saved").json() if x["id"] == sid)
+    assert entry["saved_by"] == "token"
+
+
+def test_verdict_sets_analyst_fields_and_is_returned(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx"}).json()["id"]
+
+    r = c.post(f"/saved/{sid}/verdict", json={"analyst_verdict": "legitimate", "note": "ras"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["analyst_verdict"] == "legitimate"
+    assert body["analyst"] == "token"
+    assert body["analyst_at"]
+    assert body["analyst_note"] == "ras"
+
+    # relu depuis la liste : le champ persiste
+    entry = next(x for x in c.get("/saved").json() if x["id"] == sid)
+    assert entry["analyst_verdict"] == "legitimate"
+    assert entry["analyst"] == "token"
+
+
+def test_verdict_invalid_value_422(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx"}).json()["id"]
+    r = c.post(f"/saved/{sid}/verdict", json={"analyst_verdict": "bidon"})
+    assert r.status_code == 422
+
+
+def test_verdict_unknown_sid_404(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    r = c.post("/saved/999999/verdict", json={"analyst_verdict": "legitimate"})
+    assert r.status_code == 404
+
+
+def test_verdict_does_not_require_admin_token(tmp_path, monkeypatch):
+    # POST /saved/{id}/verdict n'est PAS une route admin : un bearer normal
+    # suffit, X-Admin-Token n'est ni requis ni vérifié.
+    c, q, tp = _client(tmp_path, monkeypatch)
+    monkeypatch.delenv("OCULAR_ADMIN_TOKEN", raising=False)
+    _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx"}).json()["id"]
+    r = c.post(f"/saved/{sid}/verdict", json={"analyst_verdict": "suspicious"})
+    assert r.status_code == 200
+
+
+def test_saved_detail_and_list_expose_provenance_and_analyst_fields(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp)
+    sid = c.post("/saved", json={"job_id": "jx"}).json()["id"]
+    c.post(f"/saved/{sid}/verdict", json={"analyst_verdict": "malicious", "note": "confirmé"})
+
+    expected_keys = {"saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at"}
+    entry = next(x for x in c.get("/saved").json() if x["id"] == sid)
+    assert expected_keys.issubset(entry.keys())
+
+    detail = c.get("/saved/sha256:" + "a" * 64).json()
+    assert expected_keys.issubset(detail.keys())
+    assert detail["analyst_verdict"] == "malicious"
