@@ -127,21 +127,30 @@ _TURNSTILE_RETRY_ATTEMPTS = 6
 _TURNSTILE_RETRY_INTERVAL_S = 0.8
 _TURNSTILE_POST_CLICK_WAIT_S = 4
 
-# Gating (phase3f-F1a) : indicateur DOM booléen, évalué en tout premier dans
-# `solve_turnstile`, AVANT tout screenshot/retry. Le div `[data-sitekey]`/
-# `.cf-turnstile` et le `<script>`/`<iframe>` `challenges.cloudflare.com` sont
-# présents dans le HTML DÈS `goto` (avant même le rendu async de l'iframe du
-# widget — validé sur guatx.com), donc cet indicateur est fiable dès l'appel.
-# Absent -> pas de Turnstile sur cette page -> `return False` immédiat, sans
-# payer les ~4s de la boucle de retry (le cas courant : la grande majorité des
-# captures n'ont pas de Turnstile). Présent -> la boucle de retry existante
-# s'exécute inchangée (le widget lui-même peut mettre un instant à se rendre).
+# Gating (phase3f-F1a) : indicateur DOM booléen, PELÉ au tout début de
+# `solve_turnstile`, AVANT tout screenshot/detect/clic. Le div `[data-sitekey]`/
+# `.cf-turnstile` et le `<script>`/`<iframe>` `challenges.cloudflare.com`
+# marquent la présence d'un challenge Cloudflare.
+#
+# ATTENTION (régression corrigée) : ces éléments NE sont PAS forcément
+# présents dès `goto` — guatx.com les injecte de façon ASYNCHRONE (script CF
+# chargé puis DOM muté après coup). Un check one-shot juste après `goto`
+# manquait donc l'indicateur et sautait la résolution à tort. On POLL donc
+# l'indicateur sur une courte fenêtre bornée (`_CF_INDICATOR_POLL_ATTEMPTS` x
+# `_CF_INDICATOR_POLL_INTERVAL_S` ~ 3.6s) : l'injection async a le temps
+# d'apparaître. Absent après toute la fenêtre -> pas de Turnstile sur cette
+# page -> `return False` (aucune tentative de clic ; latence bornée par des
+# `evaluate` légers, moins chers que les anciens screenshots+opencv). Présent
+# (même tardivement) -> la boucle de retry vision + solve EXISTANTE s'exécute
+# inchangée.
 _CF_INDICATOR_JS = (
     "() => !!document.querySelector("
     "'[data-sitekey], .cf-turnstile, "
     "script[src*=\"challenges.cloudflare.com\"], "
     "iframe[src*=\"challenges.cloudflare.com\"]')"
 )
+_CF_INDICATOR_POLL_ATTEMPTS = 6
+_CF_INDICATOR_POLL_INTERVAL_S = 0.6
 
 
 async def solve_turnstile(
@@ -177,13 +186,23 @@ async def solve_turnstile(
     Ne journalise jamais d'URL/secret : uniquement des coordonnées px et un
     booléen.
 
-    **Gating (phase3f-F1a)** : avant tout screenshot/retry, vérifie
-    l'indicateur DOM `_CF_INDICATOR_JS` (booléen, `page.evaluate`). Absent ->
-    `return False` immédiatement (0 screenshot, 0 detect, 0 sleep) : une page
-    sans Turnstile ne paie plus les ~4s de la boucle de retry. Présent -> la
-    boucle de retry ci-dessous s'exécute exactement comme avant."""
-    if not await page.evaluate(_CF_INDICATOR_JS):
-        return False  # pas d'indicateur CF -> pas de Turnstile, latence nulle
+    **Gating (phase3f-F1a)** : avant tout screenshot/detect/clic, POLL
+    l'indicateur DOM `_CF_INDICATOR_JS` (booléen, `page.evaluate`) sur une
+    courte fenêtre bornée — l'injection Cloudflare est ASYNCHRONE (guatx.com),
+    donc un check one-shot juste après `goto` la manquerait. Absent après
+    toute la fenêtre -> `return False` (0 screenshot, 0 detect, 0 clic) : une
+    page sans Turnstile ne paie plus les ~4s de screenshots+opencv de la
+    boucle de retry, juste des `evaluate` légers. Présent (même tardivement)
+    -> la boucle de retry vision + solve ci-dessous s'exécute exactement comme
+    avant."""
+    indicator = False
+    for _ in range(_CF_INDICATOR_POLL_ATTEMPTS):
+        if await page.evaluate(_CF_INDICATOR_JS):
+            indicator = True
+            break
+        await asyncio.sleep(_CF_INDICATOR_POLL_INTERVAL_S)
+    if not indicator:
+        return False  # pas d'indicateur CF sous la fenêtre -> pas de Turnstile
 
     det = None
     for attempt in range(_TURNSTILE_RETRY_ATTEMPTS):
