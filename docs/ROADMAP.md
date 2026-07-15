@@ -73,6 +73,13 @@ Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par l
 
 ---
 
+## ✅ Phase 3e — Identité IdP + verdict analyste + provenance (mergé)
+
+- **Identité forward-auth** (opt-in strict `OCULAR_TRUST_FORWARD_AUTH`, défaut OFF) : compatible Keycloak/Authentik/Authelia/oauth2-proxy/LDAP via n'importe quel reverse-proxy ; en-têtes configurables ; bearer = fallback ; anti-spoofing prouvé (opt-in OFF → header ignoré → 401) ; admin non escaladable ; `GET /auth/whoami`.
+- **Verdict analyste** : `POST /saved/{id}/verdict` (legitimate/suspicious/malicious + note, qui/quand) — le verdict auto n'est jamais écrasé.
+- **Provenance** : sauvegarde = hash + timestamp + `saved_by` (identité) + `turnstile_solved` ; migration SQLite idempotente. UI : bandeau whoami + provenance + contrôles verdict analyste (XSS-clean).
+- Impératif déploiement (README) : proxy DOIT stripper l'en-tête client, garder `OCULAR_TOKEN` comme filet, `web` jamais joignable en direct.
+
 ## ⏳ Différés techniques (dette identifiée par les audits, non bloquante)
 
 - **SSRF — DNS-rebinding & suivi de redirections.** `validate_capture_url` valide au submit, mais `page.goto()` (3a/3c) suit les redirections dans le navigateur (réseau ON) → une réponse `302` vers une IP interne contourne la garde. Fix = **filtrage egress du runner** (même chantier que le DNS-rebinding). À traiter au niveau isolation réseau, pas dans le DSL.
