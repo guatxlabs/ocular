@@ -245,14 +245,18 @@ async def test_solve_turnstile_bounded_retry_total_sleep_under_5s(monkeypatch):
 
 
 class _FakeGatingPage:
-    """Page dédiée au gating : `evaluate` renvoie `indicator` pour le script
-    `cap._CF_INDICATOR_JS`, `offset` pour n'importe quel autre script (mapping
-    viewport->écran) — permet de piloter les deux indépendamment."""
+    """Page dédiée au gating : `evaluate` renvoie le prochain élément de
+    `indicator_seq` pour le script `cap._CF_INDICATOR_JS` (poll de l'indicateur
+    CF, un booléen par tour — modélise l'injection ASYNC : peut être False
+    plusieurs tours puis True), `offset` pour n'importe quel autre script
+    (mapping viewport->écran). Une séquence épuisée retourne son dernier élément
+    (indicateur stable)."""
 
-    def __init__(self, indicator, offset=None):
-        self._indicator = indicator
+    def __init__(self, indicator_seq, offset=None):
+        self._indicator_seq = list(indicator_seq)
         self._offset = offset or {"x": 0, "y": 0, "d": 1}
         self.screenshot_calls = 0
+        self.indicator_calls = 0
 
     async def screenshot(self, **kw):
         self.screenshot_calls += 1
@@ -260,12 +264,17 @@ class _FakeGatingPage:
 
     async def evaluate(self, script):
         if script == cap._CF_INDICATOR_JS:
-            return self._indicator
+            self.indicator_calls += 1
+            if self._indicator_seq:
+                val = self._indicator_seq.pop(0)
+                self._last_indicator = val
+                return val
+            return getattr(self, "_last_indicator", False)
         return self._offset
 
 
 @pytest.mark.asyncio
-async def test_solve_turnstile_no_cf_indicator_returns_false_with_zero_latency(monkeypatch):
+async def test_solve_turnstile_no_cf_indicator_returns_false_after_bounded_poll(monkeypatch):
     sleep_calls = []
 
     async def _record_sleep(seconds):
@@ -273,7 +282,8 @@ async def test_solve_turnstile_no_cf_indicator_returns_false_with_zero_latency(m
 
     monkeypatch.setattr(cap.asyncio, "sleep", _record_sleep)
 
-    page = _FakeGatingPage(indicator=False)
+    # indicateur JAMAIS présent -> poll complet puis abandon.
+    page = _FakeGatingPage(indicator_seq=[False] * cap._CF_INDICATOR_POLL_ATTEMPTS)
     vision_mod = _FakeVision(detections=[])
     screenshots: list[tuple[int, str, bytes]] = []
     console: list[dict] = []
@@ -281,27 +291,33 @@ async def test_solve_turnstile_no_cf_indicator_returns_false_with_zero_latency(m
     solved = await solve_turnstile(page, screenshots, console, vision_mod)
 
     assert solved is False
-    # 0 screenshot, 0 detect, 0 sleep -> aucune latence payée sans indicateur CF.
+    # fenêtre de poll bornée, PUIS abandon : 0 screenshot, 0 detect, 0 clic.
+    assert page.indicator_calls == cap._CF_INDICATOR_POLL_ATTEMPTS
     assert page.screenshot_calls == 0
     assert vision_mod.detect_calls == 0
-    assert sleep_calls == []
+    assert vision_mod.click_calls == []
+    # les sleeps de la fenêtre de poll (bornés : ~3.6s réels, ici neutralisés).
+    assert len(sleep_calls) == cap._CF_INDICATOR_POLL_ATTEMPTS
     assert screenshots == []
     assert console == []
 
 
 @pytest.mark.asyncio
-async def test_solve_turnstile_cf_indicator_present_runs_full_retry_loop():
-    # Indicateur présent mais widget jamais détecté (cas limite : indicateur
-    # présent, ex. script CF chargé mais widget qui échoue à se rendre) -> la
-    # boucle de retry EXISTANTE s'exécute intégralement, comportement inchangé.
-    page = _FakeGatingPage(indicator=True)
-    vision_mod = _FakeVision(detections=[])  # jamais détecté
+async def test_solve_turnstile_cf_indicator_appears_late_runs_full_retry_loop():
+    # Injection ASYNC : indicateur absent les 2 premiers tours de poll puis
+    # présent au 3e (False, False, True) -> le gating NE saute PAS, la boucle
+    # de retry vision + solve EXISTANTE s'exécute ensuite (ici widget jamais
+    # matché par la vision -> boucle complète, comportement inchangé).
+    page = _FakeGatingPage(indicator_seq=[False, False, True])
+    vision_mod = _FakeVision(detections=[])  # jamais détecté par la vision
     screenshots: list[tuple[int, str, bytes]] = []
     console: list[dict] = []
 
     solved = await solve_turnstile(page, screenshots, console, vision_mod)
 
     assert solved is False
+    assert page.indicator_calls == 3            # poll s'arrête dès l'indicateur True
+    # la boucle de retry vision s'est bien exécutée intégralement après le gating.
     assert vision_mod.detect_calls == cap._TURNSTILE_RETRY_ATTEMPTS
     assert page.screenshot_calls == cap._TURNSTILE_RETRY_ATTEMPTS
 
