@@ -253,6 +253,63 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     assert sess["last_activity"] != sess["created_at"]
 
 
+def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path):
+    # BUG 1 (régression storage->retrieval) : un résultat de capture interactive
+    # doit être sauvegardable de bout en bout — POST /sessions/{id}/capture
+    # (stocke le résultat léger dans Redis + les blobs sur `/artifacts` via
+    # `store_blobs`) puis POST /saved (relit ces MÊMES artefacts via
+    # `_read_artifact_bytes`) doivent voir le même Redis/volume. Utilise la
+    # composition RÉELLE de `build_capture_result` (pas un wrapper fabriqué à
+    # la main) pour que ce test couvre aussi la parité console (BUG 2) : le
+    # `console` capturé pendant la session survit jusque dans la sauvegarde.
+    monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path))
+    monkeypatch.setenv("OCULAR_SAVED_DB", str(tmp_path / "saved.db"))
+    client, registry, _ = _client(monkeypatch)
+    registry.create(
+        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
+    )
+
+    from runner_recon_vnc.session_server import build_capture_result
+
+    result, blobs = build_capture_result(
+        target="https://example.com/x",
+        kind="url",
+        png=b"\x89PNG\r\n\x1a\nAAA",
+        dom=b"<html><body>hi</body></html>",
+        title="t",
+        final="https://example.com/x",
+        network=[{"url": "https://example.com/x", "method": "GET", "status": 200}],
+        console=[{"level": "error", "text": "boom"}],
+    )
+    wrapper = {
+        "result": result.model_dump(mode="json"),
+        "blobs": {ref: base64.b64encode(data).decode() for ref, data in blobs.items()},
+    }
+    monkeypatch.setattr(app_mod, "_internal_capture", lambda url, secret, timeout=30.0: wrapper)
+
+    cap = client.post("/sessions/s1/capture")
+    assert cap.status_code == 200
+    job_id = cap.json()["job_id"]
+    assert job_id
+
+    # BUG 2 parity check : la console capturée pendant la session survit dans
+    # le résultat léger stocké par /capture.
+    assert cap.json()["console"] == [{"level": "error", "text": "boom", "location": None}]
+
+    saved = client.post("/saved", json={"job_id": job_id, "label": "itest"})
+    assert saved.status_code == 200
+    sid = saved.json()["id"]
+
+    listed = client.get("/saved")
+    assert listed.status_code == 200
+    assert any(x["id"] == sid for x in listed.json())
+
+    saved_result = client.get(f"/saved/{sid}/result")
+    assert saved_result.status_code == 200
+    assert saved_result.json()["console"] == [{"level": "error", "text": "boom", "location": None}]
+
+
 def test_capture_session_server_error_returns_502(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(

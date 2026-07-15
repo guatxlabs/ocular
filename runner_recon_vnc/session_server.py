@@ -103,6 +103,7 @@ def build_capture_result(
     final: str,
     network: list[dict[str, Any]],
     html_input: str = "",
+    console: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[OcularResult, dict[str, bytes]]:
     """Logique pure (aucune dépendance Camoufox) : compose l'`OcularResult`
     à partir de données déjà capturées par le pilotage du navigateur. Miroir
@@ -110,7 +111,13 @@ def build_capture_result(
     d'une session interactive : navigation (`kind="url"`, profil `capture`,
     input_hash dérivé de l'URL normalisée) ou injection HTML directe
     (`kind="html"`, profil `analysis`, input_hash dérivé du HTML fourni —
-    même convention que `runner_analysis/render.py`)."""
+    même convention que `runner_analysis/render.py`).
+
+    `console` (audit parité 3b/3c vs `runner_analysis/render.py`) : le journal
+    console accumulé par `NetworkCapture.attach` sur la page de session (même
+    mécanique que le tier statique) — sans ce paramètre, le résultat interactif
+    n'était PAS un sur-ensemble du résultat statique (`OcularResult.console`
+    restait toujours vide côté interactif)."""
     builder = ResultBuilder()
     if png:
         builder.add_screenshot(0, "interactive", png)
@@ -135,6 +142,7 @@ def build_capture_result(
         stealth=StealthInfo(engine="camoufox"),
         static_findings=findings,
         network=network,
+        console=console,
     )
 
 
@@ -224,14 +232,18 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
 @app.get("/live", dependencies=[Depends(require_session_secret)])
 async def live() -> dict[str, Any]:
     """Panneau live (canal données séparé du flux pixels VNC, ~C4) : appels
-    réseau capturés jusqu'ici + analyse statique du DOM COURANT (pas figée à
-    la dernière `/capture`). Réutilise `analyze_html`/`compute_verdict`
+    réseau + console capturés jusqu'ici + analyse statique du DOM COURANT (pas
+    figée à la dernière `/capture`). Réutilise `analyze_html`/`compute_verdict`
     exactement comme `/capture` — aucune duplication de la mécanique.
-    Bornage `[-500:]` sur le réseau (charge/DoS ; le compte total non borné
-    reste dans `counts`)."""
+    Bornage `[-500:]` sur le réseau ET la console (charge/DoS ; le compte
+    total non borné reste dans `counts`)."""
     page, cap = _state["page"], _state["cap"]
     if page is None:
-        return {"network": [], "findings": [], "counts": {"network": 0, "findings": 0}, "verdict": "benign"}
+        return {
+            "network": [], "console": [], "findings": [],
+            "counts": {"network": 0, "findings": 0, "console": 0},
+            "verdict": "benign",
+        }
 
     try:
         dom = await page.content()
@@ -240,10 +252,12 @@ async def live() -> dict[str, Any]:
 
     findings = analyze_html(dom)
     network = cap.network if cap else []
+    console = cap.console if cap else []
     return {
         "network": network[-500:],
+        "console": console[-500:],
         "findings": [f.model_dump(mode="json") for f in findings],
-        "counts": {"network": len(network), "findings": len(findings)},
+        "counts": {"network": len(network), "findings": len(findings), "console": len(console)},
         "verdict": compute_verdict(findings),
     }
 
@@ -271,6 +285,7 @@ async def capture(body: dict[str, Any]) -> dict[str, Any]:
         final=final,
         network=cap.network if cap else [],
         html_input=_state.get("html_input", ""),
+        console=cap.console if cap else [],
     )
     return {
         "result": result.model_dump(mode="json"),
