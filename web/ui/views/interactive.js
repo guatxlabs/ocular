@@ -482,6 +482,7 @@ export function renderInteractive(app) {
   // Fermer : détruit la session côté serveur et coupe le flux, retour au formulaire.
   async function doClose() {
     teardownRfb();
+    if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }  // hygiène : pas de timer d'auto-fermeture qui survit
     livePanel = null;
     const id = sessionId;
     sessionId = null;
