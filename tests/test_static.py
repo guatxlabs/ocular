@@ -50,3 +50,33 @@ def test_phishing_language_is_medium():
     findings = analyze_html("<p>Please verify your account now.</p>")
     by_rule = {f.rule: f.severity for f in findings}
     assert by_rule.get("Account verification text") == "medium"
+
+
+def test_french_urgency_language_detected():
+    # Couverture FR du langage d'urgence : rejoint le cluster _URGENCY via les
+    # MÊMES rule names que l'anglais.
+    assert "Account suspended text" in {
+        f.rule for f in analyze_html("<p>Votre compte a été suspendu.</p>")
+    }
+    assert "Account verification text" in {
+        f.rule for f in analyze_html("<p>Veuillez vérifier votre compte.</p>")
+    }
+    assert "Identity confirmation text" in {
+        f.rule for f in analyze_html("<p>Confirmez votre identité.</p>")
+    }
+    assert "Payment update text" in {
+        f.rule for f in analyze_html("<p>Merci de mettre à jour votre paiement.</p>")
+    }
+
+
+def test_settimeout_string_is_high():
+    # Exécution de code par chaîne = signal fort (comme eval), pas medium.
+    findings = analyze_html('<script>setTimeout("evil()", 100)</script>')
+    by_rule = {f.rule: f.severity for f in findings}
+    assert by_rule.get("Delayed code execution") == "high"
+
+
+def test_setinterval_string_is_high():
+    findings = analyze_html('<script>setInterval("evil()", 100)</script>')
+    by_rule = {f.rule: f.severity for f in findings}
+    assert by_rule.get("Repeated code execution") == "high"
