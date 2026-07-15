@@ -26,31 +26,39 @@ from engine.ssrf import validate_capture_url
 from engine.steps import StepValidationError, validate_steps
 from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
-from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
+from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout, trust_forward_auth
+from web.identity import resolve_identity
 from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
 log = get_logger("web")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-_PROTECTED = ("/jobs", "/saved", "/sessions")
+_PROTECTED = ("/jobs", "/saved", "/sessions", "/auth")
 
 
 @app.middleware("http")
 async def _auth(request, call_next):
     if request.url.path.startswith(_PROTECTED):
         token = os.environ.get("OCULAR_TOKEN")
-        if not token:                              # fail-closed : jamais ouvert par défaut
+        expected = f"Bearer {token}" if token else None
+        provided = request.headers.get("authorization", "")
+        bearer_ok = bool(expected) and secrets.compare_digest(
+            provided.encode("utf-8", "ignore"), expected.encode()
+        )
+        if not token and not trust_forward_auth():
+            # fail-closed : jamais ouvert par défaut. Le forward-auth peut
+            # autoriser sans OCULAR_TOKEN, donc on ne 503 QUE si aucune des
+            # deux voies d'authentification n'est disponible.
             log.warning("auth rejected path=%s status=%d", request.url.path, 503)
             return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
-        expected = f"Bearer {token}"
-        provided = request.headers.get("authorization", "")
-        if not secrets.compare_digest(
-            provided.encode("utf-8", "ignore"), expected.encode()
-        ):
+        authorized, identity, method = resolve_identity(request, bearer_ok=bearer_ok)
+        if not authorized:
             # jamais le header/token dans les logs, seulement path + status
             log.warning("auth rejected path=%s status=%d", request.url.path, 401)
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        request.state.identity = identity
+        request.state.auth_method = method
         if request.method == "DELETE" and request.url.path.startswith("/saved"):
             adm = os.environ.get("OCULAR_ADMIN_TOKEN")
             if not adm:                                # fail-closed : jamais ouvert par défaut
@@ -129,6 +137,14 @@ def get_session_registry() -> SessionRegistry:
 
 def get_cmd_queue() -> SessionCmdQueue:
     return SessionCmdQueue(_redis_client())
+
+
+@app.get("/auth/whoami")
+def whoami(request: Request) -> dict:
+    return {
+        "identity": getattr(request.state, "identity", None),
+        "method": getattr(request.state, "auth_method", "none"),
+    }
 
 
 @app.post("/jobs", response_model=JobResponse)
