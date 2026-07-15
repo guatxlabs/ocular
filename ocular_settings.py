@@ -63,6 +63,10 @@ def reaper_interval() -> int:
     return int(os.environ.get("OCULAR_REAPER_INTERVAL", "60"))
 
 
+def gc_interval() -> int:
+    return int(os.environ.get("OCULAR_GC_INTERVAL", "600"))
+
+
 def session_ready_timeout() -> float:
     """Délai global (secondes) laissé au broker pour lancer le conteneur de
     session + au session_server pour répondre `/health`, avant de renvoyer
