@@ -1,4 +1,5 @@
 import os
+import re
 
 from fastapi.testclient import TestClient
 
@@ -99,3 +100,87 @@ def test_detail_renders_dynamic_steps_without_innerhtml_on_untrusted_data():
     # dans une chaîne de markup.
     assert "el('span.action-verb', {}, s.action" in js
     assert "el('span.action-err', {}, s.error" in js
+
+
+# ---- unicité du nom des sauvegardes (Task D 3d-1) : affichage du 409 côté UI ----
+
+def test_save_analysis_distinguishes_duplicate_label_409():
+    # api.js doit distinguer un 409 « nom déjà pris » d'un 409 « artefacts
+    # expirés » (les deux passent par POST /saved) pour permettre un message
+    # d'erreur distinct côté vue.
+    js = open("web/ui/api.js").read()
+    assert "duplicateLabel" in js
+    assert "expired" in js
+
+
+def test_detail_shows_duplicate_label_error_via_textcontent_not_innerhtml():
+    js = open("web/ui/views/detail.js").read()
+    assert "duplicateLabel" in js
+    assert "err.textContent" in js
+    import re
+    assert not re.search(r"\.innerHTML\s*[=(]", js)
+
+
+def test_i18n_has_duplicate_label_translation():
+    js = open("web/ui/i18n.js").read()
+    assert "Nom déjà utilisé" in js
+
+
+# ---- upload .htm/.html en plus de .eml (Task F 3d-1) ----
+
+def test_submit_file_input_accepts_html_and_htm():
+    js = open("web/ui/views/submit.js").read()
+    m = re.search(r"accept:\s*'([^']*)'", js)
+    assert m, "attribut accept introuvable dans submit.js"
+    accept = m.group(1)
+    assert ".html" in accept
+    assert ".htm" in accept
+    assert ".eml" in accept  # le .eml reste accepté
+
+
+def test_submit_labels_no_longer_eml_only():
+    js = open("web/ui/views/submit.js").read()
+    # le bouton d'upload ne doit plus dire "Charger un .eml" seul
+    assert "Charger un .eml" not in js
+    assert "Charger un fichier" in js
+    # le placeholder mentionne HTML/.htm/.html, pas seulement .eml
+    assert "colle ici le HTML (ou charge un .eml)" not in js
+    assert ".htm/.html/.eml" in js
+
+
+def test_interactive_has_html_file_upload():
+    js = open("web/ui/views/interactive.js").read()
+    assert "type: 'file'" in js
+    m = re.search(r"accept:\s*'([^']*)'", js)
+    assert m, "attribut accept introuvable dans interactive.js"
+    accept = m.group(1)
+    assert ".html" in accept
+    assert ".htm" in accept
+    assert "text/html" in accept
+    # même mécanisme que submit.js : FileReader -> textarea via .value (pas innerHTML)
+    assert "FileReader" in js
+    assert "htmlArea.value" in js
+
+
+def test_interactive_i18n_translation_present_for_new_placeholder():
+    js = open("web/ui/i18n.js").read()
+    assert ".htm/.html/.eml" in js
+
+
+def test_ui_upload_never_uses_innerhtml_on_file_content():
+    # les contenus de fichiers chargés doivent alimenter .value/textContent,
+    # jamais innerHTML (XSS-clean).
+    for path in ("web/ui/views/submit.js", "web/ui/views/interactive.js"):
+        js = open(path).read()
+        assert not re.search(r"\.innerHTML\s*[=(]", js), path
+
+
+# ---- bandeau « IP exposée » sans débordement (Task G 3d-1) ----
+
+def test_livewarn_has_no_divergent_border_left():
+    css = open("web/ui/style.css").read()
+    m = re.search(r"\.livewarn\{[^}]*\}", css, re.S)
+    assert m, "bloc .livewarn introuvable dans style.css"
+    block = m.group(0)
+    assert "border-left" not in block
+    assert "border:1px" in block or "border: 1px" in block

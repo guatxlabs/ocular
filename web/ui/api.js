@@ -98,8 +98,11 @@ export async function captureSession(id) {
 
 // ---- analyses sauvegardées (feature « saved ») ----------------------------
 
-// POST /saved {job_id, label?} -> {id, input_hash}. 409 = artefacts expirés côté
-// serveur (le job a été GC) : on remonte un marqueur exploitable par l'UI.
+// POST /saved {job_id, label?} -> {id, input_hash}. 409 recouvre DEUX causes
+// distinctes côté serveur : artefacts expirés (job GC-é) OU nom (label) déjà
+// pris par un input_hash différent (unicité du nom, Task D 3d-1). On lit le
+// corps pour distinguer les deux et poser un marqueur exploitable par l'UI —
+// le detail JSON vient toujours du serveur (jamais concaténé/affiché brut ici).
 export async function saveAnalysis(jobId, label) {
   const body = { job_id: jobId };
   if (label) body.label = label;
@@ -108,7 +111,13 @@ export async function saveAnalysis(jobId, label) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (res.status === 409) { const e = new Error('expired'); e.expired = true; throw e; }
+  if (res.status === 409) {
+    const data = await res.json().catch(() => ({}));
+    const duplicateLabel = data.detail === 'nom déjà utilisé';
+    const e = new Error(duplicateLabel ? 'duplicate-label' : 'expired');
+    if (duplicateLabel) e.duplicateLabel = true; else e.expired = true;
+    throw e;
+  }
   if (!res.ok) throw new Error(await errText(res));
   return res.json();
 }

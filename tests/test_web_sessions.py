@@ -82,11 +82,38 @@ def test_create_session_success_url_returns_token_and_enqueues_launch(monkeypatc
     assert cmd["action"] == "launch"
     assert cmd["session_id"] == body["session_id"]
     assert cmd["token"] == body["token"]
-    assert cmd["target"] == "https://example.com"
+    # Task H : la cible enqueue est l'URL NORMALISÉE (path vide -> "/").
+    assert cmd["target"] == "https://example.com/"
     # un secret conteneur, distinct du token WS, est enqueue vers le broker
     assert cmd["secret"] and cmd["secret"] != body["token"]
     # et le web signe son appel /goto interne avec CE secret
     assert seen["secret"] == cmd["secret"]
+
+
+def test_create_session_bare_domain_normalized_to_https(monkeypatch):
+    # Task H : même normalisation qu'à la soumission d'un job capture — un
+    # domaine nu devient "https://..." AVANT la garde SSRF et le launch.
+    client, _, cmd_queue = _client(monkeypatch)
+    monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
+    monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
+
+    r = client.post("/sessions", json={"url": "example.com"})
+    assert r.status_code == 200
+
+    cmd = cmd_queue.dequeue_cmd(timeout=1)
+    assert cmd["target"] == "https://example.com/"
+
+
+def test_create_session_explicit_http_scheme_respected(monkeypatch):
+    client, _, cmd_queue = _client(monkeypatch)
+    monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
+    monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
+
+    r = client.post("/sessions", json={"url": "http://example.com"})
+    assert r.status_code == 200
+
+    cmd = cmd_queue.dequeue_cmd(timeout=1)
+    assert cmd["target"] == "http://example.com/"
 
 
 def test_create_session_html_uses_load_endpoint(monkeypatch):

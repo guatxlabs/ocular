@@ -91,6 +91,41 @@ def test_lookup_saved_url_422_without_url(tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
+def test_save_duplicate_label_on_different_content_409(tmp_path, monkeypatch):
+    # Task D — unicité du nom : un label déjà pris par un input_hash différent
+    # doit être refusé (409), sans écraser la sauvegarde existante.
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp, job_id="jx")
+    r1 = c.post("/saved", json={"job_id": "jx", "label": "mon-rapport"})
+    assert r1.status_code == 200
+
+    ref2 = "sha256:" + "c" * 64
+    (tp / "artifacts" / ("sha256_" + "c" * 64)).write_bytes(b"\x89PNG\r\n\x1a\nY")
+    q.set_result("jz", json.dumps({
+        "input_hash": "sha256:" + "9" * 64, "job_id": "jz", "verdict": "benign",
+        "screenshots": [{"image_ref": ref2}], "artifacts": {"dom_html_ref": None},
+    }))
+    r2 = c.post("/saved", json={"job_id": "jz", "label": "mon-rapport"})
+    assert r2.status_code == 409
+    assert "déjà" in r2.json()["detail"]
+    # la sauvegarde d'origine n'a pas été altérée
+    assert c.get("/saved/sha256:" + "a" * 64).json()["label"] == "mon-rapport"
+    assert c.get("/saved/sha256:" + "9" * 64).status_code == 404
+
+
+def test_save_same_label_resave_same_hash_ok(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp, job_id="jx")
+    assert c.post("/saved", json={"job_id": "jx", "label": "note"}).status_code == 200
+    assert c.post("/saved", json={"job_id": "jx", "label": "note"}).status_code == 200
+
+
+def test_save_free_label_ok(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    _seed_job(q, tp, job_id="jx")
+    assert c.post("/saved", json={"job_id": "jx", "label": "libre"}).status_code == 200
+
+
 def test_saved_artifact_nosniff_and_dom_attachment(tmp_path, monkeypatch):
     c, q, tp = _client(tmp_path, monkeypatch)
     ref = _seed_job(q, tp)

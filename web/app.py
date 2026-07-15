@@ -24,6 +24,7 @@ from bus.sessions import SessionCmdQueue, SessionRegistry
 from engine.artifacts import ref_to_filename, store_blobs
 from engine.ssrf import validate_capture_url
 from engine.steps import StepValidationError, validate_steps
+from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
 from ocular_settings import max_html_bytes, redis_url, saved_db_path, session_ready_timeout
 from web.models import JobRequest, JobResponse, SessionRequest, SessionResponse
@@ -139,6 +140,11 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
     if req.profile == "capture":
         if not req.url:
             raise HTTPException(status_code=422, detail="url requis pour capture")
+        # Normalise AVANT la garde SSRF : un domaine nu ("example.com") se voit
+        # préfixer "https://" (comportement attendu côté utilisateur), tandis
+        # qu'un scheme explicite (http/https) reste inchangé. La validation
+        # SSRF porte donc sur l'URL normalisée, et c'est elle qui est enqueue.
+        req.url = normalize_url(req.url)
         try:
             validate_capture_url(req.url)
         except ValueError:
@@ -301,6 +307,10 @@ def create_session(
     if not req.url and not req.html:
         raise HTTPException(status_code=422, detail="url ou html requis")
     if req.url:
+        # Même normalisation qu'à la soumission d'un job capture (cf.
+        # submit_job) : AVANT la garde SSRF, pour que "example.com" devienne
+        # "https://example.com" tout en respectant un scheme explicite.
+        req.url = normalize_url(req.url)
         try:
             validate_capture_url(req.url)
         except ValueError:
@@ -544,6 +554,8 @@ def create_saved(body: dict, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     try:
         sid = saved_store.save(conn, result, blobs, body.get("label"),
                                datetime.now(timezone.utc).isoformat())
+    except saved_store.DuplicateLabelError:
+        raise HTTPException(status_code=409, detail="nom déjà utilisé")
     finally:
         conn.close()
     log.info("saved job_id=%s id=%s verdict=%s", job_id, sid, result.get("verdict"))

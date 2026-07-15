@@ -1,4 +1,5 @@
 from engine.static import analyze_html
+from engine.verdict import compute_verdict
 
 
 def test_detects_eval_and_atob_as_critical():
@@ -21,3 +22,10 @@ def test_detects_password_field_critical():
 def test_benign_html_has_no_critical():
     findings = analyze_html("<html><body><h1>Bonjour</h1></body></html>")
     assert not [f for f in findings if f.severity == "critical"]
+
+
+def test_external_script_alone_is_medium_and_benign_verdict():
+    findings = analyze_html('<script src="https://cdn.example/x.js"></script>')
+    by_rule = {f.rule: f.severity for f in findings}
+    assert by_rule.get("External script") == "medium"
+    assert compute_verdict(findings) == "benign"
