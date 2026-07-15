@@ -18,6 +18,15 @@ assert.equal(filterEntries(E, [{field:'type',op:'equals',value:'image',exclude:t
 assert.equal(filterEntries(E, [{field:'domain',op:'contains',value:'example',exclude:false},{field:'status',op:'equals',value:'404',exclude:false}]).length, 1);
 // mime contains png -> 1
 assert.equal(filterEntries(E, [{field:'mime',op:'contains',value:'png',exclude:false}]).length, 1);
+// cumul include+exclude SIMULTANÉ : domaine contient example ET exclure status=200
+// -> les 2 entrées example.com passent le include ; la 1re (status 200) est
+// retirée par l'exclude, seule l'entrée /api (status 404) reste -> 1
+assert.equal(filterEntries(E, [
+  {field:'domain',op:'contains',value:'example',exclude:false},
+  {field:'status',op:'equals',value:'200',exclude:true},
+]).length, 1);
+// op:'equals' utilisé en INCLUDE : type = image (égalité stricte insensible casse) -> 1
+assert.equal(filterEntries(E, [{field:'type',op:'equals',value:'IMAGE',exclude:false}]).length, 1);
 // pas de crash sur entrée sans url/headers
 assert.equal(filterEntries([{}], [{field:'url',op:'contains',value:'x',exclude:false}]).length, 0);
 console.log('filter_test OK');
