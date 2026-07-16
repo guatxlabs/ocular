@@ -10,6 +10,7 @@ MAX_STEPS = 50
 MAX_SEL = 500
 MAX_VALUE = 2000
 MAX_WAIT_MS = 30000
+MAX_SLEEP_S = 60     # `sleep` est exprimé en SECONDES (unité intuitive, cf. _one)
 MAX_SCROLL_PX = 100000
 MAX_LABEL = 64
 ALLOWED_PRESS_KEYS = frozenset({
@@ -80,10 +81,45 @@ def _one(step):
             # borner INCONDITIONNELLEMENT, indépendamment du type (cf. audit 3c).
             raise StepValidationError(f"press hors allowlist: {_bounded_repr(arg)}")
         return {"press": arg}
+    if verb == "sleep":
+        # Pause fixe exprimée en SECONDES (unité par défaut, intuitive ; convertie
+        # en ms à l'exécution). Accepte un entier ou un flottant (ex. 0.5).
+        # `bool` est un `int` en Python -> rejeté d'abord (pas de true/false).
+        if isinstance(arg, bool) or not isinstance(arg, (int, float)) or not (0 <= arg <= MAX_SLEEP_S):
+            raise StepValidationError(f"sleep: secondes 0..{MAX_SLEEP_S}")
+        return {"sleep": arg}
+    if verb == "hide":
+        # Masque le(s) élément(s) correspondant au sélecteur (display:none) —
+        # ex. bannières cookies/overlays avant une capture. Sélecteur borné par
+        # `_sel` ; le JS exécuté côté runner est FIXE (jamais interpolé).
+        return {"hide": _sel(arg)}
     if verb == "capture":
-        if not isinstance(arg, str) or not _LABEL_RE.fullmatch(arg):
-            raise StepValidationError("capture: label [\\w .:-] ≤ 64")
-        return {"capture": arg}
+        # Forme simple : label str (capture du viewport). Forme étendue :
+        # {label, selector?, full_page?} — `selector` capture une RÉGION (un
+        # élément), `full_page` capture la PAGE ENTIÈRE. selector et full_page
+        # sont mutuellement exclusifs (une région n'est jamais « full page »).
+        if isinstance(arg, str):
+            if not _LABEL_RE.fullmatch(arg):
+                raise StepValidationError("capture: label [\\w .:-] ≤ 64")
+            return {"capture": arg}
+        if isinstance(arg, dict):
+            extra = set(arg) - {"label", "selector", "full_page"}
+            if extra:
+                raise StepValidationError("capture: clés {label, selector?, full_page?}")
+            label = arg.get("label", "capture")
+            if not isinstance(label, str) or not _LABEL_RE.fullmatch(label):
+                raise StepValidationError("capture.label [\\w .:-] ≤ 64")
+            out = {"label": label}
+            if "selector" in arg and "full_page" in arg:
+                raise StepValidationError("capture: selector et full_page exclusifs")
+            if "selector" in arg:
+                out["selector"] = _sel(arg["selector"])
+            if "full_page" in arg:
+                if not isinstance(arg["full_page"], bool):
+                    raise StepValidationError("capture.full_page: bool")
+                out["full_page"] = arg["full_page"]
+            return {"capture": out}
+        raise StepValidationError("capture: label str ou {label, selector?, full_page?}")
     if verb == "scroll":
         if arg in ("top", "bottom"):
             return {"scroll": arg}

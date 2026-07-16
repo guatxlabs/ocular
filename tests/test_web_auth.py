@@ -41,7 +41,7 @@ def test_401_without_or_wrong_header(monkeypatch):
 def test_200_with_correct_bearer(monkeypatch):
     c = _client(monkeypatch, "s3cret")
     r = c.get("/jobs/x", headers={"Authorization": "Bearer s3cret"})
-    assert r.status_code == 200  # {"status":"pending"}
+    assert r.status_code == 200  # corps {"status":"unknown"} pour un id inconnu — auth OK, c'est ce qu'on teste ici
 
 
 def test_non_ascii_auth_header_is_401_not_500(monkeypatch):

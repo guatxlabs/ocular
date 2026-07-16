@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 
 def redis_url() -> str:
@@ -33,6 +34,14 @@ def render_timeout_ms() -> int:
 
 def result_ttl() -> int:
     return int(os.environ.get("OCULAR_RESULT_TTL", "86400"))
+
+
+def job_ttl() -> int:
+    """Fenêtre d'acceptation d'un job (marqueur `ocular:accepted:*`) : au-delà,
+    un job toujours sans résultat est déclaré perdu/expiré (GET /jobs -> unknown),
+    ce qui arrête le polling fantôme. Doit couvrir largement le temps de
+    traitement le plus long (capture scriptée ~3 min + attente en file)."""
+    return int(os.environ.get("OCULAR_JOB_TTL", "1800"))
 
 
 def max_html_bytes() -> int:
@@ -93,6 +102,19 @@ def gc_interval() -> int:
     return int(os.environ.get("OCULAR_GC_INTERVAL", "600"))
 
 
+_SCREEN_RE = re.compile(r"^\d{3,5}x\d{3,5}$")
+
+
+def session_screen() -> str:
+    """Résolution de l'Xvfb / du framebuffer de la session interactive, au format
+    `LARGEURxHAUTEUR` (défaut `1920x1080`). Configurable via `OCULAR_SESSION_SCREEN`
+    — non hardcodé, pour s'adapter à différentes tailles d'écran / cadres client.
+    Valeur invalide -> défaut (jamais d'injection : validée par regex avant d'être
+    passée à l'entrypoint du conteneur de session)."""
+    val = os.environ.get("OCULAR_SESSION_SCREEN", "1920x1080").strip()
+    return val if _SCREEN_RE.match(val) else "1920x1080"
+
+
 def session_disconnect_grace() -> int:
     """Délai (secondes) laissé à une session dont le WS s'est déconnecté
     (y compris brutalement) avant que le reaper ne la nettoie — distinct de
@@ -112,6 +134,19 @@ def egress_guard_enabled() -> bool:
     couvrir seul."""
     return os.environ.get("OCULAR_EGRESS_GUARD", "1").strip().lower() not in (
         "0", "false", "no", "off",
+    )
+
+
+def require_egress_guard() -> bool:
+    """Mode STRICT (déploiement en réseau sensible : entreprise/prod/client).
+    Quand `OCULAR_REQUIRE_EGRESS_GUARD` est actif, désactiver le garde egress est
+    INTERDIT : un runner réseau-ON REFUSE de démarrer le navigateur si le garde
+    est off (fail-closed), au lieu de lui donner un accès réseau direct non
+    filtré. À poser sur tout déploiement où Ocular ne doit JAMAIS pouvoir pivoter
+    vers le réseau interne. Défaut off (rétro-compat ; recommandé ON en prod —
+    cf. docs/DEPLOY-SECURITY.md)."""
+    return os.environ.get("OCULAR_REQUIRE_EGRESS_GUARD", "").strip().lower() in (
+        "1", "true", "yes", "on",
     )
 
 

@@ -43,8 +43,92 @@ function fieldValue(entry, field) {
     case 'type': return entry.resource_type;
     case 'status': return entry.status == null ? undefined : String(entry.status);
     case 'mime': return entryMime(entry);
+    // champs console (réutilise la même mécanique includes/equals, anti-ReDoS)
+    case 'text': return entry.text;
+    case 'level': return entry.level;
     default: return undefined;
   }
+}
+
+// ---- dédup natif ----
+// Regroupe les entrées identiques (selon `keyFn`) en UNE seule, annotée `_count`
+// (nombre d'occurrences fusionnées). Ordre stable (première apparition conservée).
+// Pur, testable sans DOM. Utilisé pour le réseau (méthode+statut+type+url) et la
+// console (niveau+texte) — évite les lignes répétées à l'écran.
+export function dedupEntries(entries, keyFn) {
+  const list = Array.isArray(entries) ? entries : [];
+  const seen = new Map();
+  const out = [];
+  for (const e of list) {
+    const k = keyFn(e);
+    const hit = seen.get(k);
+    if (hit) { hit._count += 1; continue; }
+    const clone = Object.assign({}, e, { _count: 1 });
+    seen.set(k, clone);
+    out.push(clone);
+  }
+  return out;
+}
+
+export const networkKey = (n) => [n && n.method, n && n.status, n && n.resource_type, n && n.url].join('');
+export const consoleKey = (c) => [c && c.level, c && c.text].join('');
+
+// ---- constantes & rendus PARTAGÉS (detail.js + interactive.js) ----
+// `el` (et `esc` pour la console) sont INJECTÉS par l'appelant : filter.js reste
+// importable hors-DOM (cf. en-tête). Factorise du code jusqu'ici dupliqué à
+// l'identique — en particulier le rendu exfil, dont une dérive = risque sécu.
+
+export const CONSOLE_FIELD_DEFS = [
+  { value: 'text', label: 'Texte' },
+  { value: 'level', label: 'Niveau' },
+];
+export const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
+export const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
+
+// Rangée <tr> réseau (méthode/statut/type/url + badge ×N de dédup).
+export function networkRow(el, n) {
+  return el('tr', {}, [
+    el('td', {}, n.method || ''),
+    el('td', {}, n.status != null ? String(n.status) : '—'),
+    el('td', {}, n.resource_type || ''),
+    el('td', { title: n.url || '' }, [
+      el('span', {}, n.url || ''),
+      n._count > 1 ? el('span.dupbadge', { title: n._count + ' occurrences' }, '×' + n._count) : null,
+    ]),
+  ]);
+}
+
+// Ligne console (niveau/texte + badge ×N). `esc` injecté (classe CSS du niveau).
+export function consoleLine(el, esc, c) {
+  return el('div.consline', {}, [
+    el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
+    el('span.ctext', {}, c.text || ''),
+    c._count > 1 ? el('span.dupbadge', { title: c._count + ' occurrences' }, '×' + c._count) : null,
+  ]);
+}
+
+// Rangée exfil d'un FORMULAIRE (action+méthode). Heuristique de risque
+// (POST/externe/mailto) — signal sécu, source unique pour éviter la dérive.
+export function exfilFormRow(el, form) {
+  const action = String((form && form.action) || '');
+  const method = String((form && form.method) || 'GET').toUpperCase();
+  const isMailto = /^mailto:/i.test(action);
+  const isExternal = /^https?:\/\//i.test(action);
+  const risky = isMailto || isExternal || method === 'POST';
+  return el('div', { class: 'exfil-row' + (risky ? ' exfil-risk' : '') }, [
+    el('span.exfil-method', {}, method),
+    el('span.exfil-dest', { title: action }, action || '(page courante)'),
+    isMailto ? el('span.exfil-tag', {}, 'mailto') : (isExternal ? el('span.exfil-tag', {}, 'externe') : null),
+  ]);
+}
+
+// Rangée exfil d'une cible mailto (toujours à risque).
+export function exfilMailtoRow(el, mailto) {
+  const m = String(mailto || '');
+  return el('div.exfil-row.exfil-risk', {}, [
+    el('span.exfil-method', {}, 'mailto'),
+    el('span.exfil-dest', { title: m }, m.replace(/^mailto:/i, '')),
+  ]);
 }
 
 export function matchChip(entry, chip) {
@@ -99,9 +183,14 @@ export function buildFilterBar(getEntries, onChange, opts = {}) {
   if (typeof el !== 'function') {
     throw new TypeError('buildFilterBar: opts.el (fabrique de nœuds) requis');
   }
-  const fields = Array.isArray(opts.fields) && opts.fields.length
-    ? FIELDS.filter((f) => opts.fields.includes(f.value))
-    : FIELDS;
+  // `opts.fieldDefs` : liste de champs SUR MESURE ({value,label}) — remplace
+  // entièrement le menu réseau par défaut (utilisé par la console : text/level).
+  // Sinon `opts.fields` restreint les champs réseau intégrés.
+  const fields = Array.isArray(opts.fieldDefs) && opts.fieldDefs.length
+    ? opts.fieldDefs
+    : (Array.isArray(opts.fields) && opts.fields.length
+      ? FIELDS.filter((f) => opts.fields.includes(f.value))
+      : FIELDS);
 
   const chips = [];
 

@@ -27,14 +27,14 @@ from ocular_logging import get_logger
 # tests/test_egress_integration.py, échec `JSONDecodeError: Extra data`).
 log = get_logger("runner-recon", stream=sys.stderr)
 
-from engine.egress_guard import EgressGuard  # noqa: E402 (cf. commentaire ci-dessus)
+from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS  # noqa: E402
+from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard  # noqa: E402
 from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo  # noqa: E402
-from engine.static import analyze_html  # noqa: E402
+from engine.static import analyze_html, extract_forms, extract_mailtos  # noqa: E402
 from engine.steps import validate_steps  # noqa: E402
 from engine.urlnorm import url_input_hash  # noqa: E402
 from engine.verdict import compute_verdict  # noqa: E402
 from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper  # noqa: E402
-from ocular_settings import egress_guard_enabled  # noqa: E402
 from runner_recon.steps_exec import run_steps  # noqa: E402
 
 # Budget wall-clock TOTAL de l'exécution des steps scriptés (3c Global
@@ -59,6 +59,34 @@ def _analyze(dom_html: bytes) -> list:
     (`capture_scripted`) — même calcul de findings statiques à partir du DOM
     capturé, une seule implémentation."""
     return analyze_html(dom_html.decode("utf-8", "replace")) if dom_html else []
+
+
+# Snippet partagé (source unique engine/browser_js) — parcours pas-à-pas pour
+# déclencher le lazy-load avant une capture full-page.
+_SCROLL_TO_LOAD_JS = SCROLL_TO_LOAD_JS
+
+
+async def _scroll_to_load(page: Any) -> None:
+    """Parcourt la page (pas à pas) pour déclencher le lazy-loading AVANT une
+    capture full-page, puis attend que le réseau se calme (contenus déclenchés
+    par le scroll effectivement chargés) — la capture ne part QU'APRÈS. Tout est
+    best-effort et borné : une page hostile/instable ne fait jamais échouer la
+    capture ni dépasser le budget."""
+    with contextlib.suppress(Exception):
+        await page.evaluate(_SCROLL_TO_LOAD_JS)          # attend la FIN du parcours
+    with contextlib.suppress(Exception):
+        await page.wait_for_load_state("networkidle", timeout=5000)  # réseau calmé
+
+
+def _dom_info(dom_html: bytes, title: str, final_url: str) -> DomInfo:
+    """DomInfo enrichi des formulaires (action+méthode) et cibles mailto extraits
+    du DOM (indicateurs d'exfiltration ; cf. static.extract_forms/extract_mailtos).
+    Factorisé entre les deux chemins de capture (3a et scripté)."""
+    dom_str = dom_html.decode("utf-8", "replace") if dom_html else ""
+    return DomInfo(
+        title=title, final_url=final_url,
+        forms=extract_forms(dom_str), mailtos=extract_mailtos(dom_str),
+    )
 
 
 def journal_to_dynamic_steps(
@@ -127,7 +155,7 @@ def build_result(
         target=url,
         input_hash=url_input_hash(url),
         verdict=compute_verdict(findings),
-        dom_info=DomInfo(title=title, final_url=final_url),
+        dom_info=_dom_info(dom_html, title, final_url),
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
         static_findings=findings,
         network=network,
@@ -159,12 +187,8 @@ _TURNSTILE_POST_CLICK_WAIT_S = 4
 # `evaluate` légers, moins chers que les anciens screenshots+opencv). Présent
 # (même tardivement) -> la boucle de retry vision + solve EXISTANTE s'exécute
 # inchangée.
-_CF_INDICATOR_JS = (
-    "() => !!document.querySelector("
-    "'[data-sitekey], .cf-turnstile, "
-    "script[src*=\"challenges.cloudflare.com\"], "
-    "iframe[src*=\"challenges.cloudflare.com\"]')"
-)
+# Indicateur CF partagé (source unique engine/browser_js).
+_CF_INDICATOR_JS = CF_INDICATOR_JS
 _CF_INDICATOR_POLL_ATTEMPTS = 6
 _CF_INDICATOR_POLL_INTERVAL_S = 0.6
 
@@ -175,7 +199,7 @@ async def solve_turnstile(
     console: list[dict],
     vision_mod: Any,
     next_index: int = 1,
-) -> bool:
+) -> "bool | None":
     """Détecte + résout un challenge Turnstile Cloudflare sur `page` (vision
     template matching + clic OS xdotool), appelée après le screenshot initial
     de `capture_url`. `vision_mod` est injecté (jamais un `import vision`
@@ -218,7 +242,7 @@ async def solve_turnstile(
             break
         await asyncio.sleep(_CF_INDICATOR_POLL_INTERVAL_S)
     if not indicator:
-        return False  # pas d'indicateur CF sous la fenêtre -> pas de Turnstile
+        return None  # AUCUN challenge CF -> tri-état N.A. (pas un « non passé »)
 
     det = None
     for attempt in range(_TURNSTILE_RETRY_ATTEMPTS):
@@ -230,7 +254,9 @@ async def solve_turnstile(
             await asyncio.sleep(_TURNSTILE_RETRY_INTERVAL_S)
 
     if det is None:
-        return False  # pas de Turnstile détecté après retry -> comportement 3a inchangé
+        # Indicateur CF présent mais widget non localisé par la vision : il Y A
+        # un challenge, non résolu -> False (« non passé » honnête), pas None.
+        return False
 
     off = await page.evaluate(
         "() => ({x: window.mozInnerScreenX, y: window.mozInnerScreenY, "
@@ -341,13 +367,10 @@ async def _capture_dom(page: Any, url: str) -> tuple[bytes, str, str]:
 # lisibles.) Vérifié empiriquement : Turnstile (guatx.com) reste résolu et
 # `typeof RTCPeerConnection === "undefined"` dans le DOM capturé (cf.
 # tests/test_egress_integration.py).
-_CAMOUFOX_LAUNCH_KWARGS: dict[str, Any] = dict(
-    headless=False,
-    os="linux",
-    humanize=0.3,
-    i_know_what_im_doing=True,
-    firefox_user_prefs={"media.peerconnection.enabled": False},
-)
+# Kwargs de lancement Camoufox : factorisés dans engine.egress_policy (source
+# unique, partagée avec le tier interactif). Conservé comme constante module pour
+# compat (tests + lisibilité) ; le `proxy` egress est mergé par `_camoufox_session`.
+_CAMOUFOX_LAUNCH_KWARGS: dict[str, Any] = hardened_launch_kwargs()
 
 
 @contextlib.asynccontextmanager
@@ -376,16 +399,17 @@ async def _camoufox_session() -> AsyncIterator[Any]:
 
     Le garde est arrêté en `finally`, que la session Camoufox se termine
     normalement ou lève."""
-    from camoufox.async_api import AsyncCamoufox
-
-    guard: Optional[EgressGuard] = None
-    launch_kwargs = dict(_CAMOUFOX_LAUNCH_KWARGS)
-    if egress_guard_enabled():
-        guard = EgressGuard()
-        port = await guard.start()
-        launch_kwargs["proxy"] = {"server": f"http://127.0.0.1:{port}"}
+    # Politique egress (garde / strict / warning) factorisée dans engine
+    # (source unique, cf. audit 3m). Décidée AVANT l'import Camoufox pour que le
+    # refus fail-closed soit immédiat.
+    launch_kwargs = hardened_launch_kwargs()
+    guard, proxy_kwargs = await maybe_start_egress_guard()
+    launch_kwargs.update(proxy_kwargs)
 
     try:
+        # import DANS le try : s'il lève (camoufox absent/cassé), le `finally`
+        # stoppe quand même le garde déjà démarré (pas de socket fuité).
+        from camoufox.async_api import AsyncCamoufox
         async with AsyncCamoufox(**launch_kwargs) as ctx:
             yield ctx
     finally:
@@ -403,7 +427,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
 
     capture = NetworkCapture()
     screenshots: list[tuple[int, str, bytes]] = []
-    turnstile_solved = False
+    turnstile_solved = None   # tri-état : None = aucun challenge (défaut), True/False sinon
     # (dom_html/title/final_url ne sont plus prédéclarés ici : `_capture_dom`
     # ne lève jamais, donc la seule affectation qui compte est celle après le
     # `async with` ci-dessous — cf. `_capture_dom`.)
@@ -475,11 +499,23 @@ async def capture_scripted(
     # journal_to_dynamic_steps).
     capture_refs: list[str] = []
     shot_idx = 0
+    turnstile_solved = None   # tri-état : None = aucun challenge (défaut), True/False sinon
     page = None  # affecté dans le `async with` ci-dessous, capturé par le closure
 
-    async def screenshot_cb(label: str) -> None:
+    async def screenshot_cb(label: str, *, selector: str | None = None, full_page: bool = False) -> None:
         nonlocal shot_idx
-        png = await page.screenshot(full_page=False)
+        # `selector` -> capture de RÉGION (élément) ; `full_page` -> page entière ;
+        # sinon viewport visible (défaut). selector/full_page validés+exclusifs
+        # côté engine.steps ; ici on exécute simplement le mode demandé.
+        if selector:
+            png = await page.locator(selector).first.screenshot()
+        else:
+            if full_page:
+                # Déclenche le lazy-loading (images/div/scripts liés au scroll,
+                # IntersectionObserver…) : sans ce parcours, une capture full-page
+                # rate les éléments jamais entrés dans le viewport. JS FIXE.
+                await _scroll_to_load(page)
+            png = await page.screenshot(full_page=full_page)
         ref = builder.add_screenshot(shot_idx, label, png)
         capture_refs.append(ref)
         shot_idx += 1
@@ -489,6 +525,26 @@ async def capture_scripted(
         capture.attach(page)
 
         await _goto_with_fallback(page, url, timeout_ms, capture.console)
+
+        # Turnstile AVANT de rejouer les steps : sinon le script (sleep/click/
+        # full_page/selecteur…) s'exécute sur la page de CHALLENGE Cloudflare et
+        # non sur le contenu réel -> capture « turnstile non passé ». Même
+        # mécanique que capture_url (gating indicateur CF + vision + clic OS).
+        #
+        # IMPORTANT : en mode scripté, l'analyste contrôle EXACTEMENT les captures
+        # via le DSL (`capture` full_page / région / après-clic). On NE conserve
+        # donc PAS le screenshot post-turnstile dans le résultat — seules les
+        # captures explicitement demandées apparaissent (pas de capture auto
+        # parasite). `ts_shots` est jeté (solve_turnstile exige une liste ; le
+        # Turnstile est bien résolu, juste sans screenshot ajouté au résultat).
+        ts_shots: list[tuple[int, str, bytes]] = []
+        try:
+            import vision  # copié dans runner_recon/, sur le PYTHONPATH du conteneur
+            turnstile_solved = await solve_turnstile(
+                page, ts_shots, capture.console, vision, next_index=0
+            )
+        except Exception as exc:  # noqa: BLE001 - la résolution ne doit jamais casser le scripté
+            capture.console.append({"level": "warning", "text": f"turnstile: {type(exc).__name__}"})
 
         journal = await run_steps(
             page, validated_steps, screenshot_cb=screenshot_cb, deadline=deadline
@@ -532,8 +588,8 @@ async def capture_scripted(
         target=url,
         input_hash=url_input_hash(url),
         verdict=compute_verdict(findings),
-        dom_info=DomInfo(title=title, final_url=final_url),
-        stealth=StealthInfo(engine="camoufox", turnstile_solved=False),
+        dom_info=_dom_info(dom_html, title, final_url),
+        stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
         static_findings=findings,
         network=capture.network,
         console=capture.console,

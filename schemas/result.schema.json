@@ -87,6 +87,13 @@
           "title": "Forms",
           "type": "array"
         },
+        "mailtos": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Mailtos",
+          "type": "array"
+        },
         "links": {
           "items": {
             "type": "string"
@@ -310,9 +317,16 @@
           "type": "string"
         },
         "turnstile_solved": {
-          "default": false,
-          "title": "Turnstile Solved",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Turnstile Solved"
         },
         "challenge": {
           "anyOf": [

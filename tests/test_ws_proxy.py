@@ -137,6 +137,7 @@ def test_ws_valid_token_accepted_binary_only_and_pumps_bytes(monkeypatch):
     ) as ws:
         # le serveur n'accepte (et ne renvoie) QUE "binary", jamais le token
         assert ws.accepted_subprotocol == "binary"
+        assert _TOKEN not in (ws.accepted_subprotocol or "")  # token jamais échoté (fuite handshake)
 
         ws.send_bytes(b"\x00RFB client hello")
         echoed = ws.receive_bytes()
@@ -193,7 +194,10 @@ def test_ws_connect_marks_session_connected(monkeypatch):
         ws.send_bytes(b"ping")
         ws.receive_bytes()
 
-    assert marked == ["s1"]
+    # marqué à l'accept, puis RÉARMÉ pendant le pump (_maybe_touch) pour que le
+    # reaper ne détruise pas une session dont le WS flappe (corrige M2). Donc
+    # >=1 appel, tous pour s1.
+    assert marked and all(m == "s1" for m in marked)
 
 
 def test_ws_disconnect_marks_session_disconnected(monkeypatch):

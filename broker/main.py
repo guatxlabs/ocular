@@ -9,13 +9,14 @@ import redis
 
 from broker.gc import collect
 from broker.launcher import run_job
-from broker.sessions import launch_session, reap, stop_session
+from broker.sessions import launch_session, purge_session_results, reap, stop_session, sweep_orphans
 from bus.queue import RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
 from ocular_logging import get_logger
 from ocular_settings import (
     artifacts_dir,
     gc_interval,
+    job_ttl,
     reaper_interval,
     redis_url,
     result_ttl,
@@ -39,6 +40,14 @@ def process_one(queue: RedisJobQueue, job) -> None:
     (ou l'erreur). Extrait de run_forever() pour être testable sans mocker
     une boucle infinie."""
     log.info("job start job_id=%s", job.job_id)
+    # Rafraîchit la fenêtre d'acceptation au moment où le job DÉMARRE réellement :
+    # sous une file profonde de jobs scriptés (broker mono-thread), le marqueur
+    # posé au submit pouvait expirer avant le démarrage -> GET /jobs renverrait
+    # un faux « unknown » terminal alors que le job va aboutir (audit L2).
+    try:
+        queue.mark_accepted(job.job_id, job_ttl())
+    except Exception:  # noqa: BLE001 - best-effort, ne bloque pas le traitement
+        pass
     try:
         result_json = run_job(job)
     except Exception as exc:  # le job échoue proprement, le broker survit
@@ -79,6 +88,7 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
         log.info("session cmd launch session_id=%s container=%s", session_id, container)
     elif action == "stop":
         stop_session(f"ocular-sess-{session_id}")
+        purge_session_results(registry.client, session_id)  # captures éphémères non nommées
         registry.delete(session_id)
         log.info("session cmd stop session_id=%s", session_id)
     else:
@@ -146,6 +156,13 @@ def run_forever() -> None:
     queue = RedisJobQueue(client)
     cmd_queue = SessionCmdQueue(client)
     registry = SessionRegistry(client)
+    # Balayage des conteneurs de session orphelins AVANT de servir : nettoie les
+    # résidus d'un crash précédent ou d'un `compose down` (conteneurs lancés
+    # hors-compose). Best-effort — ne bloque jamais le démarrage.
+    try:
+        sweep_orphans(registry)
+    except Exception as exc:  # noqa: BLE001 - le démarrage ne dépend pas du sweep
+        log.error("startup orphan sweep error err=%s", str(exc)[:200])
     _start_reaper(client)
     _start_gc(client)
     while True:
@@ -155,7 +172,19 @@ def run_forever() -> None:
         # attend au plus ~2s au total avant de reboucler.
         job = queue.dequeue(timeout=1)
         if job is not None:
-            process_one(queue, job)
+            try:
+                process_one(queue, job)
+            except Exception as exc:  # le broker SURVIT à une erreur de traitement
+                # Symétrie avec le chemin session-cmd ci-dessous : sans ce garde,
+                # une erreur (ex. Redis qui hoquette dans set_result, job déjà
+                # blpop'é) remonterait jusqu'au `while True` et TUERAIT le broker
+                # (threads reaper/gc morts, job perdu sans résultat). Best-effort
+                # de marquer le job en erreur pour ne pas laisser un fantôme.
+                log.error("job processing failed job_id=%s err=%s", job.job_id, str(exc)[:200])
+                try:
+                    queue.set_result(job.job_id, error_result(job.job_id, exc))
+                except Exception:  # noqa: BLE001 - Redis encore en vrac : on abandonne ce job proprement
+                    pass
         cmd = cmd_queue.dequeue_cmd(timeout=1)
         if cmd is not None:
             try:

@@ -15,3 +15,19 @@ def test_env_override(monkeypatch):
     monkeypatch.setenv("OCULAR_JOB_MEMORY", "1g")
     assert s.result_ttl() == 120
     assert s.job_memory() == "1g"
+
+
+# --- Phase 3k : mode strict egress (fail-closed en réseau sensible) ----------
+
+def test_require_egress_guard_default_off(monkeypatch):
+    monkeypatch.delenv("OCULAR_REQUIRE_EGRESS_GUARD", raising=False)
+    assert s.require_egress_guard() is False
+
+
+def test_require_egress_guard_on(monkeypatch):
+    for v in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("OCULAR_REQUIRE_EGRESS_GUARD", v)
+        assert s.require_egress_guard() is True
+    for v in ("0", "false", "", "off"):
+        monkeypatch.setenv("OCULAR_REQUIRE_EGRESS_GUARD", v)
+        assert s.require_egress_guard() is False

@@ -101,8 +101,14 @@ export async function deleteSession(id) {
 
 // POST /sessions/{id}/capture -> OcularResult (même forme qu'un job, avec job_id).
 // Le résultat est aussi stocké côté serveur -> revisible via GET /jobs/{job_id}.
-export async function captureSession(id) {
-  const res = await authFetch('/sessions/' + encodeURIComponent(id) + '/capture', { method: 'POST' });
+// `opts.turnstilePassed` : déclaration manuelle de l'analyste que le Turnstile a
+// été passé à la main (le solve interactif n'est pas introspectable de façon fiable).
+export async function captureSession(id, opts) {
+  const res = await authFetch('/sessions/' + encodeURIComponent(id) + '/capture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ turnstile_passed: !!(opts && opts.turnstilePassed) }),
+  });
   if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
   return res.json();
 }

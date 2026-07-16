@@ -1,5 +1,19 @@
+import fakeredis
+
 from broker.sessions import build_session_args, launch_session, reap, stop_session
 import broker.sessions as sessions_mod
+
+
+def _fake_redis(keys=None):
+    """Vraie fakeredis pré-seedée (audit qualité 3m : plus de faux client maison)."""
+    r = fakeredis.FakeStrictRedis()
+    for k in keys or []:
+        r.set(k, b"1")
+    return r
+
+
+def _keys(r):
+    return {k.decode() if isinstance(k, bytes) else k for k in r.keys()}
 
 
 def test_build_session_args_is_detached_not_interactive_rm():
@@ -126,9 +140,11 @@ class _FakeRegistry:
     conteneur) — `reap` doit rester robuste et stopper par nom déterministe
     sans jamais consulter `get`."""
 
-    def __init__(self, expired_ids):
+    def __init__(self, expired_ids, redis_keys=None):
         self._expired_ids = expired_ids
         self.deleted = []
+        self._r = _fake_redis(redis_keys)
+        self.client = self._r  # cf. SessionRegistry.client (prod appelle registry.client)
 
     def expired(self, now_epoch, ttl, idle, disconnect_grace=None):
         return self._expired_ids
@@ -181,3 +197,57 @@ def test_reap_returns_zero_when_nothing_expired(monkeypatch):
     assert count == 0
     assert stopped == []
     assert registry.deleted == []
+
+
+# --- Phase 3j : purge des captures interactives éphémères -------------------
+from broker.sessions import purge_session_results  # noqa: E402
+
+
+def test_purge_session_results_removes_only_that_sessions_sesscap_keys():
+    r = _fake_redis([
+        "ocular:result:sesscap-s1-aaaa",
+        "ocular:result:sesscap-s1-bbbb",
+        "ocular:result:sesscap-s2-cccc",   # autre session -> conservée
+        "ocular:result:job-normal",        # job normal -> conservé
+    ])
+    removed = purge_session_results(r, "s1")
+    assert removed == 2
+    assert _keys(r) == {"ocular:result:sesscap-s2-cccc", "ocular:result:job-normal"}
+
+
+def test_purge_session_results_best_effort_on_error(monkeypatch):
+    r = _fake_redis(["ocular:result:sesscap-s1-x"])
+
+    def _boom(*a, **k):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(r, "scan_iter", _boom)
+    assert purge_session_results(r, "s1") == 0  # ne lève jamais
+
+
+def test_reap_purges_session_results(monkeypatch):
+    monkeypatch.setattr(sessions_mod, "stop_session", lambda c: None)
+    registry = _FakeRegistry(
+        expired_ids=["s1"],
+        redis_keys=["ocular:result:sesscap-s1-xyz", "ocular:result:sesscap-s2-keep"],
+    )
+    reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
+    assert _keys(registry._r) == {"ocular:result:sesscap-s2-keep"}  # s1 purgée, s2 intacte
+
+
+# --- Phase 3k : résolution Xvfb configurable (non hardcodée) -----------------
+
+def test_build_session_args_passes_session_screen_env(monkeypatch):
+    monkeypatch.setenv("OCULAR_SESSION_SCREEN", "1600x900")
+    a = build_session_args("s1")
+    assert "OCULAR_SESSION_SCREEN=1600x900" in a
+
+
+def test_session_screen_default_and_validation(monkeypatch):
+    from ocular_settings import session_screen
+    monkeypatch.delenv("OCULAR_SESSION_SCREEN", raising=False)
+    assert session_screen() == "1920x1080"                 # défaut
+    monkeypatch.setenv("OCULAR_SESSION_SCREEN", "2560x1440")
+    assert session_screen() == "2560x1440"                 # valeur valide
+    monkeypatch.setenv("OCULAR_SESSION_SCREEN", "; rm -rf /")  # injection -> défaut
+    assert session_screen() == "1920x1080"
