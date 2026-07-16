@@ -57,13 +57,19 @@ class DomInfo(BaseModel):
     title: str = ""
     final_url: str = ""
     redirect_chain: list[str] = Field(default_factory=list)
-    forms: list[dict] = Field(default_factory=list)
+    forms: list[dict] = Field(default_factory=list)   # [{action, method}] — cf. static.extract_forms
+    mailtos: list[str] = Field(default_factory=list)  # cibles mailto: — cf. static.extract_mailtos
     links: list[str] = Field(default_factory=list)
 
 
 class StealthInfo(BaseModel):
     engine: Literal["camoufox", "chromium"]
-    turnstile_solved: bool = False
+    # Tri-état : True = challenge Turnstile résolu ; False = challenge présent
+    # mais NON résolu ; None = aucun challenge / non applicable (ex. analyse HTML
+    # pure, ou session interactive sans challenge). None n'affiche AUCUN badge
+    # « passé/non passé » (cf. saved_store: None -> NULL, UI: badge omis) — évite
+    # le faux « Turnstile non passé » sur les captures sans Turnstile.
+    turnstile_solved: Optional[bool] = None
     challenge: Optional[str] = None
 
 

@@ -1,11 +1,26 @@
+import fakeredis
+
 import broker.main as main_mod
 from broker.main import process_session_cmd
 
 
+def _fake_redis(keys=None):
+    r = fakeredis.FakeStrictRedis()
+    for k in keys or []:
+        r.set(k, b"1")
+    return r
+
+
+def _keys(r):
+    return {k.decode() if isinstance(k, bytes) else k for k in r.keys()}
+
+
 class _FakeRegistry:
-    def __init__(self):
+    def __init__(self, redis_keys=None):
         self.created = []
         self.deleted = []
+        self._r = _fake_redis(redis_keys)
+        self.client = self._r  # cf. SessionRegistry.client (prod appelle registry.client)
 
     def create(self, session_id, container, kind, target, token, now_iso, secret=""):
         self.created.append({
@@ -66,12 +81,16 @@ def test_launch_cmd_defaults_missing_token_and_target(monkeypatch):
 def test_stop_cmd_stops_container_by_deterministic_name_and_deletes(monkeypatch):
     stopped = []
     monkeypatch.setattr(main_mod, "stop_session", lambda c: stopped.append(c))
-    registry = _FakeRegistry()
+    registry = _FakeRegistry(redis_keys=[
+        "ocular:result:sesscap-s1-aa", "ocular:result:sesscap-s2-bb",
+    ])
 
     process_session_cmd({"action": "stop", "session_id": "s1"}, registry)
 
     assert stopped == ["ocular-sess-s1"]
     assert registry.deleted == ["s1"]
+    # captures éphémères de s1 purgées ; celles de s2 intactes
+    assert _keys(registry._r) == {"ocular:result:sesscap-s2-bb"}
 
 
 def test_unknown_action_is_noop(monkeypatch):

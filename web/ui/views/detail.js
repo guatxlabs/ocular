@@ -10,16 +10,26 @@ import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
   saveAnalysis, getSavedMeta, setAnalystVerdict, Unauthorized,
 } from '../api.js';
-import { buildFilterBar } from '../filter.js';
+import {
+  buildFilterBar, dedupEntries, networkKey, consoleKey,
+  CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
+  networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
+} from '../filter.js';
 import { fmtIso } from './saved.js';
 
 // seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau
 // réseau (petit résultat -> pas de bruit inutile).
 const NETWORK_FILTER_THRESHOLD = 8;
+const CONSOLE_FILTER_THRESHOLD = 8;
+// CONSOLE_FIELD_DEFS / SEV_CLASS / VERDICT_CLASS : importés de filter.js (source unique).
+
+// Libellé du compteur d'en-tête après dédup : « N » si aucun doublon, sinon
+// « N uniques / T » (T = total avant fusion).
+function dedupCountLabel(unique, total) {
+  return unique === total ? String(unique) : unique + ' / ' + total;
+}
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low'];
-const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
-const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
 
 // ---- points d'entrée : une source « job », une source « saved » ----
 export function renderDetail(app, id) {
@@ -81,6 +91,19 @@ function mount(app, id, src) {
       return;
     }
     stop();
+    // Job perdu/expiré (résultat introuvable, hors fenêtre d'acceptation) :
+    // état TERMINAL — on n'affiche pas un résultat vide et on n'entre jamais en
+    // polling infini. Message clair + retour, plutôt qu'une page cassée.
+    if (res && res.status === 'unknown') {
+      body.replaceChildren(el('div.card', {}, [
+        el('div.emptyview', {}, [
+          iconNode('inbox'),
+          el('p', {}, 'Analyse expirée ou introuvable — son résultat n\'est plus disponible.'),
+          el('a.btn-primary', { href: '#/submit' }, 'Relancer une analyse'),
+        ]),
+      ]));
+      return;
+    }
     if (res && res.status === 'error') { renderError(res); return; }
     let meta = null;
     if (src.getMeta) {
@@ -147,7 +170,12 @@ function mount(app, id, src) {
     // ---- détections statiques groupées par sévérité ----
     frag.appendChild(buildFindings(findings));
 
-    // ---- réseau ----
+    // ---- formulaires + mailto (exfiltration) : AVANT le réseau, car c'est le
+    // signal le plus direct (où atterrit la saisie) — priorité sur les URLs.
+    const exfil = buildExfil(r.dom || {});
+    if (exfil) frag.appendChild(exfil);
+
+    // ---- réseau (URLs) ----
     frag.appendChild(buildNetwork(r.network || []));
 
     // ---- console ----
@@ -385,9 +413,13 @@ function mount(app, id, src) {
     return sec;
   }
 
-  function buildNetwork(net) {
+  function buildNetwork(netRaw) {
+    // Dédup natif : les requêtes identiques (method+status+type+url) sont
+    // fusionnées en une ligne annotée `_count` (badge ×N) — moins de bruit.
+    const net = dedupEntries(netRaw, networkKey);
+    const total = netRaw.length;
     const sec = el('div.detsec', {}, [
-      el('h3', {}, ['Réseau ', el('span.cnt', {}, String(net.length))]),
+      el('h3', {}, ['Réseau ', el('span.cnt', {}, dedupCountLabel(net.length, total))]),
     ]);
     if (!net.length) { sec.appendChild(el('div.card', {}, [el('p.muted', {}, 'aucune requête réseau')])); return sec; }
     const table = el('table.qtable');
@@ -398,12 +430,7 @@ function mount(app, id, src) {
     // Rendu des lignes factorisé : réutilisé pour l'affichage initial ET pour
     // le re-rendu déclenché par le filtre — mêmes colonnes, même el() XSS-clean.
     const renderRows = (rows) => {
-      tb.replaceChildren(...rows.map((n) => el('tr', {}, [
-        el('td', {}, n.method || ''),
-        el('td', {}, n.status != null ? String(n.status) : '—'),
-        el('td', {}, n.resource_type || ''),
-        el('td', { title: n.url || '' }, n.url || ''),
-      ])));
+      tb.replaceChildren(...rows.map((n) => networkRow(el, n)));
     };
     table.appendChild(thead); table.appendChild(tb);
     const card = el('div.card', {}, [el('div.plscroll', {}, [table])]);
@@ -432,19 +459,56 @@ function mount(app, id, src) {
     return sec;
   }
 
-  function buildConsole(cons) {
+  function buildConsole(consRaw) {
+    // Dédup natif console : lignes identiques (niveau+texte) fusionnées, badge ×N.
+    const cons = dedupEntries(consRaw, consoleKey);
+    const total = consRaw.length;
     const sec = el('div.detsec', {}, [
-      el('h3', {}, ['Console ', el('span.cnt', {}, String(cons.length))]),
+      el('h3', {}, ['Console ', el('span.cnt', {}, dedupCountLabel(cons.length, total))]),
     ]);
     if (!cons.length) { sec.appendChild(el('div.card', {}, [el('p.muted', {}, 'console vide')])); return sec; }
     const listEl = el('div.conslist');
-    cons.forEach((c) => {
-      listEl.appendChild(el('div.consline', {}, [
-        el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
-        el('span.ctext', {}, c.text || ''),
-      ]));
-    });
+    // Rendu factorisé (initial + re-rendu par le filtre). textNode uniquement
+    // (contenu console d'une page potentiellement hostile) — jamais innerHTML.
+    const renderLines = (rows) => {
+      listEl.replaceChildren(...rows.map((c) => consoleLine(el, esc, c)));
+    };
+    // Même filtre exclure/rechercher que le réseau (filter.js), champs console.
+    if (cons.length > CONSOLE_FILTER_THRESHOLD) {
+      const bar = buildFilterBar(() => cons, renderLines, { el, fieldDefs: CONSOLE_FIELD_DEFS });
+      const counter = bar.querySelector('.filter-count');
+      if (counter) counter.setAttribute('aria-label', 'correspondances');
+      sec.appendChild(el('div.filter-slot', {}, [bar]));
+    } else {
+      renderLines(cons);
+    }
     sec.appendChild(el('div.card', {}, [listEl]));
+    return sec;
+  }
+
+  // Formulaires (où atterrit la saisie) + cibles mailto — l'indicateur
+  // d'exfiltration le plus direct d'un kit de phishing. XSS-clean : action/mailto
+  // (contenu de page hostile) posés en textNode. Renvoie null si rien à montrer.
+  function buildExfil(dom) {
+    const forms = Array.isArray(dom.forms) ? dom.forms : [];
+    const mailtos = Array.isArray(dom.mailtos) ? dom.mailtos : [];
+    if (!forms.length && !mailtos.length) return null;
+    const sec = el('div.detsec', {}, [
+      el('h3', {}, ['Formulaires & mailto ', el('span.cnt', {}, String(forms.length + mailtos.length))]),
+    ]);
+    const card = el('div.card');
+
+    if (forms.length) {
+      const list = el('div.exfil-list', {}, forms.map((f) => exfilFormRow(el, f)));
+      card.appendChild(el('div.exfil-group', {}, [el('div.exfil-lead', {}, 'Formulaires'), list]));
+    }
+
+    if (mailtos.length) {
+      const list = el('div.exfil-list', {}, mailtos.map((m) => exfilMailtoRow(el, m)));
+      card.appendChild(el('div.exfil-group', {}, [el('div.exfil-lead', {}, 'Cibles mailto'), list]));
+    }
+
+    sec.appendChild(card);
     return sec;
   }
 

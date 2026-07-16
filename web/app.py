@@ -5,8 +5,6 @@ import json
 import os
 import secrets
 import time
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -28,13 +26,16 @@ from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
 from ocular_settings import (
     admin_group,
+    job_ttl,
     max_html_bytes,
     redis_url,
+    result_ttl,
     saved_db_path,
     session_ready_timeout,
     trust_forward_auth,
 )
 from web.identity import has_admin_group, resolve_groups, resolve_identity
+from web.middleware import MaxBodySizeMiddleware
 from web.models import AnalystVerdictRequest, JobRequest, JobResponse, SessionRequest, SessionResponse
 
 app = FastAPI(title="Ocular")
@@ -67,27 +68,35 @@ async def _auth(request, call_next):
         request.state.identity = identity
         request.state.auth_method = method
         if request.method == "DELETE" and request.url.path.startswith("/saved"):
-            adm = os.environ.get("OCULAR_ADMIN_TOKEN")
-            provided_adm = request.headers.get("x-admin-token", "")
-            token_ok = bool(adm) and secrets.compare_digest(
-                provided_adm.encode("utf-8", "ignore"), adm.encode()
-            )
-            # Le mécanisme groupe n'est "configuré" que si un groupe admin est
-            # défini ET que le forward-auth est de confiance (opt-in) — sinon
-            # has_admin_group() renvoie déjà False de façon anti-spoofing, mais
-            # on veut aussi distinguer "non configuré" (503) de "configuré mais
-            # non accordé" (403).
-            group_mechanism_configured = bool(admin_group()) and trust_forward_auth()
-            if not adm and not group_mechanism_configured:
-                # fail-closed : jamais ouvert par défaut, aucun mécanisme admin dispo
-                log.warning("admin rejected path=%s status=%d", request.url.path, 503)
-                return JSONResponse({"detail": "aucun mécanisme admin configuré"}, status_code=503)
-            group_ok = has_admin_group(request)
-            if not (token_ok or group_ok):
-                # jamais le header/token/groupe dans les logs, seulement path + status
-                log.warning("admin rejected path=%s status=%d", request.url.path, 403)
-                return JSONResponse({"detail": "admin requis"}, status_code=403)
+            denied = _check_admin(request)
+            if denied is not None:
+                return denied
     return await call_next(request)
+
+
+def _check_admin(request) -> JSONResponse | None:
+    """Garde admin de `DELETE /saved*` (extraite de `_auth`, audit 3m) : autorise
+    via `X-Admin-Token` (temps-constant) OU appartenance au groupe admin IdP.
+    Renvoie une `JSONResponse` d'erreur (503 = aucun mécanisme configuré ; 403 =
+    configuré mais non accordé), ou `None` si l'accès admin est accordé. Jamais
+    de token/groupe dans les logs — seulement path + status."""
+    adm = os.environ.get("OCULAR_ADMIN_TOKEN")
+    provided_adm = request.headers.get("x-admin-token", "")
+    token_ok = bool(adm) and secrets.compare_digest(
+        provided_adm.encode("utf-8", "ignore"), adm.encode()
+    )
+    # Le mécanisme groupe n'est "configuré" que si un groupe admin est défini ET
+    # que le forward-auth est de confiance (opt-in) — sinon has_admin_group()
+    # renvoie déjà False (anti-spoofing), mais on veut distinguer "non configuré"
+    # (503) de "configuré mais non accordé" (403).
+    group_mechanism_configured = bool(admin_group()) and trust_forward_auth()
+    if not adm and not group_mechanism_configured:
+        log.warning("admin rejected path=%s status=%d", request.url.path, 503)
+        return JSONResponse({"detail": "aucun mécanisme admin configuré"}, status_code=503)
+    if not (token_ok or has_admin_group(request)):
+        log.warning("admin rejected path=%s status=%d", request.url.path, 403)
+        return JSONResponse({"detail": "admin requis"}, status_code=403)
+    return None
 
 
 @app.middleware("http")
@@ -100,8 +109,11 @@ async def _csp(request, call_next):
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; "
-            "base-uri 'self'"
+            # frame-ancestors NE retombe PAS sur default-src -> à poser explicitement,
+            # sinon l'UI est encadrable (clickjacking sur « Supprimer »/« Tout purger »).
+            "base-uri 'self'; frame-ancestors 'none'"
         )
+        response.headers["X-Frame-Options"] = "DENY"  # repli pour les vieux UA
     return response
 
 
@@ -146,87 +158,14 @@ _BODY_TOO_LARGE_PAYLOAD = json.dumps(
 ).encode("utf-8")
 
 
-class _MaxBodySizeMiddleware:
-    """Middleware ASGI pur (pas de `BaseHTTPMiddleware`) : filet de sécurité
-    pour les corps `Transfer-Encoding: chunked` (donc sans `Content-Length`),
-    que `_body_size_guard` ne peut pas voir puisqu'il n'inspecte que les
-    en-têtes. Enveloppe `receive` et accumule `len(body)` sur chaque message
-    `http.request`.
-
-    Dès que le total dépasse `_MAX_BODY_BYTES`, il émet LUI-MÊME la réponse
-    413 via `send` puis renvoie un `http.disconnect` à l'app enveloppée pour
-    qu'elle cesse de lire. On NE lève PAS d'exception : une exception levée
-    depuis le `receive` enveloppé ne remonte pas jusqu'ici — elle est avalée
-    par le parsing de corps de FastAPI/Starlette (et par le `coro()` des
-    `BaseHTTPMiddleware` intermédiaires qui la stockent en `app_exc`), et
-    ressort en 400/422 côté route, jamais en 413. Envoyer la réponse
-    directement depuis `receive` est le seul chemin fiable.
-
-    Anti double-réponse : `send` enveloppé (`_guarded_send`) laisse passer les
-    messages tant que NOUS n'avons pas déjà répondu 413 ; une fois notre 413
-    émis, les `send` ultérieurs de l'app (p.ex. son propre 400 sur
-    `ClientDisconnect`) sont ignorés. On ne peut émettre le 413 que si l'app
-    n'a pas déjà commencé sa réponse (cas normal d'un POST : le corps est lu
-    avant toute réponse). Ne touche pas aux scopes non-http (lifespan,
-    websocket) ni aux requêtes sans corps (GET).
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http":
-            await self.app(scope, receive, send)
-            return
-
-        total = 0
-        state = {"our_413_sent": False, "app_response_started": False}
-
-        async def _guarded_send(message):
-            # Une fois notre 413 émis, on avale tout ce que l'app tente
-            # d'envoyer pour éviter une double réponse ASGI.
-            if state["our_413_sent"]:
-                return
-            if message["type"] == "http.response.start":
-                state["app_response_started"] = True
-            await send(message)
-
-        async def _guarded_receive():
-            nonlocal total
-            message = await receive()
-            if message["type"] == "http.request":
-                total += len(message.get("body", b""))
-                if total > _MAX_BODY_BYTES and not state["our_413_sent"]:
-                    # L'app n'a pas encore répondu (POST : corps lu avant la
-                    # réponse) -> on émet le 413 nous-mêmes, directement.
-                    if not state["app_response_started"]:
-                        log.warning(
-                            "body rejected (streamed) path=%s total=%d limit=%d",
-                            scope.get("path"), total, _MAX_BODY_BYTES,
-                        )
-                        await send({
-                            "type": "http.response.start",
-                            "status": 413,
-                            "headers": [
-                                (b"content-type", b"application/json"),
-                                (b"content-length", str(len(_BODY_TOO_LARGE_PAYLOAD)).encode()),
-                            ],
-                        })
-                        await send({"type": "http.response.body", "body": _BODY_TOO_LARGE_PAYLOAD})
-                        state["our_413_sent"] = True
-                    # Coupe la lecture : l'app voit un client déconnecté et
-                    # cesse de consommer le corps.
-                    return {"type": "http.disconnect"}
-            return message
-
-        await self.app(scope, _guarded_receive, _guarded_send)
-
-
-# Enregistré en dernier -> devient le middleware utilisateur le plus externe
-# (Starlette empile `add_middleware` en LIFO), donc la garde par comptage
-# s'applique avant `_body_size_guard`/`_csp`/`_auth` et avant tout parsing de
-# route, sur le même principe (rejeter tôt, avant tout traitement coûteux).
-app.add_middleware(_MaxBodySizeMiddleware)
+# `MaxBodySizeMiddleware` (classe ASGI, filet corps chunked) extraite dans
+# web/middleware.py (audit 3m). Enregistré en DERNIER -> middleware utilisateur
+# le plus externe (Starlette empile `add_middleware` en LIFO), donc la garde par
+# comptage s'applique AVANT `_body_size_guard`/`_csp`/`_auth` et avant tout
+# parsing de route (rejeter tôt). Ordre INCHANGÉ par rapport à avant l'extraction.
+app.add_middleware(
+    MaxBodySizeMiddleware, max_bytes=_MAX_BODY_BYTES, payload=_BODY_TOO_LARGE_PAYLOAD,
+)
 
 
 @lru_cache(maxsize=1)
@@ -292,6 +231,7 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
             raise HTTPException(status_code=422, detail=str(e))
     job_id = "job-" + uuid.uuid4().hex[:12]
     queue.enqueue(Job(job_id=job_id, profile=req.profile, html=req.html, url=req.url, steps=steps))
+    queue.mark_accepted(job_id, job_ttl())   # fenêtre d'acceptation (anti job fantôme)
     log.info("job submitted job_id=%s profile=%s html_bytes=%d",
               job_id, req.profile, len(req.html or ""))
     return JobResponse(job_id=job_id)
@@ -301,7 +241,14 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
 def get_job(job_id: str, queue: RedisJobQueue = Depends(get_queue)) -> dict:
     result = queue.get_result(job_id)
     if result is None:
-        return {"status": "pending"}
+        # Pas de résultat : soit le job est réellement en cours (marqueur
+        # d'acceptation présent -> "pending"), soit il est perdu/expiré (marqueur
+        # absent : Redis vidé par un down/up, ou jamais traité -> "unknown"
+        # TERMINAL). Ce dernier cas arrête le polling fantôme côté UI au lieu de
+        # renvoyer "pending" indéfiniment (accumulation de jobs zombies en prod).
+        if queue.is_accepted(job_id):
+            return {"status": "pending"}
+        return {"status": "unknown"}
     try:
         return json.loads(result)
     except (ValueError, TypeError):
@@ -341,88 +288,17 @@ def get_artifact(job_id: str, ref: str) -> Response:
     return _serve_artifact_bytes(data, fname)
 
 
-def _session_host(session_id: str) -> str:
-    """Nom réseau interne du conteneur de session — jamais de port hôte, le
-    web parle au conteneur uniquement via le réseau applicatif interne."""
-    return f"ocular-sess-{session_id}"
-
-
-def _internal_get_ok(url: str, timeout: float = 2.0) -> bool:
-    """GET interne (health) via la bibliothèque standard uniquement — pas de
-    nouvelle dépendance, pas d'accès au moteur de conteneurs (le web reste
-    sans accès conteneur, seul le broker en dispose)."""
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
-            return 200 <= resp.status < 300
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-
-
-def _internal_post_json(url: str, payload: dict, secret: str, timeout: float = 5.0) -> bool:
-    data = json.dumps(payload).encode("utf-8")
-    # X-Session-Secret : auth à la frontière conteneur (le session_server exige
-    # ce secret sur /goto,/load). Jamais loggé.
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
-            return 200 <= resp.status < 300
-    except (urllib.error.URLError, OSError, ValueError):
-        return False
-
-
-class _CaptureError(Exception):
-    """Échec (réseau, HTTP non-2xx, ou JSON invalide) de l'appel interne au
-    `session_server` — traduit systématiquement en 502 côté route."""
-
-
-def _internal_capture(url: str, secret: str, timeout: float = 30.0) -> dict:
-    """POST interne (corps vide) vers `/capture` du `session_server`, via la
-    bibliothèque standard uniquement (pas de nouvelle dépendance, pas
-    d'accès au moteur de conteneurs — seul le broker en dispose). Signe l'appel
-    avec `X-Session-Secret` (auth frontière conteneur, jamais loggé). Renvoie le
-    wrapper `{result, blobs}` désérialisé ; lève `_CaptureError` sur tout
-    échec réseau/HTTP/JSON."""
-    req = urllib.request.Request(
-        url,
-        data=b"{}",
-        headers={"Content-Type": "application/json", "X-Session-Secret": secret},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
-            body = resp.read()
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise _CaptureError(str(exc)) from exc
-    try:
-        return json.loads(body)
-    except (ValueError, TypeError) as exc:
-        raise _CaptureError("réponse capture invalide") from exc
-
-
-def _internal_get_json(url: str, secret: str, timeout: float = 5.0) -> dict:
-    """GET interne (données, pas health) vers le `session_server` (`/live`),
-    calqué sur `_internal_capture` : bibliothèque standard uniquement, signé
-    avec `X-Session-Secret` (jamais loggé), échec réseau/HTTP/JSON traduit en
-    `_CaptureError` (-> 502 côté route)."""
-    req = urllib.request.Request(
-        url,
-        headers={"X-Session-Secret": secret},
-        method="GET",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - réseau interne uniquement
-            body = resp.read()
-    except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise _CaptureError(str(exc)) from exc
-    try:
-        return json.loads(body)
-    except (ValueError, TypeError) as exc:
-        raise _CaptureError("réponse live invalide") from exc
+# Appels HTTP internes web -> session_server : extraits dans web/internal_http.py
+# (audit qualité 3m). Réimportés sous leurs noms `_préfixés` historiques pour ne
+# rien changer aux appelants ni au monkeypatch des tests.
+from web.internal_http import (  # noqa: E402
+    CaptureError as _CaptureError,
+    internal_capture as _internal_capture,
+    internal_get_json as _internal_get_json,
+    internal_get_ok as _internal_get_ok,
+    internal_post_json as _internal_post_json,
+    session_host as _session_host,
+)
 
 
 _SESSION_POLL_INTERVAL = 0.5
@@ -534,6 +410,7 @@ def delete_session(
 @app.post("/sessions/{session_id}/capture")
 def capture_session(
     session_id: str,
+    body: dict | None = None,
     registry: SessionRegistry = Depends(get_session_registry),
     queue: RedisJobQueue = Depends(get_queue),
 ) -> dict:
@@ -552,8 +429,12 @@ def capture_session(
     # secret conteneur lu au registre pour signer l'appel /capture (le web ne
     # regénère pas : c'est le broker qui l'a injecté au conteneur).
     secret = registry.get_secret(session_id) or ""
+    # Seul le flag booléen `turnstile_passed` est relayé (déclaration manuelle
+    # de l'analyste) — jamais le corps brut, pour ne pas exposer d'autre champ
+    # au session_server.
+    payload = {"turnstile_passed": bool((body or {}).get("turnstile_passed"))}
     try:
-        wrapper = _internal_capture(url, secret)
+        wrapper = _internal_capture(url, secret, payload=payload)
     except _CaptureError:
         log.warning("session capture failed session_id=%s", session_id)
         raise HTTPException(status_code=502, detail="capture échouée")
@@ -563,7 +444,11 @@ def capture_session(
     result = wrapper.get("result", {})
     result_id = "sesscap-" + session_id + "-" + uuid.uuid4().hex[:8]
     result["job_id"] = result_id                  # aligné sur GET /jobs/{job_id}
-    queue.set_result(result_id, json.dumps(result))
+    # Capture interactive ÉPHÉMÈRE : TTL (défense en profondeur — la sauvegarde
+    # effective copie le résultat en SQLite via POST /saved ; une capture non
+    # nommée n'est jamais persistée et expire, en plus de la purge au nettoyage
+    # de session côté broker `purge_session_results`).
+    queue.set_result(result_id, json.dumps(result), ttl=result_ttl())
     registry.touch(session_id, datetime.now(timezone.utc).isoformat())
     log.info("session capture session_id=%s result_id=%s", session_id, result_id)
     return result
@@ -590,6 +475,11 @@ def session_live(
         log.warning("session live failed session_id=%s", session_id)
         raise HTTPException(status_code=502, detail="live échoué")
 
+    # Une session ACTIVEMENT pollée via /live (panneau live ouvert) est vivante,
+    # même si son WS VNC s'est déconnecté un instant : on réarme `mark_connected`
+    # (efface `disconnected_at`) en plus de `touch`, sinon le reaper la détruit
+    # après la grâce de déconnexion alors que l'analyste s'en sert (corrige M1).
+    registry.mark_connected(session_id)
     registry.touch(session_id, datetime.now(timezone.utc).isoformat())
     return live
 
@@ -625,6 +515,11 @@ async def _ws_pump(websocket: WebSocket, upstream, registry: SessionRegistry, si
         nonlocal last_touch
         now = time.monotonic()
         if now - last_touch >= _WS_TOUCH_INTERVAL:
+            # réarme AUSSI mark_connected : ce WS est vivant et pompe des octets.
+            # Sans ça, le teardown d'un ANCIEN socket (reconnexion/flapping) pose
+            # `disconnected_at` APRÈS l'accept du nouveau, et le reaper détruirait
+            # la session pourtant connectée (corrige M2).
+            registry.mark_connected(sid)
             registry.touch(sid, datetime.now(timezone.utc).isoformat())
             last_touch = now
 
@@ -780,9 +675,16 @@ def lookup_saved_url(body: dict) -> dict:
     url = body.get("url")
     if not url:
         raise HTTPException(status_code=422, detail="url requis")
+    # normalize_url (via url_input_hash) lève ValueError sur une URL malformée
+    # ([::1 sans crochet fermant, port non numérique…) -> 422 propre, pas un 500
+    # (cohérent avec submit_job/create_session).
+    try:
+        input_hash = url_input_hash(url)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="url invalide")
     conn = _saved_conn()
     try:
-        meta = saved_store.get_by_hash(conn, url_input_hash(url))
+        meta = saved_store.get_by_hash(conn, input_hash)
     finally:
         conn.close()
     if not meta:

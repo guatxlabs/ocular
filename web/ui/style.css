@@ -297,6 +297,23 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 .qtable .numcol{color:var(--mut);text-align:right;width:1%;font-size:11px;-webkit-user-select:none;user-select:none}
 .qtable tbody tr:nth-child(even){background:color-mix(in srgb,var(--card2) 60%,transparent)}
 .qtable tbody tr:hover{background:var(--acc-bg)}
+/* badge de dédup natif (×N occurrences) — réseau + console */
+.dupbadge{display:inline-block;margin-left:8px;padding:0 6px;border-radius:var(--pill,10px);
+  font-size:10px;font-weight:600;color:var(--mut);background:var(--card2);border:1px solid var(--bd);vertical-align:middle}
+/* formulaires + mailto (exfiltration) */
+.exfil-group{margin-bottom:12px}
+.exfil-group:last-child{margin-bottom:0}
+.exfil-lead{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);margin-bottom:6px}
+.exfil-list{display:flex;flex-direction:column;gap:5px}
+.exfil-row{display:flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:12px;
+  padding:6px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--card2)}
+.exfil-row.exfil-risk{border-color:color-mix(in srgb,var(--sev-3,#e0a800) 45%,transparent);
+  background:color-mix(in srgb,var(--sev-3,#e0a800) 8%,transparent)}
+.exfil-method{flex:0 0 auto;font-weight:700;color:var(--acc);min-width:48px}
+.exfil-dest{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--hd)}
+.exfil-tag{flex:0 0 auto;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;
+  padding:1px 7px;border-radius:var(--pill,10px);color:var(--sev-3,#e0a800);
+  border:1px solid color-mix(in srgb,var(--sev-3,#e0a800) 40%,transparent)}
 /* drilldown : detail complet d'une ligne */
 tr.rowdetail>td{background:var(--card2);padding:10px 14px;white-space:normal;max-width:none;overflow:visible}
 .qtable tbody tr.rowdetail:hover{background:var(--card2)}
@@ -992,6 +1009,8 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .viewhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 18px}
 .viewhead h2{font-size:22px;font-weight:800;letter-spacing:-.02em;color:var(--hd);margin:0}
 .viewhead .sub{color:var(--mut);font-size:13px}
+/* barre d'actions de la vue Jobs (purge des terminés/expirés) */
+.jobs-actions{display:flex;justify-content:flex-end;margin:0 0 12px}
 .backlink{display:inline-flex;align-items:center;gap:5px;color:var(--mut);text-decoration:none;font-size:13px;margin-bottom:14px}
 .backlink:hover{color:var(--acc)}
 .backlink .ic{width:15px;height:15px}
@@ -1240,10 +1259,23 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .livestat{display:inline-flex;align-items:center;gap:7px;font-family:var(--font-mono);font-size:11px;
   text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
 .livestat .ic{width:14px;height:14px}
-.livebar-act{display:flex;gap:10px;margin-left:auto}
+.livebar-act{display:flex;gap:10px;margin-left:auto;align-items:center}
+.ts-passed{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mut);cursor:pointer;user-select:none}
+.ts-passed .ts-check{width:15px;height:15px;accent-color:var(--k-teal,#2dd4bf);cursor:pointer}
 .vncframe{background:#000;border:1px solid var(--bd);border-radius:var(--radius);
   min-height:420px;height:66vh;max-height:760px;overflow:hidden;display:flex}
 .vncframe canvas{margin:auto}
+/* « Agrandir » : le cadre passe en PLEINE LARGEUR (breakout du conteneur centré)
+   ET haute -> le rendu 16:9 (limité par la largeur en taille normale) monte en
+   taille au lieu de n'ajouter que des bordures grises. scaleViewport ré-ajuste
+   tout dans le cadre — aucun pan/clip (fiable). */
+.vncframe.vnc-big{
+  width:100vw;
+  margin-left:calc(50% - 50vw);
+  height:92vh;
+  max-height:none;
+  border-radius:0;
+}
 .captureout{margin-top:14px}
 .captureout .savepanel{margin:0}
 

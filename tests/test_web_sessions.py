@@ -221,8 +221,8 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     }
     calls = []
 
-    def fake_capture(url, secret, timeout=30.0):
-        calls.append((url, secret))
+    def fake_capture(url, secret, timeout=30.0, payload=None):
+        calls.append((url, secret, payload))
         return wrapper
 
     monkeypatch.setattr(app_mod, "_internal_capture", fake_capture)
@@ -230,7 +230,7 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     r = client.post("/sessions/s1/capture")
     assert r.status_code == 200
     # le web signe /capture avec le secret conteneur lu dans le registre
-    assert calls == [("http://ocular-sess-s1:8090/capture", "cap-secret")]
+    assert calls == [("http://ocular-sess-s1:8090/capture", "cap-secret", {"turnstile_passed": False})]
 
     body = r.json()
     assert "blobs" not in body
@@ -286,7 +286,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
         "result": result.model_dump(mode="json"),
         "blobs": {ref: base64.b64encode(data).decode() for ref, data in blobs.items()},
     }
-    monkeypatch.setattr(app_mod, "_internal_capture", lambda url, secret, timeout=30.0: wrapper)
+    monkeypatch.setattr(app_mod, "_internal_capture", lambda url, secret, timeout=30.0, payload=None: wrapper)
 
     cap = client.post("/sessions/s1/capture")
     assert cap.status_code == 200
@@ -317,7 +317,7 @@ def test_capture_session_server_error_returns_502(monkeypatch):
         token="tok", now_iso="2026-07-13T10:00:00+00:00",
     )
 
-    def boom(url, secret, timeout=30.0):
+    def boom(url, secret, timeout=30.0, payload=None):
         raise app_mod._CaptureError("boom")
 
     monkeypatch.setattr(app_mod, "_internal_capture", boom)

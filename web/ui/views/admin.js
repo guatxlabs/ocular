@@ -4,7 +4,7 @@
 // Toutes les données affichées passent en textNode/attribut (jamais innerHTML).
 import { el, iconNode, openModal, isAdmin, getGroups } from '../core.js';
 import { listSaved, deleteSaved, flushSaved, Unauthorized } from '../api.js';
-import { verdictPill, fmtIso } from './saved.js';
+import { verdictPill, fmtIso, shortHash } from './saved.js';
 
 // Session en mémoire : survit aux changements de route (module importé une fois),
 // perdu au rechargement de la page. NON persisté -> pas de fuite dans le stockage.
@@ -17,10 +17,6 @@ function adminMsg(ex) {
   return String((ex && ex.message) || ex);
 }
 
-function shortHash(h) {
-  const hex = String(h || '').replace(/^sha256:/, '');
-  return hex.length > 14 ? hex.slice(0, 12) + '…' : hex;
-}
 
 export function renderAdmin(app) {
   app.appendChild(el('div.viewhead', {}, [
@@ -53,7 +49,7 @@ export function renderAdmin(app) {
   tokenInput.addEventListener('input', () => { adminToken = tokenInput.value; notice.hidden = true; });
   const tokenCard = el('div.card.admtoken', {}, [
     el('div.admlead', {}, [iconNode('shield'), 'Token administrateur']),
-    el('p.muted', {}, 'Gardé en mémoire pour cette session uniquement — jamais stocké. Requis pour supprimer.'),
+    el('p.muted', {}, 'Valeur EXACTE de OCULAR_ADMIN_TOKEN (ton .env). Gardé en mémoire pour cette session uniquement — jamais stocké. Requis pour supprimer.'),
     tokenInput,
   ]);
   app.appendChild(tokenCard);

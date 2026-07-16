@@ -50,6 +50,18 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 # a déjà ajouté la colonne entre notre PRAGMA et cet ALTER
                 # (« duplicate column name »). Idempotent -> on ignore.
                 pass
+    # Index UNIQUE partiel sur `label` : garantit l'unicité du nom au niveau BASE
+    # (le SELECT de `save()` seul était un TOCTOU sous écrivains concurrents —
+    # audit L2/3k). `WHERE label IS NOT NULL` : plusieurs sauvegardes sans nom OK.
+    # try/except : si une base existante contient déjà des doublons (créés avant
+    # cet index), on n'échoue pas le démarrage — le SELECT reste le filet.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_saved_label "
+            "ON saved_analysis(label) WHERE label IS NOT NULL AND label != ''"
+        )
+    except sqlite3.IntegrityError:
+        pass
     conn.commit()
 
 
@@ -94,7 +106,12 @@ def save(
     input_hash = result["input_hash"]
     kind = "url" if result.get("profile") == "capture" else "html"
     stealth = result.get("stealth")
-    turnstile_solved = 1 if (stealth or {}).get("turnstile_solved") else (0 if stealth is not None else None)
+    # Tri-état préservé jusqu'en base : True->1 (résolu), False->0 (challenge non
+    # résolu), None->NULL (aucun challenge / N.A.). Un `stealth` présent avec
+    # turnstile_solved=None (session interactive sans Turnstile, analyse HTML)
+    # donne donc NULL — pas 0 — pour ne PAS afficher « Turnstile non passé ».
+    _ts = (stealth or {}).get("turnstile_solved") if stealth is not None else None
+    turnstile_solved = None if _ts is None else (1 if _ts else 0)
     with conn:  # transaction atomique
         if label:
             # unicité du nom : un label non vide ne peut pas être réutilisé par un
@@ -108,13 +125,19 @@ def save(
             if dup:
                 raise DuplicateLabelError(f"label déjà utilisé: {label!r}")
         conn.execute("DELETE FROM saved_analysis WHERE input_hash = ?", (input_hash,))  # UPSERT
-        cur = conn.execute(
-            "INSERT INTO saved_analysis"
-            " (input_hash, input_kind, job_id, verdict, label, result_json, saved_at, saved_by, turnstile_solved)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
-            (input_hash, kind, result.get("job_id"), result.get("verdict"),
-             label, json.dumps(result), now_iso, saved_by, turnstile_solved),
-        )
+        try:
+            cur = conn.execute(
+                "INSERT INTO saved_analysis"
+                " (input_hash, input_kind, job_id, verdict, label, result_json, saved_at, saved_by, turnstile_solved)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (input_hash, kind, result.get("job_id"), result.get("verdict"),
+                 label, json.dumps(result), now_iso, saved_by, turnstile_solved),
+            )
+        except sqlite3.IntegrityError as exc:
+            # filet atomique contre la course perdue par le SELECT ci-dessus :
+            # l'index UNIQUE sur `label` rejette un nom déjà pris (input_hash A
+            # déjà supprimé, donc seule la collision de label est possible ici).
+            raise DuplicateLabelError(f"label déjà utilisé: {label!r}") from exc
         sid = cur.lastrowid
         for ref in refs_of(result):
             if ref in blobs:

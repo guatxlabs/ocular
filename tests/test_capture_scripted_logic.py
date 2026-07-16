@@ -110,6 +110,71 @@ async def test_capture_scripted_passes_deadline_to_run_steps(monkeypatch):
     assert captured["deadline"] == 5000.0 + cap.SCRIPTED_EXEC_TIMEOUT_S
 
 
+@pytest.mark.asyncio
+async def test_capture_scripted_solves_turnstile_before_steps(monkeypatch):
+    # Phase 3k : le scripté doit résoudre le Turnstile AVANT de rejouer les steps
+    # (sinon le script tourne sur la page de challenge -> « turnstile non passé »),
+    # et propager turnstile_solved au résultat.
+    import sys
+    import types
+
+    class FakePage:
+        def __init__(self):
+            self.url = "https://example.com/"
+        async def goto(self, url, **k):
+            pass
+        async def content(self):
+            return "<html></html>"
+        async def title(self):
+            return "t"
+        async def screenshot(self, **k):
+            return b"PNG"
+        def on(self, event, handler):
+            pass
+
+    class FakeCtx:
+        async def new_page(self):
+            return FakePage()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+
+    class FakeAsyncCamoufox:
+        def __init__(self, **k):
+            pass
+        async def __aenter__(self):
+            return FakeCtx()
+        async def __aexit__(self, *a):
+            return False
+
+    fake_async_api = types.ModuleType("camoufox.async_api")
+    fake_async_api.AsyncCamoufox = FakeAsyncCamoufox
+    fake_camoufox = types.ModuleType("camoufox")
+    fake_camoufox.async_api = fake_async_api
+    monkeypatch.setitem(sys.modules, "camoufox", fake_camoufox)
+    monkeypatch.setitem(sys.modules, "camoufox.async_api", fake_async_api)
+    monkeypatch.setitem(sys.modules, "vision", types.ModuleType("vision"))
+
+    order = []
+
+    async def spy_solve(page, shots, console, vision_mod, next_index=1):
+        order.append("turnstile")
+        return True
+
+    async def spy_run_steps(page, steps, *, screenshot_cb, deadline=None):
+        order.append("steps")
+        return []
+
+    monkeypatch.setattr(cap, "solve_turnstile", spy_solve)
+    monkeypatch.setattr(cap, "run_steps", spy_run_steps)
+
+    result, _ = await cap.capture_scripted("https://example.com/", [])
+
+    assert order == ["turnstile", "steps"]          # Turnstile AVANT les steps
+    assert result.stealth.turnstile_solved is True  # propagé au résultat
+
+
 def test_journal_to_dynamic_steps_maps_ok_duration_error_and_screenshot_ref():
     journal = [
         {"index": 0, "verb": "click", "ok": True, "ms": 12, "step": {"click": "#go"}},
@@ -464,3 +529,15 @@ def test_main_scripted_ssrf_goto_emits_valid_wrapper(monkeypatch, capsys):
     d = json.loads(out)
     assert d["result"]["profile"] == "capture"
     assert d["result"]["target"] == "https://example.com/"
+
+
+@pytest.mark.asyncio
+async def test_camoufox_session_strict_refuses_when_guard_off(monkeypatch):
+    # Durcissement (réseau sensible) : garde egress désactivé + mode strict ->
+    # _camoufox_session REFUSE (fail-closed) AVANT tout lancement navigateur
+    # (le refus précède même l'import Camoufox, donc testable sans navigateur).
+    monkeypatch.setenv("OCULAR_EGRESS_GUARD", "0")
+    monkeypatch.setenv("OCULAR_REQUIRE_EGRESS_GUARD", "1")
+    with pytest.raises(RuntimeError, match="fail-closed"):
+        async with cap._camoufox_session():
+            pass
