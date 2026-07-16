@@ -7,6 +7,10 @@ up: build-runner
 	docker compose -f deploy/docker-compose.yml up -d --build
 down:
 	docker compose -f deploy/docker-compose.yml down
+	@# Les conteneurs de session (ocular-sess-*) sont lancés hors-compose par le
+	@# broker (docker run) : `compose down` ne les retire pas -> nettoyage explicite
+	@# (sinon orphelins + réseau ocular-sessions non supprimable).
+	-@ids=$$(docker ps -aq --filter name=ocular-sess-); if [ -n "$$ids" ]; then docker rm -f $$ids; fi
 analyze: build-runner
 	@if [ -n "$(URL)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='capture', url='$(URL)')))"; \
 	elif [ -n "$(FILE)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='analysis', html=open('$(FILE)').read())))"; \

@@ -15,15 +15,16 @@ import {
   createSession, deleteSession, captureSession, liveSession, saveAnalysis, Unauthorized,
 } from '../api.js';
 import { getToken } from '../state.js';
-import { buildFilterBar, filterEntries } from '../filter.js';
+import {
+  buildFilterBar, filterEntries, dedupEntries, networkKey, consoleKey,
+  CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
+  networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
+} from '../filter.js';
 
 // Poll du panneau live (C4) : canal de données séparé du flux pixels VNC.
 const POLL_INTERVAL_MS = 2000;
 // Fermeture auto silencieuse (C2) : onglet caché en continu au-delà de ce délai.
 const SESSION_HIDDEN_CLOSE_MS = 60000;
-
-const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', low: 'sev-1' };
-const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
 
 // URL du WebSocket proxy, MÊME ORIGINE (couvert par CSP connect-src 'self').
 // Le token n'y figure PAS : il voyage par sous-protocole (voir wsProtocols plus bas).
@@ -62,6 +63,9 @@ function buildLivePanel(getLastNetwork) {
   // buildConsole) : mêmes classes CSS (`.conslist`/`.consline`), XSS-clean —
   // uniquement el()/textContent, jamais innerHTML.
   const consWrap = el('div.conslist');
+  let lastConsole = [];  // dernière console reçue (réf mutable pour le filtre live)
+  // Formulaires + mailto live (exfiltration) — mêmes classes que detail.js.
+  const exfilWrap = el('div');
 
   // ---- tableau réseau + barre de filtre : construits UNE FOIS ----
   const table = el('table.qtable');
@@ -72,21 +76,17 @@ function buildLivePanel(getLastNetwork) {
   // Même rendu de ligne que le tableau réseau du résultat figé (detail.js) —
   // XSS-clean, jamais innerHTML.
   const renderRows = (rows) => {
-    tb.replaceChildren(...rows.map((n) => el('tr', {}, [
-      el('td', {}, n.method || ''),
-      el('td', {}, n.status != null ? String(n.status) : '—'),
-      el('td', {}, n.resource_type || ''),
-      el('td', { title: n.url || '' }, n.url || ''),
-    ])));
+    tb.replaceChildren(...rows.map((n) => networkRow(el, n)));
   };
   table.appendChild(thead); table.appendChild(tb);
 
   // Barre de filtre SOC réutilisée telle quelle (filter.js, Task 1 3d-2 I) :
   // `getLastNetwork` referme sur les données les PLUS FRAÎCHES (réf mutable),
-  // `renderRows` re-rend le <tbody> — DRY, aucune réimplémentation du matching.
-  // Construite ici, une seule fois : le poll appelle `bar.refresh()` (voir
-  // `refreshNetwork`), il ne reconstruit JAMAIS la barre -> chips préservés.
-  const bar = buildFilterBar(getLastNetwork, renderRows, { el });
+  // dédupliquées natif (method+status+type+url, badge ×N) ; `renderRows` re-rend
+  // le <tbody> — DRY, aucune réimplémentation du matching. Construite ici, une
+  // seule fois : le poll appelle `bar.refresh()` (voir `refreshNetwork`), il ne
+  // reconstruit JAMAIS la barre -> chips préservés.
+  const bar = buildFilterBar(() => dedupEntries(getLastNetwork(), networkKey), renderRows, { el });
   const netSection = el('div.detsec', {}, [
     el('h3', {}, 'Réseau'),
     el('div.filter-slot', {}, [bar]),
@@ -113,15 +113,33 @@ function buildLivePanel(getLastNetwork) {
 
   // Même rendu que buildConsole (detail.js) : level/text posés en textNode,
   // jamais innerHTML — la console d'une page hostile est du contenu non fiable.
-  function renderConsole(cons) {
-    consWrap.replaceChildren();
-    if (!cons.length) { consWrap.appendChild(el('p.muted', {}, 'console vide')); return; }
-    cons.forEach((c) => {
-      consWrap.appendChild(el('div.consline', {}, [
-        el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
-        el('span.ctext', {}, c.text || ''),
-      ]));
-    });
+  // Badge ×N pour les lignes dédupliquées.
+  const renderConsoleLines = (rows) => {
+    if (!rows.length) { consWrap.replaceChildren(el('p.muted', {}, 'console vide')); return; }
+    consWrap.replaceChildren(...rows.map((c) => consoleLine(el, esc, c)));
+  };
+  // Filtre console (exclure/rechercher) à parité du réseau : construit UNE fois,
+  // `getEntries` referme sur `lastConsole` (dédupliqué), le poll appelle
+  // `consBar.refresh()` -> chips préservés + rafraîchissement live.
+  const consBar = buildFilterBar(() => dedupEntries(lastConsole, consoleKey), renderConsoleLines,
+    { el, fieldDefs: CONSOLE_FIELD_DEFS });
+  function refreshConsole(cons) {
+    lastConsole = Array.isArray(cons) ? cons : [];
+    if (typeof consBar.refresh === 'function') consBar.refresh();
+    else renderConsoleLines(dedupEntries(lastConsole, consoleKey));
+  }
+
+  // Formulaires (action+méthode) + mailto — indicateur d'exfiltration, live.
+  // XSS-clean (action/mailto = contenu de page hostile → textNode).
+  function renderExfil(forms, mailtos) {
+    const f = Array.isArray(forms) ? forms : [];
+    const m = Array.isArray(mailtos) ? mailtos : [];
+    if (!f.length && !m.length) { exfilWrap.replaceChildren(el('p.muted', {}, 'aucun formulaire ni mailto')); return; }
+    const kids = [
+      ...f.map((fo) => exfilFormRow(el, fo)),
+      ...m.map((mt) => exfilMailtoRow(el, mt)),
+    ];
+    exfilWrap.replaceChildren(el('div.exfil-list', {}, kids));
   }
 
   // Appelé à chaque poll. `getLastNetwork()` a déjà été mis à jour par
@@ -141,14 +159,21 @@ function buildLivePanel(getLastNetwork) {
     verdictEl.className = 'livesumverdict ' + (VERDICT_CLASS[verdict] || 'v-unknown');
     refreshNetwork();
     renderFindings(findings);
-    renderConsole(console_);
+    refreshConsole(console_);
+    renderExfil(data && data.forms, data && data.mailtos);
   }
 
   const node = el('div.livepanel', {}, [
     summary,
+    // Formulaires & mailto AVANT le réseau (signal d'exfiltration prioritaire).
+    el('div.detsec', {}, [el('h3', {}, 'Formulaires & mailto'), el('div.card', {}, [exfilWrap])]),
     netSection,
     el('div.detsec', {}, [el('h3', {}, 'Détections statiques'), findWrap]),
-    el('div.detsec', {}, [el('h3', {}, 'Console'), el('div.card', {}, [consWrap])]),
+    el('div.detsec', {}, [
+      el('h3', {}, 'Console'),
+      el('div.filter-slot', {}, [consBar]),
+      el('div.card', {}, [consWrap]),
+    ]),
   ]);
 
   return { node, update };
@@ -190,6 +215,7 @@ export function renderInteractive(app) {
     if (hiddenTimer) { clearTimeout(hiddenTimer); hiddenTimer = null; }
     document.removeEventListener('visibilitychange', onVisibilityChange);
     window.removeEventListener('beforeunload', onBeforeUnload);
+    window.removeEventListener('pagehide', onPageHide);
   };
 
   // ---- C2 : fermeture auto silencieuse (onglet caché > 60s) ----
@@ -209,12 +235,31 @@ export function renderInteractive(app) {
     }
   }
 
-  // Fermeture brutale du navigateur/onglet : tentative best-effort, ne doit
-  // JAMAIS bloquer la fermeture. `sendBeacon` ne porte ni la méthode DELETE ni
-  // l'en-tête Authorization (limite native de l'API) : la fermeture fiable
-  // reste le `disconnect_grace` + reaper côté serveur (C2 backend, déjà en
-  // place sur le proxy WS) — ceci ne fait que réduire la fenêtre d'exposition.
-  function onBeforeUnload() {
+  // Rechargement (Ctrl/Cmd+R) ou fermeture d'onglet AVEC une session active :
+  // on DEMANDE confirmation. Sans ce garde, un simple Ctrl+R quand le focus
+  // clavier n'est PAS sur le canvas noVNC recharge la page Ocular et détruit la
+  // session — donc l'état DERRIÈRE un login/Turnstile passé, plus toute capture
+  // non encore enregistrée. Le token de session est en mémoire seule (jamais
+  // persisté, choix sécu) : un rechargement le perd de toute façon, la session
+  // deviendrait irrécupérable côté client -> on la libère au unload RÉEL
+  // (pagehide), pas ici. (Note : si le focus EST sur le canvas, noVNC capte
+  // Ctrl+R et le route vers le navigateur DISTANT — seule la page cible se
+  // recharge, les cookies persistent, on reste derrière le login ; ce cas
+  // n'atteint jamais ce handler.)
+  function onBeforeUnload(e) {
+    if (!sessionId) return;
+    e.preventDefault();
+    e.returnValue = '';   // déclenche la confirmation native « quitter le site ? »
+    return '';
+  }
+
+  // pagehide ne se déclenche QUE si la page se décharge vraiment (confirmation
+  // acceptée / onglet fermé) — jamais si la confirmation beforeunload est
+  // annulée. On libère alors la session côté serveur (best-effort ; `sendBeacon`
+  // ne porte ni DELETE ni Authorization, le reaper/disconnect_grace reste le
+  // filet fiable). Confirmation annulée -> pagehide non déclenché -> session
+  // préservée -> l'état post-login reste accessible.
+  function onPageHide() {
     if (!sessionId) return;
     const url = '/sessions/' + encodeURIComponent(sessionId);
     try {
@@ -229,6 +274,7 @@ export function renderInteractive(app) {
 
   document.addEventListener('visibilitychange', onVisibilityChange);
   window.addEventListener('beforeunload', onBeforeUnload);
+  window.addEventListener('pagehide', onPageHide);
 
   // ---- C4 : poll du panneau live (/sessions/{id}/live, canal données séparé
   // du flux pixels VNC). Une erreur (session fermée -> 404, conteneur en panne
@@ -265,9 +311,11 @@ export function renderInteractive(app) {
   // ---- formulaire d'ouverture (URL live ou HTML inline) ----
   let mode = 'url'; // 'url' | 'html'
 
+  // type="text" (PAS "url") : accepte un domaine nu (« guatx.com »). La
+  // normalisation canonique est faite côté serveur (normalize_url).
   const urlInput = el('input', {
-    type: 'url', id: 'live-url', placeholder: 'https://…', 'aria-label': 'URL à ouvrir',
-    autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false',
+    type: 'text', inputmode: 'url', id: 'live-url', placeholder: 'guatx.com, http://… ou https://…',
+    'aria-label': 'URL à ouvrir', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false',
   });
   const urlField = el('div.oc-field', {}, [
     el('label', { for: 'live-url' }, 'URL à ouvrir'),
@@ -307,9 +355,10 @@ export function renderInteractive(app) {
     input.addEventListener('change', () => { if (input.checked) setMode(value); });
     return el('label.seg', {}, [input, iconNode(icon), el('span', {}, text)]);
   }
+  // URL à gauche, HTML à droite — cohérent avec le formulaire « Analyser une page ».
   const toggle = el('div.profile-toggle', { role: 'radiogroup', 'aria-label': 'Source de la session' }, [
-    makeSeg('url', 'eye', 'Ouvrir une URL'),
-    makeSeg('html', 'flask', 'Rendre du HTML'),
+    makeSeg('url', 'eye', 'URL'),
+    makeSeg('html', 'flask', 'HTML'),
   ]);
 
   function setMode(value) {
@@ -380,11 +429,45 @@ export function renderInteractive(app) {
 
     const status = el('span.livestat', {}, [el('span.spin'), 'connexion…']);
     const target = el('div.vncframe', { 'aria-label': 'Rendu de la session interactive' });
-    const capBtn = el('button.btn-primary', { type: 'button' }, [iconNode('eye'), 'Capturer']);
+    // « Sauvegarder » = fige l'état courant (capture d'écran + analyse) en une
+    // sauvegarde éphémère, puis demande un NOM ci-dessous. Rien n'est persisté
+    // tant que l'analyste n'a pas nommé + validé (cf. doCapture / nettoyage
+    // serveur des captures non nommées à la fermeture de session).
+    const capBtn = el('button.btn-primary', { type: 'button' }, [iconNode('bookmark'), 'Sauvegarder']);
     const closeBtn = el('button.btn-danger', { type: 'button' }, [iconNode('trash'), 'Fermer']);
     const captureOut = el('div.captureout');
 
-    capBtn.addEventListener('click', () => doCapture(capBtn, captureOut));
+    // Turnstile passé MANUELLEMENT : le solve interactif n'est pas introspectable
+    // de façon fiable (l'iframe CF subsiste dans le DOM après résolution). Cette
+    // case déclare explicitement la résolution ; sinon le statut reste honnête
+    // (challenge présent -> « non passé » ; absent -> aucun badge).
+    const tsCheck = el('input', { type: 'checkbox', id: 'ts-passed', class: 'ts-check' });
+    const tsLabel = el('label.ts-passed', { for: 'ts-passed', title: 'Coche si tu as résolu le Turnstile à la main avant de capturer' }, [
+      tsCheck, el('span', {}, 'Turnstile passé'),
+    ]);
+
+    // Vue de la SCÈNE live. Le navigateur distant est rendu par matchbox en PLEIN
+    // ÉCRAN sur un Xvfb 1920x1080 (entrypoint_vnc.sh) : la fenêtre couvre tout le
+    // framebuffer, et `scaleViewport` en montre l'INTÉGRALITÉ dans le cadre client
+    // (letterbox si l'aspect diffère, JAMAIS de crop droite/bas). Un viewport
+    // 1080p montre nettement plus qu'avant (720p). « Agrandir » agrandit le cadre
+    // -> scaleViewport met la scène à l'échelle plus grande. Pour le bas d'une
+    // page longue : on défile ; la page ENTIÈRE se fige via « Sauvegarder ».
+    let big = false;
+    const zoomBtn = el('button.btn-ghost', {
+      type: 'button', title: 'Agrandir la scène (voir plus grand) / réduire',
+    }, [iconNode('eye'), 'Agrandir']);
+    const applyZoom = () => {
+      zoomBtn.replaceChildren(iconNode('eye'), document.createTextNode(big ? 'Réduire' : 'Agrandir'));
+      target.classList.toggle('vnc-big', big);
+      if (rfb) {
+        rfb.scaleViewport = true;   // montre TOUT le framebuffer dans le cadre (aucun crop)
+        requestAnimationFrame(() => { try { rfb.scaleViewport = true; } catch { /* ignore */ } });
+      }
+    };
+    zoomBtn.addEventListener('click', () => { big = !big; applyZoom(); });
+
+    capBtn.addEventListener('click', () => doCapture(capBtn, captureOut, tsCheck.checked));
     closeBtn.addEventListener('click', () => doClose());
 
     // Panneau live (C4) : réseau + findings en continu, canal séparé du flux
@@ -395,11 +478,11 @@ export function renderInteractive(app) {
       el('div.livebar', {}, [
         el('span.livemeta', { title: sessionId || '' }, sessionId || ''),
         status,
-        el('div.livebar-act', {}, [capBtn, closeBtn]),
+        el('div.livebar-act', {}, [zoomBtn, tsLabel, capBtn, closeBtn]),
       ]),
+      captureOut,   // panneau de nommage/sauvegarde JUSTE sous la barre (pas en bas)
       target,
       livePanel.node,
-      captureOut,
     );
     stage.hidden = false;
 
@@ -421,9 +504,9 @@ export function renderInteractive(app) {
     rfb = new RFB(target, wsUrlFor(sessionId), {
       wsProtocols: ['binary', 'ocular.session.' + token],
     });
-    rfb.scaleViewport = true;   // ajuste le rendu au conteneur
-    rfb.resizeSession = false;  // on n'impose pas la taille au serveur
+    applyZoom();                // resize distant responsive + échelle initiale
     rfb.addEventListener('connect', () => {
+      applyZoom();              // (re)applique après connexion (dimensions connues)
       status.replaceChildren(iconNode('check'), document.createTextNode('connecté'));
     });
     rfb.addEventListener('disconnect', (e) => {
@@ -439,60 +522,65 @@ export function renderInteractive(app) {
     });
   }
 
-  // Capturer : fige l'état courant en analyse (stockée comme un job) et propose
-  // un lien vers le rendu détail. La session reste ouverte (on peut recapturer).
-  async function doCapture(btn, out) {
+  // Sauvegarder : fige l'état courant (capture d'écran + analyse) en une
+  // sauvegarde ÉPHÉMÈRE côté serveur, puis demande un NOM juste sous la barre.
+  // RIEN n'est persisté tant que l'analyste n'a pas nommé + validé : la capture
+  // sans nom est purgée à la fermeture de la session (nettoyage serveur des
+  // résultats `sesscap-*`). On N'AVERTIT PAS de la capture temporaire — seul un
+  // enregistrement effectif (nom donné) affiche une confirmation.
+  async function doCapture(btn, out, turnstilePassed) {
     btn.disabled = true;
     out.replaceChildren();
     const spin = document.createElement('span');
     spin.className = 'spin';
     btn.replaceChildren(spin, document.createTextNode('capture…'));
     try {
-      const res = await captureSession(sessionId);
+      const res = await captureSession(sessionId, { turnstilePassed: !!turnstilePassed });
       const jobId = res.job_id || '';
 
-      // Bouton Sauvegarder (C3) : même flux POST /saved que le résultat figé
-      // (detail.js) — réutilise saveAnalysis() et les mêmes messages i18n,
-      // aucune réimplémentation. XSS-clean : el()/textContent uniquement.
+      // Panneau de nommage : un NOM est REQUIS pour enregistrer (sinon la
+      // capture reste temporaire et sera purgée à la fermeture). XSS-clean.
       const saveLabelInput = el('input', {
-        type: 'text', maxlength: '120', 'aria-label': 'Étiquette (optionnelle)',
-        placeholder: 'étiquette (optionnelle)',
+        type: 'text', maxlength: '120', 'aria-label': 'Nom de la sauvegarde',
+        placeholder: 'nom de la sauvegarde (requis)',
       });
-      const saveBtn = el('button.btn-ghost', { type: 'button' }, [iconNode('bookmark'), 'Sauvegarder']);
+      const saveBtn = el('button.btn-primary', { type: 'button' }, [iconNode('bookmark'), 'Enregistrer']);
       const saveActions = el('div.saverow', {}, [saveLabelInput, saveBtn]);
       const saveErr = el('div.errbox', { role: 'alert', hidden: 'hidden' });
 
-      saveBtn.addEventListener('click', async () => {
+      const doSave = async () => {
+        const name = saveLabelInput.value.trim();
+        if (!name) {           // pas de nom -> pas de sauvegarde (capture reste temporaire)
+          saveErr.textContent = 'Donne un nom pour enregistrer la sauvegarde.';
+          saveErr.hidden = false;
+          saveLabelInput.focus();
+          return;
+        }
         saveErr.hidden = true;
         saveBtn.disabled = true;
         try {
-          const saved = await saveAnalysis(jobId, saveLabelInput.value.trim());
-          saveActions.replaceChildren(
-            el('span.savedok', {}, [iconNode('check'), 'Analyse sauvegardée']),
+          const saved = await saveAnalysis(jobId, name);
+          // Confirmation UNIQUEMENT après enregistrement effectif.
+          out.replaceChildren(el('div.savepanel', {}, [el('div.saverow', {}, [
+            el('span.savedok', {}, [iconNode('check'), 'Sauvegardé']),
             el('a.savedlink', { href: '#/saved/' + saved.id }, 'Voir dans Sauvegardes'),
-          );
+          ])]));
         } catch (ex) {
           if (ex instanceof Unauthorized) return;
           saveBtn.disabled = false;
-          // XSS-clean : toujours textContent, jamais innerHTML.
           saveErr.textContent = ex && ex.duplicateLabel
-            ? 'Nom déjà utilisé — choisis une autre étiquette.'
+            ? 'Nom déjà utilisé — choisis-en un autre.'
             : ex && ex.expired
-            ? 'Artefacts expirés — relance l\'analyse avant de sauvegarder.'
+            ? 'Artefacts expirés — relance la capture avant d\'enregistrer.'
             : String((ex && ex.message) || ex);
           saveErr.hidden = false;
         }
-      });
+      };
+      saveBtn.addEventListener('click', doSave);
+      saveLabelInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doSave(); } });
 
-      out.replaceChildren(el('div.savepanel', {}, [
-        el('div.saverow', {}, [
-          el('span.savelead', {}, [iconNode('check'), 'Capture enregistrée']),
-          el('span.livemeta', {}, res.verdict || 'unknown'),
-          el('a.savedlink', { href: '#/job/' + jobId }, 'Voir l\'analyse'),
-        ]),
-        saveActions,
-        saveErr,
-      ]));
+      out.replaceChildren(el('div.savepanel', {}, [saveActions, saveErr]));
+      setTimeout(() => saveLabelInput.focus(), 20);
     } catch (ex) {
       if (ex instanceof Unauthorized) return;
       out.replaceChildren(el('div.errbox', {}, ex && ex.status === 502
@@ -500,7 +588,7 @@ export function renderInteractive(app) {
         : String((ex && ex.message) || ex)));
     } finally {
       btn.disabled = false;
-      btn.replaceChildren(iconNode('eye'), document.createTextNode('Capturer'));
+      btn.replaceChildren(iconNode('bookmark'), document.createTextNode('Sauvegarder'));
     }
   }
 

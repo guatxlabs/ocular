@@ -134,7 +134,9 @@ def test_live_with_page_returns_network_findings_counts_verdict(live_client):
     assert len(body["findings"]) == len(expected_findings) > 0
     assert body["counts"] == {
         "network": len(network_entries), "findings": len(expected_findings), "console": len(console_entries),
+        "forms": 0, "mailtos": 0,  # ce DOM n'a ni formulaire ni mailto
     }
+    assert body["forms"] == [] and body["mailtos"] == []
     assert body["verdict"] == ss.compute_verdict(expected_findings)
 
 
@@ -153,8 +155,32 @@ def test_live_dom_content_failure_falls_back_to_empty_dom(live_client):
     assert r.status_code == 200
     body = r.json()
     assert body["findings"] == []
-    assert body["counts"] == {"network": 0, "findings": 0, "console": 0}
+    assert body["counts"] == {"network": 0, "findings": 0, "console": 0, "forms": 0, "mailtos": 0}
     assert body["verdict"] == "benign"
+
+
+def test_live_surfaces_forms_and_mailtos(live_client):
+    # Phase 3j : /live expose les formulaires (action+méthode) et cibles mailto
+    # du DOM courant (indicateur d'exfiltration), en direct comme la capture.
+    dom_html = (
+        '<form action="https://evil.example/collect" method="POST"></form>'
+        '<a href="mailto:drop@evil.test">contact</a>'
+    )
+
+    class _FakePage:
+        async def content(self):
+            return dom_html
+
+    class _FakeCap:
+        network = []
+        console = []
+
+    ss._state.update(page=_FakePage(), cap=_FakeCap())
+
+    body = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET}).json()
+    assert body["forms"] == [{"action": "https://evil.example/collect", "method": "POST"}]
+    assert body["mailtos"] == ["mailto:drop@evil.test"]
+    assert body["counts"]["forms"] == 1 and body["counts"]["mailtos"] == 1
 
 
 def test_live_network_bounded_to_last_500(live_client):
@@ -195,3 +221,19 @@ def test_live_console_bounded_to_last_500(live_client):
     assert len(body["console"]) == 500
     assert body["console"] == console_entries[-500:]
     assert body["counts"]["console"] == 600
+
+
+def test_goto_missing_url_is_400_not_500(live_client):
+    # audit correctness 3k : body sans `url` -> 400 propre (pas un KeyError 500),
+    # ET aucune mutation d'état / démarrage navigateur avant validation.
+    ss._state.update(page=None, cap=None, target=None, kind=None)
+    r = live_client.post("/goto", headers={"X-Session-Secret": _LIVE_SECRET}, json={})
+    assert r.status_code == 400
+    assert ss._state["target"] is None and ss._state["kind"] is None
+
+
+def test_load_missing_html_is_400_not_500(live_client):
+    ss._state.update(page=None, cap=None, target=None, kind=None)
+    r = live_client.post("/load", headers={"X-Session-Secret": _LIVE_SECRET}, json={})
+    assert r.status_code == 400
+    assert ss._state["target"] is None

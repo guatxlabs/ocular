@@ -54,6 +54,15 @@ def test_csp_allows_same_origin_ws():
     assert "connect-src 'self'" in csp
 
 
+def test_csp_blocks_framing_anticlickjacking():
+    # Anti-clickjacking (audit sécu 3k) : frame-ancestors 'none' (ne retombe PAS
+    # sur default-src) + X-Frame-Options DENY en repli.
+    c = TestClient(app)
+    r = c.get("/")
+    assert "frame-ancestors 'none'" in r.headers.get("content-security-policy", "")
+    assert r.headers.get("x-frame-options") == "DENY"
+
+
 # ---- tier dynamique scripté (3c) : champ script + journal d'actions XSS-clean ----
 
 def test_scripted_field_present_in_submit_view():
@@ -250,7 +259,7 @@ def test_detail_imports_and_uses_filter_bar_in_build_network():
     js = open("web/ui/views/detail.js").read()
     assert "from '../filter.js'" in js
     assert "buildFilterBar" in js
-    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    m = re.search(r"function buildNetwork\(netRaw\)\s*\{.*?\n  \}\n", js, re.S)
     assert m, "buildNetwork introuvable dans detail.js"
     body = m.group(0)
     assert "buildFilterBar" in body
@@ -268,7 +277,7 @@ def test_detail_network_filter_handler_makes_no_network_calls():
     # ne doit déclencher aucun fetch/appel API : filtrage 100% côté client sur
     # `net` déjà chargé.
     js = open("web/ui/views/detail.js").read()
-    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    m = re.search(r"function buildNetwork\(netRaw\)\s*\{.*?\n  \}\n", js, re.S)
     assert m, "buildNetwork introuvable dans detail.js"
     body = m.group(0)
     assert "fetch(" not in body
@@ -291,7 +300,7 @@ def test_detail_inserts_filter_bar_synchronously():
     # de buildFilterBar) : el importé synchrone est injecté et la barre est
     # ajoutée avant le retour de renderResult (donc avant i18nWalk).
     js = open("web/ui/views/detail.js").read()
-    m = re.search(r"function buildNetwork\(net\)\s*\{.*?\n  \}\n", js, re.S)
+    m = re.search(r"function buildNetwork\(netRaw\)\s*\{.*?\n  \}\n", js, re.S)
     assert m, "buildNetwork introuvable dans detail.js"
     body = m.group(0)
     assert "buildFilterBar(() => net, renderRows, { el })" in body
@@ -339,14 +348,18 @@ def test_live_filter_bar_built_once_and_refreshed_not_rebuilt_per_poll():
     # corps du callback de poll (`pollLive`) ni dans `update()`. Le poll
     # rafraîchit via `bar.refresh()` -> les chips posés PERSISTENT.
     js = open("web/ui/views/interactive.js").read()
-    # buildFilterBar appelée exactement une fois (dans buildLivePanel, hors poll)
-    assert js.count("buildFilterBar(") == 1
-    # le refresh de la barre est bien invoqué (persistance des chips au poll)
-    assert "bar.refresh" in js
-    # pollLive() ne reconstruit pas la barre
+    # buildFilterBar appelée exactement deux fois (réseau + console, dans
+    # buildLivePanel, hors poll) — chaque barre construite UNE fois.
+    assert js.count("buildFilterBar(") == 2
+    # le refresh des barres est bien invoqué (persistance des chips au poll)
+    assert "bar.refresh" in js and "consBar.refresh" in js
+    # pollLive() ne reconstruit aucune barre
     m = re.search(r"async function pollLive\(\)\s*\{.*?\n  \}\n", js, re.S)
     assert m, "pollLive introuvable dans interactive.js"
     assert "buildFilterBar" not in m.group(0)
+    # update() (appelé à chaque poll) ne reconstruit pas non plus les barres
+    mu = re.search(r"function update\(data\)\s*\{.*?\n  \}\n", js, re.S)
+    assert mu and "buildFilterBar" not in mu.group(0)
 
 
 def test_interactive_live_panel_never_uses_innerhtml_or_regex_on_data():
@@ -375,6 +388,19 @@ def test_interactive_beforeunload_best_effort_close():
     assert "keepalive" in js
 
 
+def test_interactive_reload_confirms_before_destroying_session():
+    # Phase 3k : un Ctrl+R (focus hors canvas noVNC) rechargerait la page Ocular
+    # et détruirait la session -> perte de l'état DERRIÈRE le login/Turnstile.
+    # beforeunload DEMANDE confirmation (preventDefault + returnValue) ; la
+    # suppression serveur ne se fait qu'au unload RÉEL (pagehide) -> confirmation
+    # annulée = session préservée.
+    js = open("web/ui/views/interactive.js").read()
+    assert "e.preventDefault()" in js and "e.returnValue" in js
+    assert "'pagehide'" in js and "onPageHide" in js
+    # le sendBeacon de suppression vit dans pagehide, pas dans beforeunload
+    assert "removeEventListener('pagehide', onPageHide)" in js
+
+
 def test_interactive_teardown_clears_timers_and_listeners():
     # Pas de setInterval/setTimeout/listener fantôme entre deux navigations de
     # vue : le poll live, le timer de fermeture auto et les listeners globaux
@@ -386,14 +412,22 @@ def test_interactive_teardown_clears_timers_and_listeners():
     assert "removeEventListener('beforeunload', onBeforeUnload)" in js
 
 
-def test_interactive_save_button_calls_save_analysis():
-    # C3 : bouton Sauvegarder sur le panneau de capture, à côté de « Voir
-    # l'analyse » — même flux POST /saved (saveAnalysis) que le résultat figé,
-    # gère le 409 (nom déjà pris) avec un message clair.
+def test_interactive_save_requires_name_and_notifies_only_after_save():
+    # Phase 3j : « Sauvegarder » fige une capture ÉPHÉMÈRE ; la persistance
+    # (POST /saved via saveAnalysis) ne se fait QUE si un nom est donné, et la
+    # confirmation « Sauvegardé » n'apparaît qu'APRÈS l'enregistrement effectif
+    # (aucun avertissement de capture temporaire). Gère le 409 (nom déjà pris).
     js = open("web/ui/views/interactive.js").read()
-    assert "saveAnalysis(jobId, saveLabelInput.value.trim())" in js
+    assert "saveAnalysis(jobId, name)" in js
     assert "duplicateLabel" in js
-    assert "Sauvegarder" in js
+    # nom requis : garde-fou explicite avant toute sauvegarde
+    assert "const name = saveLabelInput.value.trim()" in js
+    assert "Donne un nom pour enregistrer" in js
+    # bouton d'enregistrement = « Enregistrer » ; confirmation post-save = « Sauvegardé »
+    assert "'Enregistrer'" in js
+    assert "'Sauvegardé'" in js
+    # aucune annonce de capture temporaire (« Capture enregistrée » supprimé du flux)
+    assert "Capture enregistrée" not in js
 
 
 def test_i18n_has_live_panel_translations():
@@ -611,3 +645,22 @@ def test_i18n_has_phase3h_admin_gate_translations():
 def test_style_has_whoami_groups_css():
     css = open("web/ui/style.css").read()
     assert ".whoami-groups{" in css
+
+
+def test_jobs_view_treats_unknown_as_terminal_and_offers_purge():
+    # Phase 3k : un job "unknown" (résultat perdu/expiré) est TERMINAL — la vue
+    # Jobs arrête de le poller (plus de fantôme "en attente") et propose de
+    # purger les jobs terminés de la liste locale.
+    js = open("web/ui/views/jobs.js").read()
+    assert "res.status === 'unknown'" in js
+    assert "expiredPill" in js
+    assert "removeJobs" in js          # purge localStorage
+    assert "terminal.add(id)" in js    # sort du polling
+
+
+def test_detail_view_handles_unknown_job_terminally():
+    # La page de détail ne poll pas à l'infini un job perdu : "unknown" affiche
+    # un message d'expiration au lieu d'un résultat vide / d'un spinner sans fin.
+    js = open("web/ui/views/detail.js").read()
+    assert "res.status === 'unknown'" in js
+    assert "expirée ou introuvable" in js

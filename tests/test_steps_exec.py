@@ -289,3 +289,71 @@ async def test_run_steps_deadline_not_reached_executes_normally():
     deadline = time.monotonic() + 30  # large marge, jamais atteint
     journal = await run_steps(page, steps, screenshot_cb=cb, deadline=deadline)
     assert [e["ok"] for e in journal] == [True, True]
+
+
+# --- Phase 3j : nouveaux verbes DSL (sleep / hide / capture région|full_page) ---
+
+class _FakeLocator:
+    def __init__(self, page, sel):
+        self.page = page
+        self.sel = sel
+        self.first = self
+
+    async def evaluate_all(self, js):
+        self.page.calls.append(("locator_eval_all", self.sel, js))
+
+    async def screenshot(self, **k):
+        self.page.calls.append(("locator_shot", self.sel))
+        return b"REGION"
+
+
+class LocatorPage(FakePage):
+    def locator(self, sel):
+        return _FakeLocator(self, sel)
+
+
+@pytest.mark.asyncio
+async def test_sleep_dispatches_to_wait_for_timeout_in_seconds():
+    # sleep exprimé en SECONDES -> converti en ms pour Playwright (× 1000)
+    page = LocatorPage()
+    journal = await run_steps(page, [{"sleep": 3}], screenshot_cb=lambda *a, **k: _noop())
+    assert ("wait_ms", 3000) in page.calls
+    assert journal[0]["ok"]
+
+
+@pytest.mark.asyncio
+async def test_hide_uses_locator_evaluate_all_with_fixed_js():
+    page = LocatorPage()
+    await run_steps(page, [{"hide": ".cookie"}], screenshot_cb=lambda *a, **k: _noop())
+    ev = next(c for c in page.calls if c[0] == "locator_eval_all")
+    assert ev[1] == ".cookie"
+    # JS FIXE (jamais de contenu utilisateur interpolé) : le sélecteur n'y figure pas
+    assert "display" in ev[2] and ".cookie" not in ev[2]
+
+
+@pytest.mark.asyncio
+async def test_capture_region_calls_locator_screenshot():
+    page = LocatorPage()
+    got = []
+
+    async def cb(label, *, selector=None, full_page=False):
+        got.append((label, selector, full_page))
+
+    await run_steps(page, [{"capture": {"label": "z", "selector": "#login"}}], screenshot_cb=cb)
+    assert got == [("z", "#login", False)]
+
+
+@pytest.mark.asyncio
+async def test_capture_fullpage_passes_flag_to_cb():
+    page = LocatorPage()
+    got = []
+
+    async def cb(label, *, selector=None, full_page=False):
+        got.append((label, selector, full_page))
+
+    await run_steps(page, [{"capture": {"label": "p", "full_page": True}}], screenshot_cb=cb)
+    assert got == [("p", None, True)]
+
+
+async def _noop():
+    return None

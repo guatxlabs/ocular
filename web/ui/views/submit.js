@@ -9,15 +9,10 @@
 import { el, iconNode, openModal } from '../core.js';
 import { addJob } from '../state.js';
 import { submitJob, sha256Hex, lookupSaved, lookupSavedByUrl, Unauthorized } from '../api.js';
-
-function fmtIso(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString();
-}
+import { fmtIso } from './saved.js';
 
 export function renderSubmit(app) {
-  let profile = 'analysis'; // 'analysis' (HTML) | 'capture' (URL)
+  let profile = 'capture'; // défaut URL ('capture') ; 'analysis' = HTML
 
   const err = el('div.errbox', { role: 'alert', hidden: 'hidden' });
   const showErr = (msg) => { err.textContent = msg; err.hidden = false; };
@@ -50,36 +45,48 @@ export function renderSubmit(app) {
   ]);
 
   // ---- champ URL (profil capture) — actif : capture live, moteur furtif ----
+  // type="text" (PAS "url") : la validation native de type="url" rejette un
+  // domaine nu (« guatx.com ») faute de scheme. La normalisation est faite
+  // côté serveur (normalize_url canonique) — l'UI n'envoie que la chaîne brute
+  // et accepte « guatx.com », « http://guatx.com », « https://guatx.com ».
   const urlInput = el('input', {
-    type: 'url', id: 'url', placeholder: 'https://…', 'aria-label': 'URL à analyser',
-    autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false',
+    type: 'text', inputmode: 'url', id: 'url', placeholder: 'guatx.com, http://… ou https://…',
+    'aria-label': 'URL à analyser', autocapitalize: 'off', autocomplete: 'off', spellcheck: 'false',
   });
   const urlField = el('div.oc-field', { hidden: 'hidden' }, [
     el('label', { for: 'url' }, 'URL à analyser'),
     urlInput,
-    el('span.hint', {}, 'capture live via moteur furtif (Camoufox) — Turnstile géré'),
+    el('span.hint', {}, 'domaine nu accepté (guatx.com) — scheme http/https respecté ; capture furtive (Camoufox), Turnstile géré'),
   ]);
 
   // ---- champ script (profil capture, optionnel) — DSL borné rejoué après le
-  // chargement (fill/click/wait/press/capture/scroll). Aucun JS arbitraire :
-  // la textarea ne porte que du JSON, validé côté client (JSON.parse) puis
-  // revalidé côté serveur (validate_steps) avant exécution dans le conteneur.
+  // chargement (fill/click/wait/sleep/hide/press/capture/scroll). Aucun JS
+  // arbitraire : la textarea ne porte que du JSON, validé côté client
+  // (JSON.parse) puis revalidé côté serveur (validate_steps) avant exécution.
   const scriptTa = el('textarea', {
     id: 'script', spellcheck: 'false', 'aria-label': 'Script (JSON, optionnel)',
-    placeholder: '[{"click": "#accept"}, {"wait": 500}, {"capture": "après"}]',
+    placeholder: '[{"click": "#accept"}, {"sleep": 2}, {"capture": {"label": "page", "full_page": true}}]',
   });
   const EXAMPLES = [
     {
       label: 'Exemple : accepter les cookies',
-      steps: [{ click: '#accept' }, { wait: 500 }, { capture: 'apres-cookies' }],
+      steps: [{ click: '#accept' }, { sleep: 1 }, { capture: 'apres-cookies' }],
     },
     {
       label: 'Exemple : remplir un formulaire',
       steps: [
         { fill: { sel: 'input[name=email]', value: 'a@b.c' } },
         { click: 'button[type=submit]' },
-        { wait: 1000 },
+        { sleep: 2 },
         { capture: 'apres-envoi' },
+      ],
+    },
+    {
+      label: 'Exemple : full-page (attendre le rendu)',
+      steps: [
+        { hide: '.cookie-banner' },
+        { sleep: 3 },
+        { capture: { label: 'page-entiere', full_page: true } },
       ],
     },
   ];
@@ -91,13 +98,14 @@ export function renderSubmit(app) {
   const scriptField = el('div.oc-field.sc-field', { hidden: 'hidden' }, [
     el('label', { for: 'script' }, 'Script (JSON, optionnel)'),
     scriptTa,
-    el('span.hint', {}, 'Rejoue une séquence d\'actions (fill/click/wait/press/capture/scroll) après le chargement — DSL borné, aucun JS arbitraire.'),
+    el('span.hint', {}, 'Rejoue une séquence d\'actions (click/fill/sleep/hide/press/scroll/wait/capture) après le chargement — DSL borné, aucun JS arbitraire. sleep est en SECONDES (ex. {"sleep": 3}). capture : {label, full_page} (page entière) ou {label, selector} (région) ; sinon seulement le viewport.'),
     examplesRow,
   ]);
 
-  const btn = el('button.btn-primary', { type: 'submit' }, [iconNode('flask'), 'Analyser HTML']);
+  const btn = el('button.btn-primary', { type: 'submit' }, [iconNode('flask'), 'Analyser']);
   const btnIcon = { analysis: 'flask', capture: 'eye' };
-  const btnLabel = { analysis: 'Analyser HTML', capture: 'Analyser URL' };
+  // Bouton unique « Analyser » (le profil est déjà porté par le toggle HTML/URL).
+  const btnLabel = { analysis: 'Analyser', capture: 'Analyser' };
   const resetBtn = () => {
     btn.disabled = false;
     btn.replaceChildren(iconNode(btnIcon[profile]), document.createTextNode(btnLabel[profile]));
@@ -110,9 +118,10 @@ export function renderSubmit(app) {
     input.addEventListener('change', () => { if (input.checked) setProfile(value); });
     return el('label.seg', {}, [input, iconNode(icon), el('span', {}, text)]);
   }
+  // URL à gauche, HTML à droite.
   const toggle = el('div.profile-toggle', { role: 'radiogroup', 'aria-label': 'Profil d\'analyse' }, [
-    makeSeg('analysis', 'flask', 'Analyser HTML'),
-    makeSeg('capture', 'eye', 'Analyser URL'),
+    makeSeg('capture', 'eye', 'URL'),
+    makeSeg('analysis', 'flask', 'HTML'),
   ]);
 
   function setProfile(value) {
@@ -239,6 +248,7 @@ export function renderSubmit(app) {
     el('span.sub', {}, 'Colle du HTML, dépose un fichier .htm/.html/.eml, ou capture une URL live.'),
   ]));
   app.appendChild(el('div.card', {}, [form]));
-  setTimeout(() => ta.focus(), 30);
+  // synchronise la visibilité des champs + le focus sur le profil par défaut (URL)
+  setProfile(profile);
   return null;
 }

@@ -35,6 +35,13 @@ class SessionRegistry:
     def __init__(self, client) -> None:
         self._r = client
 
+    @property
+    def client(self):
+        """Client Redis sous-jacent — exposé pour les opérations transverses
+        (ex. purge des résultats de capture au nettoyage de session côté broker),
+        sans réutiliser l'attribut privé `_r` d'un autre module."""
+        return self._r
+
     def _key(self, session_id: str) -> str:
         return f"{_PREFIX}{session_id}"
 

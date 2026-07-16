@@ -140,10 +140,19 @@ def test_multilingual_urgency_no_false_positive_on_benign_text():
 
 
 def test_urgency_patterns_are_redos_safe():
-    # Entrée adversariale longue (~100k chars) sans le mot-clé final -> doit
-    # rester linéaire (pas de backtracking catastrophique) sur les nouveaux
-    # patterns bornés `.{0,20}`.
-    adversarial = "verificacion cuenta " * 5000 + "x" * 5000
+    import re
+    # DEUX entrées adversariales : l'une cible les variantes non-EN (mots séparés
+    # d'espaces), l'AUTRE cible spécifiquement les patterns EN via le mot-clé de
+    # tête RÉPÉTÉ sans terminateur (`verify`×k) — c'est ce cas qui faisait
+    # exploser l'ancien `verify.*account` non borné (audit sécu 3k, mesuré 38s).
+    # Bornés `.{0,20}` -> tout doit rester bien sous 0.5s.
+    adversarials = [
+        "verificacion cuenta " * 5000 + "x" * 5000,
+        "verify" * 40000,          # cible verify.{0,20}account (ex-ReDoS EN)
+        "confirm" * 40000,
+        "update" * 40000,
+        "suspended" * 40000,
+    ]
     urgency_patterns = [
         (rx, desc, sev) for rx, desc, sev in PATTERNS
         if desc in {
@@ -154,11 +163,12 @@ def test_urgency_patterns_are_redos_safe():
         }
     ]
     for pattern, _desc, _sev in urgency_patterns:
-        compiled = __import__("re").compile(pattern, __import__("re").IGNORECASE)
-        start = time.monotonic()
-        compiled.findall(adversarial)
-        elapsed = time.monotonic() - start
-        assert elapsed < 0.5, f"pattern too slow (possible ReDoS): {pattern!r} took {elapsed}s"
+        compiled = re.compile(pattern, re.IGNORECASE)
+        for adversarial in adversarials:
+            start = time.monotonic()
+            compiled.findall(adversarial)
+            elapsed = time.monotonic() - start
+            assert elapsed < 0.5, f"pattern too slow (possible ReDoS): {pattern!r} took {elapsed}s"
 
 
 def test_settimeout_string_is_high():
@@ -172,3 +182,39 @@ def test_setinterval_string_is_high():
     findings = analyze_html('<script>setInterval("evil()", 100)</script>')
     by_rule = {f.rule: f.severity for f in findings}
     assert by_rule.get("Repeated code execution") == "high"
+
+
+# --- Phase 3j : extraction structurée formulaires + mailto -------------------
+from engine.static import extract_forms, extract_mailtos  # noqa: E402
+
+
+def test_extract_forms_action_and_method():
+    html = (
+        '<form action="https://evil.example/collect" method="POST"></form>'
+        '<form></form>'
+        '<form action="/local" method="get"></form>'
+    )
+    forms = extract_forms(html)
+    assert forms[0] == {"action": "https://evil.example/collect", "method": "POST"}
+    assert forms[1] == {"action": "", "method": "GET"}          # défauts : action vide, GET
+    assert forms[2] == {"action": "/local", "method": "GET"}    # méthode normalisée en MAJ
+
+
+def test_extract_mailtos_from_links_and_forms_dedup():
+    html = (
+        '<a href="mailto:drop@evil.test">x</a>'
+        '<form action="mailto:drop@evil.test"></form>'   # doublon -> une seule entrée
+        '<a href="mailto:other@evil.test?subject=hi">y</a>'
+    )
+    m = extract_mailtos(html)
+    assert m == ["mailto:drop@evil.test", "mailto:other@evil.test?subject=hi"]
+
+
+def test_extract_forms_bounded():
+    html = '<form action="/x"></form>' * 500
+    assert len(extract_forms(html)) == 100  # borné anti-DoS
+
+
+def test_extract_no_forms_no_mailtos_is_empty():
+    assert extract_forms("<div>rien</div>") == []
+    assert extract_mailtos("<div>rien</div>") == []

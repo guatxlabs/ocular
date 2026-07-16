@@ -1,10 +1,9 @@
 // jobs.js — liste des jobs soumis depuis ce navigateur + polling des "pending".
 // L'API n'a pas d'endpoint de listing : la source est localStorage (state.js).
 import { el, iconNode, fmtTs } from '../core.js';
-import { getJobs } from '../state.js';
+import { getJobs, removeJobs } from '../state.js';
 import { getJob, Unauthorized } from '../api.js';
-
-const VERDICT_LABEL = { benign: 'benign', suspicious: 'suspicious', malicious: 'malicious', unknown: 'unknown' };
+import { verdictPill } from './saved.js';
 
 export function renderJobs(app) {
   const jobs = getJobs();
@@ -24,6 +23,17 @@ export function renderJobs(app) {
     ]));
     return null;
   }
+
+  // Purge des jobs terminés/expirés de la liste locale (localStorage). Les jobs
+  // « expiré/inconnu » (résultat perdu après un down/up, ou jamais produit) ne
+  // reviennent plus poller une fois retirés — évite l'accumulation de fantômes.
+  const terminal = new Set();   // ids devenus terminaux (done/erreur/expiré)
+  const purgeBtn = el('button.btn-ghost', {
+    type: 'button', title: 'Retirer de la liste les analyses terminées ou expirées',
+    onclick: () => { if (terminal.size) { removeJobs([...terminal]); location.reload(); } },
+  }, [iconNode('trash'), 'Nettoyer les terminés']);
+
+  app.appendChild(el('div.jobs-actions', {}, [purgeBtn]));
 
   const rows = new Map(); // id -> {statusEl}
   const list = el('div.joblist');
@@ -56,15 +66,25 @@ export function renderJobs(app) {
       catch (ex) {
         if (ex instanceof Unauthorized) { stop(); return; }
         done.add(id);
+        terminal.add(id);
         replaceStatus(rows.get(id), errorPill());
         return;
       }
       if (res && res.status === 'pending') return; // toujours en cours
       done.add(id);
+      if (res && res.status === 'unknown') {
+        // job perdu/expiré (Redis vidé par un down/up, ou jamais traité) :
+        // terminal — on ARRÊTE de poller (plus de fantôme « en attente »).
+        terminal.add(id);
+        replaceStatus(rows.get(id), expiredPill());
+        return;
+      }
       if (res && res.status === 'error') {
+        terminal.add(id);
         replaceStatus(rows.get(id), errorPill(res.error));
         return;
       }
+      terminal.add(id);
       const v = (res && res.verdict) || 'unknown';
       replaceStatus(rows.get(id), verdictPill(v));
     }));
@@ -87,14 +107,9 @@ function errorPill(message) {
   return el('span.pending-pill.sev-err', { title: message || '' }, 'échec');
 }
 
-function verdictPill(v) {
-  const label = VERDICT_LABEL[v] || v;
-  const cls = { benign: 'ok', suspicious: 'warn', malicious: 'bad' }[v] || 'mut';
-  const map = {
-    ok: 'color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:color-mix(in srgb,var(--ok) 40%,transparent)',
-    warn: 'color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)',
-    bad: 'color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 42%,transparent)',
-    mut: 'color:var(--mut);background:var(--card2)',
-  };
-  return el('span.pending-pill', { style: map[cls] }, label);
+// Job perdu/expiré (résultat introuvable, hors fenêtre d'acceptation) : terminal,
+// non rejouable — l'analyste peut le retirer via « Nettoyer les terminés ».
+function expiredPill() {
+  return el('span.pending-pill', { title: 'Résultat expiré ou introuvable — relance l\'analyse si besoin.', style: 'color:var(--mut);background:var(--card2)' }, 'expiré');
 }
+

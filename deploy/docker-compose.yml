@@ -54,6 +54,10 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
+      # Résolution Xvfb des sessions interactives (LARGEURxHAUTEUR). Non hardcodé :
+      # ajuste-le à la taille d'écran cible (défaut 1920x1080). Le broker le
+      # transmet au conteneur de session (validé par regex).
+      OCULAR_SESSION_SCREEN: "${OCULAR_SESSION_SCREEN:-1920x1080}"
     mem_limit: 1g
     cpus: "1.0"
     volumes:

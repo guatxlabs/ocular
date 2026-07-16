@@ -51,7 +51,7 @@ export function fmtIso(iso) {
 }
 
 // "sha256:abcd…" -> "abcd…1234" (12 hex de tête, jamais rendu en HTML).
-function shortHash(h) {
+export function shortHash(h) {
   const hex = String(h || '').replace(/^sha256:/, '');
   return hex.length > 14 ? hex.slice(0, 12) + '…' : hex;
 }
