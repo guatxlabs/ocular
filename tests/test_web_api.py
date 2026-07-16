@@ -22,9 +22,21 @@ def test_post_job_returns_job_id_and_enqueues(monkeypatch):
     assert q.dequeue(timeout=1).job_id == job_id
 
 
-def test_get_pending_job(monkeypatch):
+def test_get_unknown_job_is_terminal_not_pending(monkeypatch):
+    # Phase 3k : un id jamais soumis (ou dont le marqueur d'acceptation a expiré /
+    # Redis vidé par un down/up) est TERMINAL "unknown" — plus jamais "pending"
+    # à l'infini (anti job fantôme qui poll sans fin).
     client, _ = _client(monkeypatch)
     r = client.get("/jobs/unknown-id")
+    assert r.json()["status"] == "unknown"
+
+
+def test_get_accepted_job_is_pending(monkeypatch):
+    # Un job réellement soumis (marqueur d'acceptation présent) et pas encore
+    # terminé reste "pending".
+    client, _ = _client(monkeypatch)
+    job_id = client.post("/jobs", json={"profile": "analysis", "html": "<h1>x</h1>"}).json()["job_id"]
+    r = client.get("/jobs/" + job_id)
     assert r.json()["status"] == "pending"
 
 

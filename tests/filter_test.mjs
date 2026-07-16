@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { entryHost, entryMime, matchChip, filterEntries } from '../web/ui/filter.js';
+import { entryHost, entryMime, matchChip, filterEntries, dedupEntries, networkKey, consoleKey } from '../web/ui/filter.js';
 
 const E = [
   { url: 'https://a.example.com/x.js', method:'GET', status:200, resource_type:'script', headers:{'content-type':'application/javascript; charset=utf-8'} },
@@ -29,4 +29,33 @@ assert.equal(filterEntries(E, [
 assert.equal(filterEntries(E, [{field:'type',op:'equals',value:'IMAGE',exclude:false}]).length, 1);
 // pas de crash sur entrée sans url/headers
 assert.equal(filterEntries([{}], [{field:'url',op:'contains',value:'x',exclude:false}]).length, 0);
+
+// --- dédup natif réseau (method+status+type+url) ---
+const D = [
+  { url:'https://a/x', method:'GET', status:200, resource_type:'script' },
+  { url:'https://a/x', method:'GET', status:200, resource_type:'script' },
+  { url:'https://a/y', method:'GET', status:200, resource_type:'script' },
+];
+const dn = dedupEntries(D, networkKey);
+assert.equal(dn.length, 2);            // 3 entrées -> 2 uniques
+assert.equal(dn[0]._count, 2);         // la 1re fusionne 2 occurrences
+assert.equal(dn[1]._count, 1);
+// ordre stable : première apparition conservée
+assert.equal(dn[0].url, 'https://a/x');
+
+// --- filtre console (champs text/level) ---
+const C = [
+  { level:'error', text:'boom at foo' },
+  { level:'warning', text:'slow' },
+  { level:'error', text:'boom at foo' },
+];
+// dédup console : 2 uniques, la ligne error x2
+const dc = dedupEntries(C, consoleKey);
+assert.equal(dc.length, 2);
+assert.equal(dc.find((c) => c.level === 'error')._count, 2);
+// filtre par niveau (equals) et par texte (contains)
+assert.equal(filterEntries(C, [{field:'level',op:'equals',value:'error',exclude:false}]).length, 2);
+assert.equal(filterEntries(C, [{field:'text',op:'contains',value:'boom',exclude:false}]).length, 2);
+assert.equal(filterEntries(C, [{field:'level',op:'equals',value:'error',exclude:true}]).length, 1);
+
 console.log('filter_test OK');

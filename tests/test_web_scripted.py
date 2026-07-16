@@ -132,7 +132,8 @@ def test_normal_body_unaffected_by_size_guard(monkeypatch):
 # et avale la réponse tardive de l'app (pas de double réponse).
 
 def test_max_body_size_middleware_emits_413_and_cuts_on_streamed_overflow():
-    from web.app import _MAX_BODY_BYTES, _MaxBodySizeMiddleware
+    from web.app import _MAX_BODY_BYTES, _BODY_TOO_LARGE_PAYLOAD
+    from web.middleware import MaxBodySizeMiddleware
 
     chunk = b"x" * (_MAX_BODY_BYTES // 2 + 1)  # 2 chunks -> total > plafond
     messages = [
@@ -170,7 +171,7 @@ def test_max_body_size_middleware_emits_413_and_cuts_on_streamed_overflow():
 
     scope = {"type": "http", "path": "/jobs", "method": "POST", "headers": []}
     import asyncio
-    asyncio.run(_MaxBodySizeMiddleware(inner_app)(scope, receive, send))
+    asyncio.run(MaxBodySizeMiddleware(inner_app, max_bytes=_MAX_BODY_BYTES, payload=_BODY_TOO_LARGE_PAYLOAD)(scope, receive, send))
 
     # le middleware a émis un 413...
     starts = [m for m in sent if m["type"] == "http.response.start"]
@@ -183,7 +184,8 @@ def test_max_body_size_middleware_emits_413_and_cuts_on_streamed_overflow():
 def test_max_body_size_middleware_lets_small_streamed_body_through():
     # Unité : total sous le plafond -> l'app enveloppée est appelée, lit son
     # corps complet, et SA réponse 200 passe (le middleware ne coupe pas).
-    from web.app import _MaxBodySizeMiddleware
+    from web.app import _MAX_BODY_BYTES, _BODY_TOO_LARGE_PAYLOAD
+    from web.middleware import MaxBodySizeMiddleware
 
     messages = [{"type": "http.request", "body": b"small", "more_body": False}]
 
@@ -205,7 +207,7 @@ def test_max_body_size_middleware_lets_small_streamed_body_through():
 
     scope = {"type": "http", "path": "/jobs", "method": "POST", "headers": []}
     import asyncio
-    asyncio.run(_MaxBodySizeMiddleware(inner_app)(scope, receive, send))
+    asyncio.run(MaxBodySizeMiddleware(inner_app, max_bytes=_MAX_BODY_BYTES, payload=_BODY_TOO_LARGE_PAYLOAD)(scope, receive, send))
 
     start = next(m for m in sent if m["type"] == "http.response.start")
     assert start["status"] == 200  # réponse de l'app, non altérée
@@ -229,4 +231,5 @@ def test_get_request_unaffected_by_new_guard(monkeypatch):
     client, _ = _client(monkeypatch)
     r = client.get("/jobs/unknown-id")
     assert r.status_code == 200
-    assert r.json()["status"] == "pending"
+    # id inconnu -> terminal "unknown" (anti job fantôme, Phase 3k), pas "pending"
+    assert r.json()["status"] == "unknown"

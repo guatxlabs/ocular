@@ -21,7 +21,6 @@ interactif.
 """
 from __future__ import annotations
 
-import base64
 import contextlib
 import hashlib
 import os
@@ -31,13 +30,13 @@ from typing import Any, Literal, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
-from engine.egress_guard import EgressGuard
+from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS
+from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard
 from engine.result import DomInfo, OcularResult, StealthInfo
-from engine.static import analyze_html
+from engine.static import analyze_html, extract_forms, extract_mailtos
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
-from engine.wrapper import NetworkCapture, ResultBuilder, sha256_ref  # noqa: F401  (sha256_ref réutilisé ici)
-from ocular_settings import egress_guard_enabled
+from engine.wrapper import NetworkCapture, ResultBuilder, wrapper_payload
 
 
 @contextlib.asynccontextmanager
@@ -93,6 +92,12 @@ _state: dict[str, Any] = {
     "cm": None, "page": None, "cap": None, "target": None, "kind": None, "guard": None,
 }
 
+# Snippets JS partagés (source unique engine/browser_js) : indicateur de
+# challenge Turnstile (on l'évalue à la capture pour distinguer « challenge
+# présent » de « aucun challenge ») + parcours pour le lazy-load avant full-page.
+_CF_INDICATOR_JS = CF_INDICATOR_JS
+_SCROLL_TO_LOAD_JS = SCROLL_TO_LOAD_JS
+
 
 def build_capture_result(
     target: str,
@@ -104,6 +109,8 @@ def build_capture_result(
     network: list[dict[str, Any]],
     html_input: str = "",
     console: Optional[list[dict[str, Any]]] = None,
+    turnstile_solved: Optional[bool] = None,
+    challenge: Optional[str] = None,
 ) -> tuple[OcularResult, dict[str, bytes]]:
     """Logique pure (aucune dépendance Camoufox) : compose l'`OcularResult`
     à partir de données déjà capturées par le pilotage du navigateur. Miroir
@@ -123,7 +130,8 @@ def build_capture_result(
         builder.add_screenshot(0, "interactive", png)
     builder.set_dom(dom)
 
-    findings = analyze_html(dom.decode("utf-8", "replace")) if dom else []
+    dom_str = dom.decode("utf-8", "replace") if dom else ""
+    findings = analyze_html(dom_str) if dom else []
 
     if kind == "url":
         profile = "capture"
@@ -138,8 +146,16 @@ def build_capture_result(
         target=target,
         input_hash=input_hash,
         verdict=compute_verdict(findings),
-        dom_info=DomInfo(title=title, final_url=final),
-        stealth=StealthInfo(engine="camoufox"),
+        dom_info=DomInfo(
+            title=title, final_url=final,
+            forms=extract_forms(dom_str), mailtos=extract_mailtos(dom_str),
+        ),
+        # Tri-état Turnstile (session interactive : résolution MANUELLE, non
+        # introspectable de façon fiable — l'iframe CF subsiste dans le DOM
+        # après résolution). turnstile_solved=None quand aucun challenge n'est
+        # détecté (pas de faux « non passé ») ; l'analyste peut marquer
+        # explicitement « passé manuellement » (True) via l'UI de capture.
+        stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved, challenge=challenge),
         static_findings=findings,
         network=network,
         console=console,
@@ -172,33 +188,36 @@ async def _ensure_browser() -> None:
     tier batch)."""
     if _state["page"] is not None:
         return
-    from camoufox.async_api import AsyncCamoufox
-
-    # WebRTC OFF (audit 3g C1) : identique au tier batch — le moteur ICE/STUN
-    # de Firefox sort en UDP DIRECT hors du garde egress (proxy TCP), donc une
-    # page hostile pourrait joindre une IP interne via `RTCPeerConnection` +
-    # `stun:`. La pref `media.peerconnection.enabled=false` rend
-    # `RTCPeerConnection` indisponible dans la page -> vecteur UDP fermé (cf.
-    # runner_recon/capture.py::_CAMOUFOX_LAUNCH_KWARGS pour le détail).
-    launch_kwargs: dict[str, Any] = dict(
-        headless=False,
-        os="linux",
-        humanize=0.3,
-        i_know_what_im_doing=True,
-        firefox_user_prefs={"media.peerconnection.enabled": False},
-    )
-    if egress_guard_enabled():
-        guard = EgressGuard()
-        port = await guard.start()
-        launch_kwargs["proxy"] = {"server": f"http://127.0.0.1:{port}"}
+    # Kwargs durcis + politique egress (garde/strict/warning) FACTORISÉS dans
+    # engine.egress_policy — source unique partagée avec le tier batch (audit 3m).
+    launch_kwargs = hardened_launch_kwargs()
+    guard, proxy_kwargs = await maybe_start_egress_guard()
+    launch_kwargs.update(proxy_kwargs)
+    if guard is not None:
         _state["guard"] = guard
 
-    cm = AsyncCamoufox(**launch_kwargs)
-    ctx = await cm.__aenter__()
-    page = await ctx.new_page()
+    from camoufox.async_api import AsyncCamoufox
+    # Si le lancement Camoufox échoue APRÈS le démarrage du garde, on doit
+    # STOPPER le garde : sinon `_state["page"]` reste None, la requête suivante
+    # re-rentre dans `_ensure_browser`, crée un NOUVEAU garde et écrase
+    # `_state["guard"]` -> l'ancien socket/serveur asyncio fuit à chaque retry.
+    try:
+        cm = AsyncCamoufox(**launch_kwargs)
+        ctx = await cm.__aenter__()
+        page = await ctx.new_page()
+    except Exception:
+        g = _state.get("guard")
+        if g is not None:
+            with contextlib.suppress(Exception):
+                await g.stop()
+            _state["guard"] = None
+        raise
     cap = NetworkCapture()
     cap.attach(page)
     _state.update(cm=cm, page=page, cap=cap)
+    # Le plein écran de la fenêtre est assuré par matchbox-window-manager, démarré
+    # dans entrypoint_vnc.sh (kiosk) : la fenêtre couvre exactement l'Xvfb 1280x720,
+    # plus de crop bas/droite. Rien à faire ici.
 
 
 @app.get("/health")
@@ -208,10 +227,15 @@ async def health() -> dict[str, bool]:
 
 @app.post("/goto", dependencies=[Depends(require_session_secret)])
 async def goto(body: dict[str, Any]) -> dict[str, Any]:
+    # Valider AVANT de démarrer le navigateur / muter l'état : un body sans `url`
+    # -> 400 propre (pas un KeyError 500, et pas de mutation d'état partielle).
+    url = body.get("url")
+    if not isinstance(url, str) or not url:
+        return JSONResponse({"error": "url requis"}, status_code=400)
     await _ensure_browser()
-    _state["target"], _state["kind"] = body["url"], "url"
+    _state["target"], _state["kind"] = url, "url"
     try:
-        await _state["page"].goto(body["url"], wait_until="domcontentloaded", timeout=45000)
+        await _state["page"].goto(url, wait_until="domcontentloaded", timeout=45000)
     except Exception as exc:  # pragma: no cover - dépend du réseau/cible réelle
         return JSONResponse({"error": type(exc).__name__}, status_code=502)
     return {"ok": True}
@@ -219,11 +243,14 @@ async def goto(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/load", dependencies=[Depends(require_session_secret)])
 async def load(body: dict[str, Any]) -> dict[str, Any]:
+    html = body.get("html")
+    if not isinstance(html, str) or not html:
+        return JSONResponse({"error": "html requis"}, status_code=400)
     await _ensure_browser()
     _state["target"], _state["kind"] = "inline-html", "html"
-    _state["html_input"] = body.get("html", "")
+    _state["html_input"] = html
     try:
-        await _state["page"].set_content(body["html"], wait_until="domcontentloaded", timeout=45000)
+        await _state["page"].set_content(html, wait_until="domcontentloaded", timeout=45000)
     except Exception as exc:  # pragma: no cover - dépend du contenu réel
         return JSONResponse({"error": type(exc).__name__}, status_code=502)
     return {"ok": True}
@@ -253,11 +280,16 @@ async def live() -> dict[str, Any]:
     findings = analyze_html(dom)
     network = cap.network if cap else []
     console = cap.console if cap else []
+    forms = extract_forms(dom)
+    mailtos = extract_mailtos(dom)
     return {
         "network": network[-500:],
         "console": console[-500:],
         "findings": [f.model_dump(mode="json") for f in findings],
-        "counts": {"network": len(network), "findings": len(findings), "console": len(console)},
+        "forms": forms,
+        "mailtos": mailtos,
+        "counts": {"network": len(network), "findings": len(findings), "console": len(console),
+                   "forms": len(forms), "mailtos": len(mailtos)},
         "verdict": compute_verdict(findings),
     }
 
@@ -268,13 +300,38 @@ async def capture(body: dict[str, Any]) -> dict[str, Any]:
     if page is None:
         return JSONResponse({"error": "no active session — call /goto or /load first"}, status_code=409)
 
+    # L'analyste peut déclarer avoir passé le Turnstile à la main (impossible à
+    # introspecter de façon fiable — cf. build_capture_result). `turnstile_passed`
+    # True -> turnstile_solved=True. Sinon on détecte la simple présence d'un
+    # challenge CF dans le DOM courant pour un statut honnête : présent -> False
+    # (challenge non déclaré passé) ; absent -> None (aucun challenge, N.A.).
+    manual_passed = bool(body.get("turnstile_passed"))
     try:
-        png = await page.screenshot(full_page=False)
+        # full_page=True : capture la page ENTIÈRE (pas seulement le viewport
+        # visible ~1/3). Parcours préalable (pas à pas) pour déclencher le
+        # lazy-loading, PUIS attente que le réseau se calme -> la capture ne part
+        # qu'une fois le scroll ET les chargements déclenchés terminés. Best-effort.
+        with contextlib.suppress(Exception):
+            await page.evaluate(_SCROLL_TO_LOAD_JS)
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        png = await page.screenshot(full_page=True)
         dom = (await page.content()).encode()
         title = await page.title()
         final = page.url
+        try:
+            challenge_present = bool(await page.evaluate(_CF_INDICATOR_JS))
+        except Exception:  # pragma: no cover - page instable
+            challenge_present = False
     except Exception as exc:  # pragma: no cover - dépend de l'état réel de la page
         return JSONResponse({"error": type(exc).__name__}, status_code=502)
+
+    if manual_passed:
+        turnstile_solved, challenge = True, "cloudflare-turnstile"
+    elif challenge_present:
+        turnstile_solved, challenge = False, "cloudflare-turnstile"
+    else:
+        turnstile_solved, challenge = None, None
 
     result, blobs = build_capture_result(
         target=_state["target"] or "",
@@ -286,8 +343,7 @@ async def capture(body: dict[str, Any]) -> dict[str, Any]:
         network=cap.network if cap else [],
         html_input=_state.get("html_input", ""),
         console=cap.console if cap else [],
+        turnstile_solved=turnstile_solved,
+        challenge=challenge,
     )
-    return {
-        "result": result.model_dump(mode="json"),
-        "blobs": {ref: base64.b64encode(data).decode() for ref, data in blobs.items()},
-    }
+    return wrapper_payload(result, blobs)

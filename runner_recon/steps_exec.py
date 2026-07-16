@@ -26,8 +26,28 @@ async def _apply(page, step, screenshot_cb):
             await page.wait_for_selector(arg["selector"], timeout=MAX_WAIT_MS)
     elif verb == "press":
         await page.keyboard.press(arg)
+    elif verb == "sleep":
+        # `arg` en SECONDES (borné 0..MAX_SLEEP_S par engine.steps) -> converti en
+        # ms pour Playwright. Pause fixe.
+        await page.wait_for_timeout(arg * 1000)
+    elif verb == "hide":
+        # Sélecteur validé (_sel). JS FIXE (jamais de contenu utilisateur
+        # interpolé) ; `evaluate_all` tolère 0 correspondance (best-effort,
+        # n'échoue pas comme `click`).
+        await page.locator(arg).evaluate_all(
+            "els => els.forEach(el => { el.style.display = 'none'; })"
+        )
     elif verb == "capture":
-        await screenshot_cb(arg)
+        # Forme simple (str) -> viewport ; forme étendue (dict) -> région
+        # (selector) ou full_page. screenshot_cb honore selector/full_page.
+        if isinstance(arg, str):
+            await screenshot_cb(arg)
+        else:
+            await screenshot_cb(
+                arg.get("label", "capture"),
+                selector=arg.get("selector"),
+                full_page=bool(arg.get("full_page")),
+            )
     elif verb == "scroll":
         if arg == "top":
             await page.evaluate(SCROLL_JS_TOP)

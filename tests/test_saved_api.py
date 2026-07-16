@@ -91,6 +91,15 @@ def test_lookup_saved_url_422_without_url(tmp_path, monkeypatch):
     assert r.status_code == 422
 
 
+def test_lookup_saved_url_422_on_malformed_url_not_500(tmp_path, monkeypatch):
+    # audit sécu 3k : une URL malformée (normalize_url lève ValueError) doit
+    # donner un 422 propre, pas un 500 (cohérent avec submit/create_session).
+    c, q, tp = _client(tmp_path, monkeypatch)
+    for bad in ("http://[::1", "http://a:notaport", "http://]"):
+        r = c.post("/saved/lookup", json={"url": bad})
+        assert r.status_code == 422, bad
+
+
 def test_save_duplicate_label_on_different_content_409(tmp_path, monkeypatch):
     # Task D — unicité du nom : un label déjà pris par un input_hash différent
     # doit être refusé (409), sans écraser la sauvegarde existante.

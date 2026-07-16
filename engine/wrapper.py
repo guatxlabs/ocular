@@ -135,11 +135,17 @@ class ResultBuilder:
         return result, self.blobs
 
 
-def emit_wrapper(result: OcularResult, blobs: dict[str, bytes]) -> None:
-    """Écrit `{result, blobs(base64)}` sur stdout — LE seul flux stdout du
-    runner, consommé par broker/launcher.py. Les logs partent ailleurs (stderr)."""
-    payload = {
+def wrapper_payload(result: OcularResult, blobs: dict[str, bytes]) -> dict:
+    """Forme `{result, blobs(base64)}` du wrapper d'échange runner<->web. Source
+    unique : le tier batch l'émet sur stdout (`emit_wrapper`), le tier interactif
+    la renvoie telle quelle en réponse HTTP (session_server /capture)."""
+    return {
         "result": result.model_dump(mode="json"),
         "blobs": {ref: base64.b64encode(data).decode() for ref, data in blobs.items()},
     }
-    sys.stdout.write(json.dumps(payload) + "\n")
+
+
+def emit_wrapper(result: OcularResult, blobs: dict[str, bytes]) -> None:
+    """Écrit `{result, blobs(base64)}` sur stdout — LE seul flux stdout du
+    runner, consommé par broker/launcher.py. Les logs partent ailleurs (stderr)."""
+    sys.stdout.write(json.dumps(wrapper_payload(result, blobs)) + "\n")

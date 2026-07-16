@@ -6,6 +6,12 @@ from pydantic import BaseModel
 
 _QUEUE_KEY = "ocular:jobs"
 RESULT_PREFIX = "ocular:result:"
+# Marqueur « job accepté », posé à la soumission avec un TTL. Sert à distinguer,
+# pour GET /jobs/{id} SANS résultat, un job RÉELLEMENT en cours (marqueur présent
+# -> "pending") d'un job perdu/expiré (marqueur absent -> "unknown", terminal) :
+# évite le job fantôme qui poll "en attente" à l'infini quand Redis a été vidé
+# (compose down/up : file éphémère) ou que le job n'a jamais produit de résultat.
+ACCEPTED_PREFIX = "ocular:accepted:"
 
 
 class Job(BaseModel):
@@ -22,6 +28,15 @@ class RedisJobQueue:
 
     def enqueue(self, job: Job) -> None:
         self._r.rpush(_QUEUE_KEY, job.model_dump_json())
+
+    def mark_accepted(self, job_id: str, ttl: int) -> None:
+        """Marque un job comme accepté (borné par `ttl`). Au-delà du TTL sans
+        résultat, le job est considéré perdu/expiré (cf. `is_accepted`)."""
+        self._r.set(ACCEPTED_PREFIX + job_id, "1", ex=ttl)
+
+    def is_accepted(self, job_id: str) -> bool:
+        """Le job est-il encore dans sa fenêtre d'acceptation (en file/traitement) ?"""
+        return bool(self._r.exists(ACCEPTED_PREFIX + job_id))
 
     def dequeue(self, timeout: int = 0) -> Optional[Job]:
         try:
@@ -41,6 +56,9 @@ class RedisJobQueue:
             self._r.set(RESULT_PREFIX + job_id, result_json, ex=ttl)
         else:
             self._r.set(RESULT_PREFIX + job_id, result_json)
+        # Job terminal (résultat ou erreur) : le marqueur d'acceptation n'a plus
+        # de raison d'être — on le retire (get_result prime de toute façon).
+        self._r.delete(ACCEPTED_PREFIX + job_id)
 
     def get_result(self, job_id: str) -> Optional[str]:
         val = self._r.get(RESULT_PREFIX + job_id)

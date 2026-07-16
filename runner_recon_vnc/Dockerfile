@@ -14,8 +14,14 @@ USER root
 # Tier interactif : serveur VNC + pont websocket + client noVNC. `curl` pour le
 # smoke (health/noVNC depuis l'intérieur). Le clipboard est coupé à la source
 # côté x11vnc dans runner_recon_vnc/entrypoint_vnc.sh (-noclipboard -nosetclipboard).
+#
+# matchbox-window-manager : window manager minimal (kiosk) qui met la fenêtre du
+# navigateur en PLEIN ÉCRAN sur l'Xvfb. Sans WM, Firefox/Camoufox s'ouvrait à sa
+# taille par défaut (souvent > 1280x720), ancré en haut-gauche -> bas+droite hors
+# framebuffer = croppés dans noVNC (footer/bord droit invisibles). matchbox force
+# la fenêtre à couvrir exactement l'écran -> plus de crop.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    x11vnc websockify novnc curl \
+    x11vnc websockify novnc curl matchbox-window-manager \
     && rm -rf /var/lib/apt/lists/*
 
 # fastapi/uvicorn pour le session_server (l'image recon n'a que playwright/camoufox).

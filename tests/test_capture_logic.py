@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 import runner_recon.capture as cap
+import engine.egress_policy as ep
 from runner_recon.capture import _capture_dom, _goto_with_fallback, build_result, solve_turnstile
 from runner_recon.vision import image_to_screen
 
@@ -208,6 +209,9 @@ async def test_solve_turnstile_no_widget_never_clicks_no_regression():
 
     solved = await solve_turnstile(page, screenshots, console, vision_mod)
 
+    # indicateur CF présent (evaluate True) mais widget jamais détecté -> il y a
+    # un challenge non résolu -> False (« non passé »). Le cas AUCUN indicateur
+    # (-> None, tri-état N.A.) est couvert par le test dédié plus bas.
     assert solved is False
     assert vision_mod.click_calls == []
     assert screenshots == []                      # aucun screenshot post-turnstile
@@ -274,7 +278,7 @@ class _FakeGatingPage:
 
 
 @pytest.mark.asyncio
-async def test_solve_turnstile_no_cf_indicator_returns_false_after_bounded_poll(monkeypatch):
+async def test_solve_turnstile_no_cf_indicator_returns_none_after_bounded_poll(monkeypatch):
     sleep_calls = []
 
     async def _record_sleep(seconds):
@@ -290,7 +294,7 @@ async def test_solve_turnstile_no_cf_indicator_returns_false_after_bounded_poll(
 
     solved = await solve_turnstile(page, screenshots, console, vision_mod)
 
-    assert solved is False
+    assert solved is None  # aucun challenge CF -> N.A. (tri-état), pas False
     # fenêtre de poll bornée, PUIS abandon : 0 screenshot, 0 detect, 0 clic.
     assert page.indicator_calls == cap._CF_INDICATOR_POLL_ATTEMPTS
     assert page.screenshot_calls == 0
@@ -658,8 +662,8 @@ def _reset_fake_guard_instances():
 
 @pytest.mark.asyncio
 async def test_capture_url_starts_egress_guard_and_routes_camoufox_through_proxy(monkeypatch):
-    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
-    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+    monkeypatch.setattr(ep, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(ep, "EgressGuard", _FakeEgressGuard)
 
     calls: list[dict] = []
     _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
@@ -682,8 +686,8 @@ async def test_capture_url_starts_egress_guard_and_routes_camoufox_through_proxy
 
 @pytest.mark.asyncio
 async def test_capture_scripted_starts_egress_guard_and_routes_camoufox_through_proxy(monkeypatch):
-    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
-    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+    monkeypatch.setattr(ep, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(ep, "EgressGuard", _FakeEgressGuard)
 
     calls: list[dict] = []
     _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
@@ -704,8 +708,8 @@ async def test_capture_scripted_starts_egress_guard_and_routes_camoufox_through_
 async def test_capture_url_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
     # OCULAR_EGRESS_GUARD=0 (ou toute désactivation) -> comportement actuel
     # inchangé : ni EgressGuard instancié, ni option `proxy` passée à Camoufox.
-    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: False)
-    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+    monkeypatch.setattr(ep, "egress_guard_enabled", lambda: False)
+    monkeypatch.setattr(ep, "EgressGuard", _FakeEgressGuard)
 
     calls: list[dict] = []
     _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
@@ -726,8 +730,8 @@ async def test_capture_url_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_capture_scripted_disabled_egress_guard_no_guard_no_proxy(monkeypatch):
-    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: False)
-    monkeypatch.setattr(cap, "EgressGuard", _FakeEgressGuard)
+    monkeypatch.setattr(ep, "egress_guard_enabled", lambda: False)
+    monkeypatch.setattr(ep, "EgressGuard", _FakeEgressGuard)
 
     calls: list[dict] = []
     _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)
@@ -749,8 +753,8 @@ async def test_capture_url_guard_start_failure_propagates_no_silent_unfiltered_f
         async def start(self) -> int:
             raise RuntimeError("boom: guard ne démarre pas")
 
-    monkeypatch.setattr(cap, "egress_guard_enabled", lambda: True)
-    monkeypatch.setattr(cap, "EgressGuard", _FailingGuard)
+    monkeypatch.setattr(ep, "egress_guard_enabled", lambda: True)
+    monkeypatch.setattr(ep, "EgressGuard", _FailingGuard)
 
     calls: list[dict] = []
     _install_fake_camoufox_recording_kwargs(monkeypatch, _FakeGuardPage(), calls)

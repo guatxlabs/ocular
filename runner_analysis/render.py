@@ -7,7 +7,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from engine.result import DomInfo, OcularResult, StealthInfo
-from engine.static import analyze_html
+from engine.static import analyze_html, extract_forms, extract_mailtos
 from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper, sha256_ref
 from ocular_logging import get_logger
@@ -49,7 +49,11 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
             try:
                 dom_html = page.content().encode()
                 builder.set_dom(dom_html)
-                dom = DomInfo(title=page.title(), final_url=page.url)
+                dom_str = dom_html.decode("utf-8", "replace")
+                dom = DomInfo(
+                    title=page.title(), final_url=page.url,
+                    forms=extract_forms(dom_str), mailtos=extract_mailtos(dom_str),
+                )
             except Exception as exc:
                 log.warning("job_id=%s dom capture failed err=%s", job_id, type(exc).__name__)
             browser.close()

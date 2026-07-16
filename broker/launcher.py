@@ -45,6 +45,21 @@ def _proxy_env() -> list[str]:
     return out
 
 
+def egress_policy_env() -> list[str]:
+    """Propage la POLITIQUE egress du broker au conteneur runner réseau-ON, pour
+    que la configuration soit cohérente de bout en bout : le garde egress
+    (`OCULAR_EGRESS_GUARD`, défaut ON) et surtout le mode STRICT
+    (`OCULAR_REQUIRE_EGRESS_GUARD`) sont lus DANS le runner — sans ce forwarding,
+    poser le mode strict côté broker/compose n'aurait aucun effet sur le runner.
+    Seules ces deux variables (booléennes, sûres) sont transmises."""
+    out: list[str] = []
+    for k in ("OCULAR_EGRESS_GUARD", "OCULAR_REQUIRE_EGRESS_GUARD"):
+        v = os.environ.get(k)
+        if v is not None:
+            out += ["-e", f"{k}={v}"]
+    return out
+
+
 # Alias rétro-compat : le stockage d'artefacts vit désormais dans
 # `engine.artifacts.store_blobs` (module neutre, sans Docker/subprocess),
 # réutilisé tel quel par `web.app` pour la capture de session interactive —
@@ -110,6 +125,7 @@ def build_docker_args(job: Job) -> list[str]:
             "--memory", CAPTURE_MEMORY,
             "--pids-limit", CAPTURE_PIDS_LIMIT,
             *_proxy_env(),
+            *egress_policy_env(),   # OCULAR_EGRESS_GUARD / _REQUIRE_EGRESS_GUARD
             _RECON_IMAGE,
             "--url", job.url or "",
         ]

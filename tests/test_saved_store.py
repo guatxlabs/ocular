@@ -181,6 +181,16 @@ def test_save_no_stealth_gives_null_turnstile_solved():
     assert ss.get_meta(c, sid)["turnstile_solved"] is None
 
 
+def test_save_stealth_with_none_turnstile_is_null_not_zero():
+    # Tri-état (Phase 3j) : un stealth PRÉSENT mais sans challenge
+    # (turnstile_solved=None) doit donner NULL, PAS 0 — sinon l'UI afficherait à
+    # tort « Turnstile non passé » sur une capture interactive sans Turnstile.
+    c = _conn()
+    r = {**_result(), "stealth": {"engine": "camoufox", "turnstile_solved": None}}
+    sid = ss.save(c, r, {}, None, "t")
+    assert ss.get_meta(c, sid)["turnstile_solved"] is None
+
+
 def test_save_stores_and_returns_saved_by():
     c = _conn()
     sid = ss.save(c, _result(), {}, None, "t", saved_by="alice")

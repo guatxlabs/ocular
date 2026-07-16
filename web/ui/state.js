@@ -30,3 +30,8 @@ export function addJob(job) {
   list.unshift(job);
   localStorage.setItem(JOBS_KEY, JSON.stringify(list.slice(0, 100)));
 }
+// Retire d'un coup tous les jobs dont l'id est dans `ids` (purge des terminés).
+export function removeJobs(ids) {
+  const drop = new Set(ids);
+  localStorage.setItem(JOBS_KEY, JSON.stringify(getJobs().filter((j) => !drop.has(j.id))));
+}

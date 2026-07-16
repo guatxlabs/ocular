@@ -11,9 +11,23 @@
 set -euo pipefail
 
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
-Xvfb :99 -screen 0 1280x720x24 >/dev/null 2>&1 &
+# Résolution du framebuffer NON hardcodée : le broker passe OCULAR_SESSION_SCREEN
+# (validé par regex côté ocular_settings.session_screen), défaut 1920x1080 — bien
+# plus grand que l'ancien 1280x720 (on voit beaucoup plus de page ; scaleViewport
+# côté client en montre l'INTÉGRALITÉ dans le cadre, letterbox, jamais de crop).
+# Garde-fou local si la variable arrive vide/malformée (défense en profondeur).
+SCREEN="${OCULAR_SESSION_SCREEN:-1920x1080}"
+echo "$SCREEN" | grep -Eq '^[0-9]{3,5}x[0-9]{3,5}$' || SCREEN="1920x1080"
+Xvfb :99 -screen 0 "${SCREEN}x24" >/dev/null 2>&1 &
 sleep 2
 export DISPLAY=:99
+
+# Window manager minimal (kiosk) : met la fenêtre du navigateur en PLEIN ÉCRAN
+# sur l'Xvfb. Sans lui, Firefox/Camoufox s'ouvre plus grand que l'écran, ancré
+# en haut-gauche -> bas/droite croppés dans noVNC. -use_titlebar no : pas de
+# barre de titre (gain de place). Best-effort : si absent, la session marche
+# quand même (rendu OK, juste le crop d'avant).
+matchbox-window-manager -use_titlebar no >/dev/null 2>&1 &
 
 # --noclipboard --nosetclipboard --localhost : LE point sécu de cette tâche --
 # clipboard coupé à la source côté serveur VNC (get ET set), donc aucun

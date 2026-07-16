@@ -70,6 +70,7 @@ const I18N_EN = {
   'IP exposée': 'Exposed IP', 'URL interdite': 'Forbidden URL',
   // sauvegarde (panneau détail)
   'Conserver cette analyse': 'Keep this analysis', 'Sauvegarder': 'Save',
+  'Enregistrer la capture': 'Save capture',
   'étiquette (optionnelle)': 'label (optional)', 'Analyse sauvegardée': 'Analysis saved',
   'Voir dans Sauvegardes': 'View in Saved',
   'Artefacts expirés — relance l\'analyse avant de sauvegarder.': 'Artifacts expired — rerun the analysis before saving.',
@@ -123,6 +124,16 @@ const I18N_EN = {
   'Capturer': 'Capture', 'capture…': 'capturing…', 'Fermer': 'Close',
   'Capture enregistrée': 'Capture saved', 'Voir l\'analyse': 'View the analysis',
   'Capture échouée — la session ne répond pas.': 'Capture failed — the session is not responding.',
+  // interactif — flux sauvegarde nommée (Phase 3j) + zoom + exfil
+  'Enregistrer': 'Save', 'Sauvegardé': 'Saved',
+  'nom de la sauvegarde (requis)': 'save name (required)',
+  'Donne un nom pour enregistrer la sauvegarde.': 'Enter a name to save.',
+  'Nom déjà utilisé — choisis-en un autre.': 'Name already used — pick another.',
+  'Artefacts expirés — relance la capture avant d\'enregistrer.': 'Artifacts expired — recapture before saving.',
+  'Agrandir': 'Enlarge', 'Réduire': 'Shrink',
+  'Formulaires & mailto': 'Forms & mailto', 'aucun formulaire ni mailto': 'no forms or mailto',
+  'Formulaires': 'Forms', 'Cibles mailto': 'Mailto targets', '(page courante)': '(current page)',
+  'externe': 'external',
   // interactif — panneau live (Task C3 3d-2 C, poll /sessions/{id}/live)
   'appels réseau': 'network calls', 'verdict inconnu': 'unknown verdict',
   // detail — filtre SOC du tableau réseau (Task 2 3d-2 I, réutilise filter.js)

@@ -6,6 +6,7 @@ from engine.steps import (
     MAX_STEPS,
     MAX_SEL,
     MAX_WAIT_MS,
+    MAX_SLEEP_S,
     MAX_SCROLL_PX,
     MAX_LABEL,
 )
@@ -148,3 +149,61 @@ def test_press_giant_non_string_error_bounded():
 
 def test_validate_steps_empty_list_gets_final_capture():
     assert validate_steps([]) == [{"capture": "final"}]
+
+
+# --- Phase 3j : nouveaux verbes DSL (sleep / hide / capture région|full_page) ---
+
+def test_sleep_valid_and_bounded():
+    # sleep en SECONDES (Phase 3k) : entier ou flottant, borné 0..MAX_SLEEP_S
+    assert validate_steps([{"sleep": 5}])[0] == {"sleep": 5}
+    assert validate_steps([{"sleep": MAX_SLEEP_S}])[0] == {"sleep": MAX_SLEEP_S}
+    assert validate_steps([{"sleep": 0.5}])[0] == {"sleep": 0.5}
+
+
+def test_sleep_rejects_bool_and_out_of_range():
+    with pytest.raises(StepValidationError):
+        validate_steps([{"sleep": True}])
+    with pytest.raises(StepValidationError):
+        validate_steps([{"sleep": MAX_SLEEP_S + 1}])   # > 60 s rejeté
+    with pytest.raises(StepValidationError):
+        validate_steps([{"sleep": "5"}])
+
+
+def test_hide_requires_valid_selector():
+    assert validate_steps([{"hide": ".cookie"}])[0] == {"hide": ".cookie"}
+    with pytest.raises(StepValidationError):
+        validate_steps([{"hide": 123}])
+    with pytest.raises(StepValidationError):
+        validate_steps([{"hide": "a" * (MAX_SEL + 1)}])
+
+
+def test_capture_fullpage_form():
+    out = validate_steps([{"capture": {"label": "p", "full_page": True}}])
+    assert out[0] == {"capture": {"label": "p", "full_page": True}}
+
+
+def test_capture_region_form():
+    out = validate_steps([{"capture": {"label": "z", "selector": "#login"}}])
+    assert out[0] == {"capture": {"label": "z", "selector": "#login"}}
+
+
+def test_capture_selector_and_fullpage_mutually_exclusive():
+    with pytest.raises(StepValidationError):
+        validate_steps([{"capture": {"label": "x", "selector": "#a", "full_page": True}}])
+
+
+def test_capture_dict_rejects_unknown_keys_and_bad_types():
+    with pytest.raises(StepValidationError):
+        validate_steps([{"capture": {"label": "x", "bogus": 1}}])
+    with pytest.raises(StepValidationError):
+        validate_steps([{"capture": {"label": "bad<x>"}}])
+    with pytest.raises(StepValidationError):
+        validate_steps([{"capture": {"label": "x", "full_page": "yes"}}])
+
+
+def test_capture_dict_form_is_final_capture_not_duplicated():
+    # un capture étendu en dernier step ne déclenche PAS l'ajout d'un capture auto
+    raw = [{"click": "#a"}, {"capture": {"label": "fin", "full_page": True}}]
+    out = validate_steps(raw)
+    assert out[-1] == {"capture": {"label": "fin", "full_page": True}}
+    assert sum(1 for s in out if "capture" in s) == 1
