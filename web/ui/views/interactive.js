@@ -412,6 +412,13 @@ export function renderInteractive(app) {
 
   function openErrMsg(ex) {
     if (ex && ex.status === 400) {
+      // Distingue un échec DNS transitoire d'un vrai blocage SSRF (cf. submit.js).
+      const d = (ex.detail || '').toLowerCase();
+      if (d.includes('dns') || d.includes('résolution') || d.includes('resolution')) {
+        return 'Domaine introuvable pour l\'instant (résolution DNS échouée) — vérifie l\'orthographe, ou réessaie.';
+      }
+      if (d.includes('scheme')) return 'Schéma d\'URL non autorisé (seuls http/https).';
+      if (ex.detail) return 'URL refusée : ' + ex.detail;
       return 'URL interdite : cible non publique (IP exposée / SSRF). Utilise une URL publique.';
     }
     if (ex && ex.status === 504) return 'Session non prête — le conteneur n\'a pas démarré à temps.';

@@ -158,6 +158,16 @@ export function renderSubmit(app) {
   // extrait côté api.js) : on l'affiche tel quel plutôt qu'un message générique.
   function submitErrMsg(ex, prof) {
     if (ex && ex.status === 400 && prof === 'capture') {
+      // Le 400 recouvre PLUSIEURS causes (cf. engine.ssrf.validate_capture_url) :
+      // on s'appuie sur le détail serveur pour ne PAS afficher un faux « SSRF »
+      // sur un simple échec DNS transitoire (un domaine public momentanément non
+      // résolu par le conteneur web n'est pas une cible interne).
+      const d = (ex.detail || '').toLowerCase();
+      if (d.includes('dns') || d.includes('résolution') || d.includes('resolution')) {
+        return 'Domaine introuvable pour l\'instant (résolution DNS échouée) — vérifie l\'orthographe, ou réessaie dans un instant.';
+      }
+      if (d.includes('scheme')) return 'Schéma d\'URL non autorisé (seuls http/https).';
+      if (ex.detail) return 'URL refusée : ' + ex.detail;
       return 'URL interdite : cible non publique (IP exposée / SSRF). Utilise une URL publique.';
     }
     if (ex && ex.status === 422) {
