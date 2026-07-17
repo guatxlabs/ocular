@@ -88,7 +88,15 @@ export async function createSession(body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) {
+    const text = await res.text();
+    let detail = '';
+    try { detail = JSON.parse(text).detail || ''; } catch { /* non-JSON */ }
+    const e = new Error(res.status + (detail ? ' ' + detail : ''));
+    e.status = res.status;
+    e.detail = detail || null;   // permet à openErrMsg de distinguer DNS vs SSRF
+    throw e;
+  }
   return res.json();
 }
 

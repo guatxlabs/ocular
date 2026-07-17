@@ -664,3 +664,16 @@ def test_detail_view_handles_unknown_job_terminally():
     js = open("web/ui/views/detail.js").read()
     assert "res.status === 'unknown'" in js
     assert "expirée ou introuvable" in js
+
+
+def test_submit_400_distinguishes_dns_failure_from_ssrf_block():
+    # Un 400 sur capture recouvre plusieurs causes (validate_capture_url) : échec
+    # DNS transitoire vs blocage SSRF réel. L'UI ne doit PAS afficher un faux
+    # « cible non publique / SSRF » sur un simple échec DNS (via ex.detail).
+    for path in ("web/ui/views/submit.js", "web/ui/views/interactive.js"):
+        js = open(path).read()
+        assert "ex.detail" in js
+        assert "résolution DNS échouée" in js
+        # api.js expose bien le détail serveur pour les deux flux
+    api = open("web/ui/api.js").read()
+    assert api.count("e.detail = detail") >= 2  # submitJob ET createSession
