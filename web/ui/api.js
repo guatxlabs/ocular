@@ -50,6 +50,16 @@ export async function getJob(id) {
   return res.json();
 }
 
+// POST /jobs/{id}/explain -> {explanation, model}. 404 si l'option LLM est
+// désarmée (DÉFAUT) OU si le job est introuvable : l'appelant lit `e.status`
+// pour afficher une note discrète « option désactivée », jamais une erreur dure.
+// La réponse `explanation` est une sortie LLM NON fiable : à poser en textContent.
+export async function explainJob(id) {
+  const res = await authFetch('/jobs/' + encodeURIComponent(id) + '/explain', { method: 'POST' });
+  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  return res.json();
+}
+
 // Vérifie un token en tapant un endpoint protégé sans effet de bord.
 // 401 -> Unauthorized (rejeté). 404/200 -> token accepté. 503 -> serveur non configuré.
 export async function checkToken() {

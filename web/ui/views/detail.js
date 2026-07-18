@@ -8,7 +8,7 @@
 import { el, iconNode, esc } from '../core.js';
 import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
-  saveAnalysis, getSavedMeta, setAnalystVerdict, Unauthorized,
+  saveAnalysis, getSavedMeta, setAnalystVerdict, explainJob, Unauthorized,
 } from '../api.js';
 import {
   buildFilterBar, dedupEntries, networkKey, consoleKey,
@@ -152,6 +152,13 @@ function mount(app, id, src) {
     // (r.triage null) -> ligne discrète « triage non calculé ». Tout en textNode.
     frag.appendChild(buildTriage(r.triage, verdict));
 
+    // ---- explication LLM (option OPT-IN, désarmée par défaut). Le bouton n'a de
+    // sens que s'il existe un job id à résumer côté serveur. LLM OFF -> clic -> 404
+    // -> note discrète « option désactivée » (jamais une boîte d'erreur). La réponse
+    // du LLM est NON fiable : posée en textContent via el(), jamais innerHTML.
+    const jobId = r.job_id || id;
+    if (jobId) frag.appendChild(buildLlmExplain(jobId));
+
     // ---- furtivité (profil capture) : moteur + statut Turnstile ----
     if (r.stealth) frag.appendChild(buildStealth(r.stealth));
 
@@ -191,6 +198,39 @@ function mount(app, id, src) {
     frag.appendChild(buildDom(r));
 
     body.replaceChildren(frag);
+  }
+
+  // Panneau « Expliquer avec LLM » (option opt-in, désarmée par défaut). Au clic :
+  // désactive le bouton le temps de la requête (anti double-submit) puis, selon la
+  // réponse : succès -> note + badge modèle (explication en textNode, JAMAIS
+  // innerHTML — sortie LLM non fiable) ; 404 -> ligne muette « option désactivée »
+  // (comportement par défaut, pas une erreur) ; autre échec -> ligne muette discrète.
+  function buildLlmExplain(jobId) {
+    const sec = el('div.llm-panel');
+    const btn = el('button.btn-ghost', { type: 'button' }, 'Expliquer avec LLM');
+    const out = el('div.llm-out');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      out.replaceChildren();
+      try {
+        const res = await explainJob(jobId);
+        out.replaceChildren(el('div.llm-note', {}, [
+          el('span.llm-badge', {}, 'note générée par LLM (' + (res.model || '?') + ')'),
+          el('p', {}, res.explanation || ''),
+        ]));
+        btn.remove(); // note affichée : plus besoin du bouton
+      } catch (ex) {
+        if (ex instanceof Unauthorized) return; // redirection login déjà déclenchée
+        const msg = ex && ex.status === 404
+          ? 'note LLM : option désactivée'
+          : 'note LLM indisponible';
+        out.replaceChildren(el('p.llm-muted', {}, msg));
+        btn.remove();
+      }
+    });
+    sec.appendChild(btn);
+    sec.appendChild(out);
+    return sec;
   }
 
   // Panneau de sauvegarde : label optionnel + bouton. Succès -> « sauvegardée ✓ »
