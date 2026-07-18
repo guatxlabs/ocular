@@ -86,7 +86,16 @@ services:
     restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
+      # NE PAS RETIRER : sans cette variable, artifacts_dir() retombe sur le
+      # chemin RELATIF "artifacts" -> /app/artifacts, non inscriptible sous
+      # read_only: true. Le volume nommé ne serait plus utilisé du tout.
       OCULAR_ARTIFACTS_DIR: "/artifacts"
+      # Le CLI docker résout son répertoire de config sur $HOME/.docker ; en
+      # non-root sans entrée passwd, HOME=/ -> / est sur le rootfs gelé. Aucune
+      # sous-commande utilisée ici n'écrit de config (run/kill/rm/ps/network),
+      # mais ce comportement dépend de la version du CLI : on le pointe donc
+      # explicitement vers le tmpfs, ce qui supprime la classe de risque.
+      DOCKER_CONFIG: "/tmp/.docker"
       # Mode STRICT egress fail-closed, ON par défaut : le broker le transmet
       # aux runners réseau-ON (egress_policy_env). Le garde egress est déjà ON
       # par défaut ; ce flag REFUSE de démarrer un runner si le garde a été
@@ -99,6 +108,33 @@ services:
       OCULAR_SESSION_SCREEN: "${OCULAR_SESSION_SCREEN:-1920x1080}"
       # Conteneur web que le broker attache/détache aux réseaux per-session.
       OCULAR_WEB_CONTAINER: "${OCULAR_WEB_CONTAINER:-ocular-web}"
+    # --- Durcissement du tier qui détient le socket Docker ---------------------
+    # Le broker montait /var/run/docker.sock en ROOT, rootfs inscriptible, toutes
+    # capabilities — soit strictement moins durci que le `web`, qui lui n'a PAS le
+    # socket. Incohérence de posture corrigée ici.
+    # Honnêteté sur ce que ça vaut : quiconque atteint le socket Docker peut
+    # `docker run -v /:/host --privileged` et devenir root sur l'HÔTE. Ces quatre
+    # flags ne ferment PAS ce chemin — seul le retrait du socket le fermerait, et
+    # le broker ne peut pas fonctionner sans. Ils ferment les étapes INTERMÉDIAIRES
+    # d'une RCE dans le broker : implant persistant sur le rootfs, escalade via
+    # binaire SUID, abus de capability.
+    read_only: true
+    tmpfs: ["/tmp"]   # seul chemin inscriptible hors /artifacts (cf. DOCKER_CONFIG)
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # uid non-root arbitraire (aucun utilisateur dédié dans l'image ; /artifacts
+    # est pré-créé en 0777 par les deux Dockerfiles, donc inscriptible).
+    user: "10002:10002"
+    # LE point délicat. Le socket est `srw-rw---- root:docker` : son GID est
+    # SPÉCIFIQUE À L'HÔTE (965 ici, 999 sur un Debian/Ubuntu standard, autre
+    # ailleurs). Le coder en dur casserait l'accès Docker — donc les sessions
+    # interactives — sur la plupart des hôtes. Il est donc paramétré, avec pour
+    # défaut la valeur la plus courante.
+    # ⚠️ OPÉRATEUR : `stat -c '%g' /var/run/docker.sock` et poser
+    # OCULAR_DOCKER_GID dans deploy/.env (fichier host-specific, non versionné).
+    # En cas de mauvaise valeur l'échec est BRUYANT et sans risque de sécurité :
+    # le broker perd le socket et les sessions échouent — il ne repasse pas root.
+    group_add: ["${OCULAR_DOCKER_GID:-999}"]
     mem_limit: 1g
     cpus: "1.0"
     volumes:
