@@ -76,6 +76,22 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(path: str) -> sqlite3.Connection:
+    """Connexion LECTURE SEULE (`mode=ro`) : ne crée pas la base et ne migre
+    PAS le schéma (contrairement à `connect()`, qui exécute `_SCHEMA` + `_migrate`
+    donc peut écrire). Utilisée par la calibration hors-ligne
+    (`tools/calibrate_triage.py`) pour garantir qu'analyser la base des
+    sauvegardes ne la mute jamais — toute tentative d'écriture lève
+    `sqlite3.OperationalError` (« attempt to write a readonly database »). La
+    base DOIT exister (mode=ro ne la crée pas)."""
+    # pathname2url échappe ?/#/% dans le chemin -> pas d'injection de paramètres
+    # d'URI (le chemin vient de --db, arg opérateur, mais on reste robuste).
+    from urllib.request import pathname2url
+    conn = sqlite3.connect(f"file:{pathname2url(path)}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 class DuplicateLabelError(ValueError):
     """Levée quand un `label` (nom) non vide est déjà utilisé par une sauvegarde
     portant un `input_hash` différent. Le re-save du MÊME `input_hash` (UPSERT)
