@@ -362,3 +362,44 @@ def test_daemon_loop_keeps_working_despite_an_exploding_interval_accessor(
     getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent(_N_ITERATIONS))
 
     assert len(calls) == _N_ITERATIONS
+
+
+# --- Factorisation des 3 boucles démon : ne pas perdre la DISTINCTION --------
+# Les trois boucles partagent maintenant `_daemon_loop`. Le risque de la
+# factorisation est d'aplatir les journaux : une ligne « erreur » indifférenciée
+# rendrait indiscernable une panne Docker du sweeper d'une panne Redis du
+# reaper — exactement au moment où l'exploitant en a besoin.
+
+_LOOP_LABELS = [
+    ("_reaper_loop", "reap", "reaper error"),
+    ("_gc_loop", "collect", "gc error"),
+    ("_sweeper_loop", "sweep_orphans", "orphan sweep error"),
+]
+
+
+@pytest.mark.parametrize("loop,work,label", _LOOP_LABELS)
+def test_each_daemon_loop_logs_under_its_own_label(monkeypatch, caplog, loop, work, label):
+    """Chaque boucle doit rester IDENTIFIABLE dans les journaux."""
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+
+    def boom(*a, **k):
+        raise RuntimeError("panne transitoire")
+
+    monkeypatch.setattr(main_mod, work, boom)
+
+    import logging
+    with caplog.at_level(logging.ERROR):
+        getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent())
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(label in m for m in messages), (
+        f"{loop} doit journaliser sous son propre libellé {label!r} ; vu : {messages}"
+    )
+
+
+def test_the_three_daemon_loops_use_three_distinct_labels():
+    """Verrou global : trois libellés, trois valeurs différentes."""
+    labels = [label for _, _, label in _LOOP_LABELS]
+    assert len(set(labels)) == len(labels), f"libellés non distincts : {labels}"
