@@ -5,6 +5,15 @@ services:
 
   web:
     build: { context: .., dockerfile: deploy/Dockerfile.web }
+    # Nom DÉTERMINISTE : le broker attache ce conteneur aux réseaux per-session
+    # (docker network connect). Sans container_name, Docker générerait
+    # `<projet>-web-1`, que le broker ne peut pas deviner.
+    # Le nom dérive de la MÊME variable que celle lue par le broker plus bas
+    # (OCULAR_WEB_CONTAINER) : source unique, les deux ne peuvent pas diverger
+    # même si un opérateur la surcharge dans deploy/.env.
+    # Contrepartie assumée : `container_name` interdit `docker compose up
+    # --scale web=N` — le web est un singleton du plan de contrôle.
+    container_name: "${OCULAR_WEB_CONTAINER:-ocular-web}"
     restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
@@ -27,6 +36,12 @@ services:
       # Plafond de sessions interactives CONCURRENTES (anti-épuisement de
       # ressources : chaque session = un conteneur ~4g). Le web refuse (429)
       # au-delà. 0 = illimité. Lu par create_session.
+      # ⚠️ Chaque session consomme AUSSI un réseau docker dédié, donc un
+      # sous-réseau du pool d'adresses local. Le pool PAR DÉFAUT de Docker n'en
+      # fournit qu'une trentaine au total : à cette valeur de 25, l'épuisement
+      # n'est pas un cas extrême mais le nominal. Élargir `default-address-pools`
+      # dans /etc/docker/daemon.json (prérequis de déploiement, cf.
+      # `docs/DEPLOY-SECURITY.md` §2.3) ou abaisser cette valeur.
       OCULAR_MAX_SESSIONS: "${OCULAR_MAX_SESSIONS:-25}"
     read_only: true
     tmpfs: ["/tmp"]
@@ -49,7 +64,8 @@ services:
     depends_on: [redis]
     networks:
       - default          # redis
-      - ocular-sessions  # web -> conteneurs de session (proxy interactif)
+      - ocular-sessions  # vestigial : le proxy interactif passe désormais par
+                         # les réseaux per-session attachés dynamiquement
     # PAS de docker.sock — contrainte de sécurité
 
   broker:
@@ -68,6 +84,8 @@ services:
       # ajuste-le à la taille d'écran cible (défaut 1920x1080). Le broker le
       # transmet au conteneur de session (validé par regex).
       OCULAR_SESSION_SCREEN: "${OCULAR_SESSION_SCREEN:-1920x1080}"
+      # Conteneur web que le broker attache/détache aux réseaux per-session.
+      OCULAR_WEB_CONTAINER: "${OCULAR_WEB_CONTAINER:-ocular-web}"
     mem_limit: 1g
     cpus: "1.0"
     volumes:
@@ -77,11 +95,13 @@ services:
     depends_on: [redis]
     networks:
       - default          # redis
-      - ocular-sessions  # broker lance les sessions avec --network ocular-sessions
-    # Le broker lance les conteneurs de session avec `--network ocular-sessions`
-    # (broker/sessions.py::_SESSION_NETWORK, en dur, nom non préfixé). Le réseau
-    # doit donc exister sous ce nom stable — voir `networks.ocular-sessions.name`
-    # ci-dessous. `docker compose up` le crée automatiquement.
+      - ocular-sessions  # vestigial (voir `networks.ocular-sessions` ci-dessous)
+    # Le broker crée un réseau DÉDIÉ PAR SESSION (`ocular-sess-net-{id}`), y
+    # lance le conteneur de session, et y attache dynamiquement le conteneur web
+    # (docker network connect). Le réseau est supprimé au teardown de la session,
+    # et les réseaux orphelins sont balayés au démarrage du broker. Deux sessions
+    # sont donc sur des réseaux disjoints. AUCUNE session ne rejoint plus
+    # `ocular-sessions`.
 
 volumes:
   ocular-artifacts:
@@ -90,6 +110,10 @@ volumes:
 networks:
   default: {}
   ocular-sessions:
-    name: ocular-sessions  # nom stable, non préfixé par le projet compose,
-    # cohérent avec broker/sessions.py::_SESSION_NETWORK. PAS internal: true —
-    # les conteneurs de session ont besoin d'egress Internet (navigation/appels).
+    name: ocular-sessions  # nom stable, non préfixé par le projet compose.
+    # VESTIGIAL : depuis l'isolation réseau par session, plus AUCUN conteneur de
+    # session ne rejoint ce réseau — le broker en crée un dédié par session
+    # (`ocular-sess-net-{id}`). Seuls web et broker y restent attachés. Conservé
+    # pour ne rien casser sur les déploiements existants ; supprimable
+    # ultérieurement (avec les entrées `networks:` de web et broker).
+    # PAS internal: true — les conteneurs ont besoin d'egress Internet.

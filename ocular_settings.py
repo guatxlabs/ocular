@@ -8,10 +8,6 @@ def redis_url() -> str:
     return os.environ.get("OCULAR_REDIS_URL", os.environ.get("REDIS_URL", "redis://localhost:6379"))
 
 
-def artifacts_dir() -> str:
-    return os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
-
-
 def runner_image() -> str:
     return os.environ.get("OCULAR_RUNNER_IMAGE", "ocular-runner-analysis:latest")
 
@@ -161,6 +157,18 @@ def artifacts_dir() -> str:
     """Répertoire des artefacts (screenshots/DOM/HAR) contenu-adressés.
     Défaut `artifacts` (relatif). Centralise l'accès à `OCULAR_ARTIFACTS_DIR`."""
     return os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+
+
+def web_container() -> str:
+    """Nom du conteneur web, que le broker attache/détache aux réseaux
+    per-session (`docker network connect`). Le compose dérive le
+    `container_name` du service web de cette MÊME variable (source unique :
+    les deux ne peuvent pas diverger, même si un opérateur la surcharge),
+    avec `ocular-web` pour défaut — le nom reste ainsi DÉTERMINISTE (sinon
+    Docker génère `<projet>-web-1`, non devinable par le broker).
+    Surchargeable par `OCULAR_WEB_CONTAINER` ; une valeur vide retombe sur
+    le défaut (un nom vide ferait échouer `network connect` de façon opaque)."""
+    return os.environ.get("OCULAR_WEB_CONTAINER", "").strip() or "ocular-web"
 
 
 def max_sessions() -> int:

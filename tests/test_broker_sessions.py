@@ -1,6 +1,14 @@
+import logging
+
 import fakeredis
 
-from broker.sessions import build_session_args, launch_session, reap, stop_session
+from broker.sessions import (
+    _NET_PREFIX,
+    build_session_args,
+    launch_session,
+    reap,
+    stop_session,
+)
 import broker.sessions as sessions_mod
 
 
@@ -26,7 +34,16 @@ def test_build_session_args_is_detached_not_interactive_rm():
 def test_build_session_args_names_container_and_network():
     a = build_session_args("s1")
     assert "--name" in a and "ocular-sess-s1" in a
-    assert "--network" in a and "ocular-sessions" in a
+    # réseau DÉDIÉ à la session (isolation conteneur-à-conteneur) — plus
+    # jamais le réseau partagé `ocular-sessions`.
+    assert "--network" in a and "ocular-sess-net-s1" in a
+    assert "ocular-sessions" not in a
+
+
+def test_session_net_mirrors_session_name():
+    from broker.sessions import _session_net, _session_name
+    assert _session_name("abc") == "ocular-sess-abc"
+    assert _session_net("abc") == "ocular-sess-net-abc"
 
 
 def test_build_session_args_uses_recon_vnc_image_by_default():
@@ -69,17 +86,20 @@ def test_build_session_args_passes_session_secret_env():
 
 
 def test_launch_session_threads_secret_to_docker_run(monkeypatch):
-    calls = {}
+    # launch_session émet 3 commandes (network create / run / network connect) :
+    # on isole celle du `docker run` pour asserter sur le secret.
+    calls = []
 
     def fake_run(args, capture_output=None, check=None):
-        calls["args"] = args
+        calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
 
     launch_session("s1", secret="threaded-secret")
 
-    assert "OCULAR_SESSION_SECRET=threaded-secret" in calls["args"]
+    run_args = next(a for a in calls if a[:3] == ["docker", "run", "-d"])
+    assert "OCULAR_SESSION_SECRET=threaded-secret" in run_args
 
 
 def test_build_session_args_never_touches_docker_socket_or_host_net_or_privileged():
@@ -91,10 +111,10 @@ def test_build_session_args_never_touches_docker_socket_or_host_net_or_privilege
 
 
 def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
-    calls = {}
+    calls = []
 
     def fake_run(args, capture_output=None, check=None):
-        calls["args"] = args
+        calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"deadbeef\n", "stderr": b""})()
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
@@ -102,7 +122,7 @@ def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
     container = launch_session("s1")
 
     assert container == "ocular-sess-s1"
-    assert calls["args"][:3] == ["docker", "run", "-d"]
+    assert any(a[:3] == ["docker", "run", "-d"] for a in calls)
 
 
 def test_stop_session_kills_then_removes(monkeypatch):
@@ -131,7 +151,9 @@ def test_stop_session_is_best_effort_check_false(monkeypatch):
 
     stop_session("ocular-sess-ghost")  # ne doit pas lever malgré returncode 1
 
-    assert seen_check == [False, False]
+    # 4 commandes depuis le teardown réseau (kill, rm -f, network disconnect,
+    # network rm) : TOUTES best-effort, aucune ne doit lever sur returncode 1.
+    assert seen_check == [False, False, False, False]
 
 
 class _FakeRegistry:
@@ -251,3 +273,223 @@ def test_session_screen_default_and_validation(monkeypatch):
     assert session_screen() == "2560x1440"                 # valeur valide
     monkeypatch.setenv("OCULAR_SESSION_SCREEN", "; rm -rf /")  # injection -> défaut
     assert session_screen() == "1920x1080"
+
+
+# --- Isolation réseau par session : orchestration du lancement ---------------
+
+def test_launch_session_creates_net_runs_then_connects_web(monkeypatch):
+    # L'ORDRE est la garantie anti-race : le web est attaché AVANT que
+    # process_session_cmd n'expose la session au registre.
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    name = launch_session("s1", secret="sec")
+
+    assert name == "ocular-sess-s1"
+    assert calls[0] == ["docker", "network", "create", "ocular-sess-net-s1"]
+    assert calls[1][:3] == ["docker", "run", "-d"]
+    assert calls[2] == ["docker", "network", "connect", "ocular-sess-net-s1", "ocular-web"]
+
+
+def test_launch_session_survives_network_connect_failure(monkeypatch):
+    # Si le web n'est pas joignable, on logue mais on ne lève pas : le poll
+    # de santé côté web décidera (504 -> teardown), pas d'exception ici.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "connect"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"no such container"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
+
+
+def test_launch_session_survives_network_create_failure(monkeypatch):
+    # Pool d'adresses Docker épuisé : on logue un warning distinctif, on ne lève pas.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "create"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"could not find an available predefined subnet"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
+
+
+def test_launch_session_survives_docker_run_failure(monkeypatch):
+    # 3e chemin best-effort : un `docker run` en échec ne doit pas lever non
+    # plus — le nom est toujours retourné, le poll de santé côté web décidera.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "run", "-d"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"boom"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
+
+
+def _create_fails_with(stderr: bytes):
+    """fake subprocess.run où SEUL `docker network create` échoue, avec le
+    stderr fourni (les deux autres commandes best-effort réussissent, donc
+    tout warning capturé provient forcément du chemin `network create`)."""
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "create"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": stderr})()
+    return fake_run
+
+
+def test_launch_session_network_create_warning_only_when_not_already_exists(monkeypatch, caplog):
+    """Exigence explicite du plan : PAS de warning quand le réseau existe déjà
+    (relance idempotente d'une session), MAIS un warning distinctif quand
+    l'échec est réel (pool d'adresses Docker épuisé). Cette double face garde
+    la comparaison de sous-chaîne sur un message Docker non contractuel : la
+    supprimer ferait passer chaque relance pour une erreur.
+
+    Capture : le logger est `ocular.broker.sessions` (get_logger préfixe
+    `ocular.`) et `propagate` reste à True, donc caplog le voit dès qu'on
+    abaisse le niveau sur ce logger précis."""
+    logger_name = sessions_mod.log.name
+    assert logger_name == "ocular.broker.sessions"  # préfixe posé par get_logger
+
+    # Face 1 : réseau déjà présent -> silence complet.
+    monkeypatch.setattr(sessions_mod.subprocess, "run",
+                        _create_fails_with(b"Error response from daemon: network with name ocular-sess-net-s1 already exists"))
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        assert launch_session("s1") == "ocular-sess-s1"
+    assert not [r for r in caplog.records if "network create failed" in r.getMessage()]
+
+    caplog.clear()
+
+    # Face 2 : pool d'adresses épuisé -> warning émis ET distinctif.
+    monkeypatch.setattr(sessions_mod.subprocess, "run",
+                        _create_fails_with(b"could not find an available predefined subnet"))
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        assert launch_session("s1") == "ocular-sess-s1"
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and "network create failed" in r.getMessage()]
+    assert len(warnings) == 1
+    # message distinctif : il oriente vers le pool d'adresses Docker
+    assert "pool d'adresses" in warnings[0]
+    assert "default-address-pools" in warnings[0]
+    assert "could not find an available predefined subnet" in warnings[0]
+
+
+def test_stop_session_removes_container_then_network(monkeypatch):
+    # ORDRE CONTRAIGNANT : Docker refuse `network rm` tant qu'un conteneur y
+    # est attaché -> le conteneur doit partir AVANT.
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    stop_session("ocular-sess-s1")
+
+    assert calls[0] == ["docker", "kill", "ocular-sess-s1"]
+    assert calls[1] == ["docker", "rm", "-f", "ocular-sess-s1"]
+    assert calls[2] == ["docker", "network", "disconnect", "-f", "ocular-sess-net-s1", "ocular-web"]
+    assert calls[3] == ["docker", "network", "rm", "ocular-sess-net-s1"]
+
+
+def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
+    # Nom inattendu -> on ne dérive aucun réseau (pas de `network rm` sauvage).
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    stop_session("un-autre-conteneur")
+    # kill + rm, et RIEN de plus : cet assert verrouille l'absence de TOUT appel
+    # supplémentaire (l'assert suivant, lui, ne couvre que ceux contenant « network »).
+    assert len(calls) == 2
+    assert all("network" not in a for a in calls)
+
+
+class _FakeReg:
+    """Registre minimal : seules les sessions listées sont 'vivantes'."""
+    def __init__(self, alive):
+        self._alive = set(alive)
+
+    def get(self, session_id):
+        return {"session_id": session_id} if session_id in self._alive else None
+
+
+def test_sweep_orphans_removes_orphan_networks_only(monkeypatch):
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if args[:3] == ["docker", "network", "ls"]:
+            # un réseau orphelin (s-dead) + un réseau de session vivante (s-live)
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "ocular-sess-net-s-dead\nocular-sess-net-s-live\n",
+                                  "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    sweep_orphans(_FakeReg(alive={"s-live"}))
+
+    # Le filtre du `network ls` est ANCRÉ sur `_NET_PREFIX` : sans cet assert sur
+    # la commande complète, muter le préfixe passerait inaperçu (les fakes ne
+    # matchent que args[:3]) alors qu'en vrai le balayage listerait autre chose.
+    assert ["docker", "network", "ls", "--filter", f"name={_NET_PREFIX}",
+            "--format", "{{.Name}}"] in calls
+    assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
+    assert ["docker", "network", "rm", "ocular-sess-net-s-live"] not in calls
+    assert ["docker", "network", "disconnect", "-f", "ocular-sess-net-s-dead", "ocular-web"] in calls
+
+
+def test_sweep_orphans_network_substring_guard(monkeypatch):
+    # `--filter name=` est un filtre SUBSTRING : un réseau au nom voisin ne
+    # doit pas être supprimé.
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if args[:3] == ["docker", "network", "ls"]:
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "prefixe-ocular-sess-net-x\n", "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    sweep_orphans(_FakeReg(alive=set()))
+    assert all(a[:3] != ["docker", "network", "rm"] for a in calls)
+
+
+def test_sweep_orphan_networks_runs_even_if_docker_ps_fails(monkeypatch):
+    # Les deux balayages sont INDÉPENDANTS : un `docker ps` en échec ne doit pas
+    # faire sauter le nettoyage réseau. `sweep_orphans` n'étant appelée qu'une
+    # fois AU DÉMARRAGE du broker, « rattrapé au prochain cycle » signifierait en
+    # pratique « au prochain redémarrage » -> le pool d'adresses fuit.
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+        if args[:3] == ["docker", "network", "ls"]:
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "ocular-sess-net-s-dead\n", "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    # Contrat inchangé : le retour compte les CONTENEURS supprimés -> 0 ici.
+    assert sweep_orphans(_FakeReg(alive=set())) == 0
+    assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
