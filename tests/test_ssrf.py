@@ -116,10 +116,23 @@ def test_ipv4_mapped_ipv6_loopback_rejected():
         "239.255.255.250",      # SSDP (découverte de services internes)
         "ff02::1",              # multicast link-local IPv6 (all-nodes)
         "ff02::fb",             # mDNS IPv6
+        # NAT64 / IPv4-embedding (audit sécu 2026-07-18) : IPv6 « globale » qui
+        # traduit vers une IPv4 INTERNE -> décision sur l'IPv4 réelle.
+        "64:ff9b::a9fe:a9fe",   # NAT64 well-known -> 169.254.169.254 (metadata)
+        "64:ff9b::7f00:1",      # NAT64 well-known -> 127.0.0.1 (loopback)
+        "64:ff9b::a00:1",       # NAT64 well-known -> 10.0.0.1 (RFC1918)
+        "64:ff9b:1::a9fe:a9fe", # NAT64 usage local /48 -> rejet prudent
+        "2002:a9fe:a9fe::",     # 6to4 -> 169.254.169.254
+        "::ffff:169.254.169.254",  # IPv4-mapped -> metadata
     ],
 )
 def test_is_ip_allowed_rejects_internal(ip):
     assert is_ip_allowed(ip) is False
+
+
+def test_nat64_wrapping_public_ipv4_still_allowed():
+    # Un NAT64 well-known vers une IPv4 PUBLIQUE reste légitime (8.8.8.8).
+    assert is_ip_allowed("64:ff9b::808:808") is True
 
 
 def test_is_ip_allowed_rejects_multicast_objects():
