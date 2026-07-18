@@ -127,13 +127,28 @@ def test_web_package_never_imports_docker():
 # --- Task 9 : option LLM d'explication (POST /jobs/{id}/explain) -------------
 
 def test_explain_disabled_by_default_is_404(monkeypatch):
-    # OFF par défaut : sans OCULAR_LLM_ENABLED, l'endpoint renvoie 404 et
-    # n'émet AUCUN appel réseau (on n'atteint même pas get_result).
+    # OFF par défaut : sans OCULAR_LLM_ENABLED, l'endpoint renvoie 404 AVANT
+    # tout travail LLM. Le job EXISTE (résultat seedé) donc un 404 "job
+    # introuvable" ne peut PAS être la raison : on exige le détail "option LLM
+    # désactivée". On piège aussi urlopen pour prouver zéro appel réseau — un
+    # garde d'activation retiré (qui tenterait get_result puis un appel LLM)
+    # ferait donc échouer ce test.
+    import urllib.request
+
     monkeypatch.delenv("OCULAR_LLM_ENABLED", raising=False)
     monkeypatch.delenv("OCULAR_LLM_BASE_URL", raising=False)
-    client = _client(monkeypatch)[0]
-    r = client.post("/jobs/whatever/explain")
+
+    def _boom(*a, **k):  # pragma: no cover - ne doit jamais être appelé
+        raise AssertionError("aucun appel urlopen ne doit être émis quand LLM est désactivé")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+
+    client, q = _client(monkeypatch)
+    q.set_result("job-off", json.dumps({"verdict": "suspicious", "triage": None,
+                                        "static_findings": [], "dom": {"forms": [], "mailtos": []}}))
+    r = client.post("/jobs/job-off/explain")
     assert r.status_code == 404
+    assert r.json()["detail"] == "option LLM désactivée"
 
 
 def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
@@ -159,7 +174,10 @@ def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
         ],
         "dom": {
             "title": "x",
-            "forms": [{"action": "https://evil.example/steal", "method": "POST"}],
+            # Champ supplémentaire (ex: futures valeurs de champs de formulaire) :
+            # la whitelist doit le réduire à action+method et NE PAS le forwarder.
+            "forms": [{"action": "https://evil.example/steal", "method": "POST",
+                       "values": {"pw": "FORMSECRET"}}],
             "mailtos": ["drop@evil.example"],
             "links": ["https://evil.example"],
         },
@@ -194,6 +212,7 @@ def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
     assert "SECRET PASSWORD" not in blob   # ni via match/context d'un finding
     assert "sha256:deadbeef" not in blob   # ni les refs d'artefact
     assert "user=a&pw=SECRET" not in blob  # ni les post-bodies réseau
+    assert "FORMSECRET" not in blob        # ni un champ ajouté à un form (whitelist totale)
 
 
 def test_explain_internal_host_refused_without_optin(monkeypatch):

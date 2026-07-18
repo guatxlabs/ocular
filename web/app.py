@@ -336,10 +336,18 @@ def _llm_summary_payload(result: dict) -> dict:
         for f in (result.get("static_findings") or [])
         if isinstance(f, dict)
     ]
-    dom = result.get("dom") or {}
+    dom = result.get("dom") if isinstance(result.get("dom"), dict) else {}
+    # Whitelist TOTALE : on réduit explicitement chaque form à action+method
+    # (jamais wholesale) pour qu'un ajout futur de valeurs de champs à un form
+    # ne puisse pas fuiter silencieusement. `mailtos` reste une liste de
+    # chaînes (cibles mailto:, pas du contenu de page).
     dom_reduced = {
-        "forms": dom.get("forms", []) if isinstance(dom, dict) else [],
-        "mailtos": dom.get("mailtos", []) if isinstance(dom, dict) else [],
+        "forms": [
+            {"action": f.get("action"), "method": f.get("method")}
+            for f in (dom.get("forms") or [])
+            if isinstance(f, dict)
+        ],
+        "mailtos": [m for m in (dom.get("mailtos") or []) if isinstance(m, str)],
     }
 
     summary: dict = {
