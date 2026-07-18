@@ -235,9 +235,12 @@ def list_all(conn, *, sort: str = "saved_at", order: str = "desc",
         allowed = [b for b, rank in _BAND_RANK.items() if rank >= _BAND_RANK[min_band]]
         where = " WHERE triage_band IN (%s)" % ",".join("?" * len(allowed))
         params = allowed
-    # tri secondaire par id desc pour un ordre stable ; NULLs de triage en fin.
+    # `({sort} IS NULL)` en tête -> les lignes sans triage (triage_score NULL)
+    # finissent TOUJOURS en bas, quel que soit le sens (SQLite classe sinon les
+    # NULL en premier en ASC). Sans effet sur `saved_at` (colonne NOT NULL).
+    # tri secondaire par id desc pour un ordre stable.
     direction = "DESC" if order == "desc" else "ASC"
-    order_sql = f"{sort} {direction}, id DESC"
+    order_sql = f"({sort} IS NULL), {sort} {direction}, id DESC"
     rows = conn.execute(
         f"SELECT {_META_COLUMNS} FROM saved_analysis{where} ORDER BY {order_sql}",
         params,

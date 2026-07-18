@@ -79,12 +79,12 @@ Couche **native, résource-consciente**, purement additive : elle **complète** 
 **Décisions notables** : `obfuscation_cluster` 35→50 (poids provisoire calibrable) ; ML natif **avec les données** (heuristique day-1 → classifieur appris à la calibration), pas de modèle pré-entraîné embarqué (pas de dataset fiable).
 
 **⏳ Backlog post-merge (Minors, non bloquants)** :
-- `obfuscation_cluster=50` n'atteint la bande *high* que si le cluster contient un finding *high-severity* ; un cluster de rules *medium* uniquement **diverge** du verdict règles (comportement voulu — le 2e avis complète, ne miroite pas — mais à recalibrer si alignement souhaité).
+- ~~`obfuscation_cluster` medium-only divergeait du verdict règles~~ → **✅ FERMÉ (2026-07-18)** : poids 50→**65** (base+65 ≥ high) ; un cluster d'obfuscation ≥2 (même medium) atteint la bande *high* → 2e avis `malicious`, aligné sur `compute_verdict` (plus de fausse divergence sur le signal malveillant le plus fort ; le 2e avis garde sa liberté de diverger sur les signaux plus faibles).
 - ~~**`calibrate` pas strictement read-only**~~ → **✅ FERMÉ (2026-07-18)** : `saved_store.connect_readonly()` (`mode=ro`, sans `_migrate`) ; la calibration ne mute plus la base (test : écriture rejetée).
 - ~~**DNS-rebinding LLM**~~ → **✅ FERMÉ (2026-07-18)** : appel LLM **épinglé sur l'IP résolue** (`resolve_allowed_ip` + connexions custom, vérif TLS préservée) ; **aucune redirection suivie** et **proxies d'env ignorés** (sinon le pin sauterait) — un 3xx cross-scheme d'un endpoint hostile ne peut plus atteindre un hôte interne. Audit adversarial : Critical redirect-SSRF trouvé puis fermé + re-vérifié.
 - ~~**Filtre `min_band` pas exposé en UI**~~ → **✅ FERMÉ (2026-07-18)** : sélecteur de priorité (toutes / triées / ≥ moyenne / haute) dans la vue Sauvegardes, `GET /saved?min_band=…` (filtre SQL serveur).
 - ~~**Arrondi JS `Math.round` vs banker Python**~~ → **✅ FERMÉ (2026-07-18)** : `roundHalfEven()` dans `triage.js` (round-half-to-even, comme `round()` Python) → la somme des contributions affichées égale toujours le score, même pour un poids calibré à `.5`.
-- Tri `triage_score ASC` place les NULL en tête ; message de commit dit « indexées » sans index créé (YAGNI au volume actuel).
+- ~~Tri `triage_score ASC` place les NULL en tête~~ → **✅ FERMÉ (2026-07-18)** : `ORDER BY (triage_score IS NULL), …` → les analyses sans triage finissent toujours en bas (les deux sens). *(Reste : le message du commit `f461d4b` dit « indexées » sans index créé — cosmétique, historique mergé, non réécrit ; YAGNI au volume actuel.)*
 
 ## ✅ Fait (mergé sur `main`)
 

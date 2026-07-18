@@ -302,3 +302,19 @@ def test_list_all_filter_min_band(tmp_path):
     _seed(conn, "sha256:b", 80, "high")
     rows = saved_store.list_all(conn, min_band="high")
     assert [r["input_hash"] for r in rows] == ["sha256:b"]
+
+
+def test_list_all_sort_triage_nulls_last(tmp_path):
+    # Une sauvegarde SANS triage (score/band NULL) ne doit jamais remonter en
+    # tête d'un tri par priorité — même en ASC (SQLite classerait sinon NULL
+    # en premier). Elle finit toujours en bas.
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    _seed(conn, "sha256:a", 10, "low")
+    saved_store.save(conn, {"input_hash": "sha256:n", "profile": "analysis",
+                            "verdict": "benign"}, {}, None, "2026-01-01T00:00:00Z")
+    asc = saved_store.list_all(conn, sort="triage_score", order="asc")
+    assert asc[0]["triage_score"] == 10
+    assert asc[-1]["triage_score"] is None
+    desc = saved_store.list_all(conn, sort="triage_score", order="desc")
+    assert desc[0]["triage_score"] == 10
+    assert desc[-1]["triage_score"] is None
