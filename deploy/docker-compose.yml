@@ -85,7 +85,17 @@ services:
     # — en contradiction avec le modèle du §1 de docs/DEPLOY-SECURITY.md, qui
     # suppose un reverse-proxy authentifiant en amont. Exposer reste possible,
     # mais devient un acte EXPLICITE de l'opérateur (OCULAR_BIND=0.0.0.0).
-    ports: ["${OCULAR_BIND:-127.0.0.1}:8000:8000"]
+    # ⚠️ AUCUN `ports:` ICI — DÉLIBÉRÉ, C'EST UN CORRECTIF, PAS UN OUBLI.
+    # Le port publié vit désormais sur le service `gateway` ci-dessous.
+    # Republier 8000 sur CE conteneur ressusciterait le défaut : le broker
+    # attache/détache ce conteneur d'un réseau par session (`docker network
+    # connect`), et Docker reprogramme alors SA publication de ports — il tue et
+    # respawn le `docker-proxy`, coupant net toute connexion en vol (`curl
+    # rc=52`, zéro octet de réponse). Or `POST /sessions` tient justement sa
+    # connexion cliente ouverte ~8-10 s pendant `_wait_session_ready` : il se
+    # faisait décapiter par son PROPRE lancement de session (~4 échecs sur 6
+    # mesurés), alors que la session était bel et bien créée -> session_id perdu
+    # et fuite jusqu'au TTL. Mécanisme complet et preuve : deploy/gateway.conf.
     mem_limit: 1g
     cpus: "1.0"
     volumes:
@@ -104,6 +114,38 @@ services:
       - ocular-sessions  # vestigial : le proxy interactif passe désormais par
                          # les réseaux per-session attachés dynamiquement
     # PAS de docker.sock — contrainte de sécurité
+
+  # Frontal TCP STABLE : SEUL détenteur du port publié 8000.
+  # Il ne rejoint QUE `default` et n'est jamais attaché à un réseau de session,
+  # donc son `docker-proxy` n'est jamais reprogrammé — c'est toute la raison de
+  # son existence. Ne lui ajoutez aucun réseau dynamique. Cf. deploy/gateway.conf.
+  gateway:
+    image: nginx:alpine
+    restart: unless-stopped
+    # Bind LOOPBACK par défaut (propriété conservée telle quelle en déplaçant le
+    # port depuis `web`). `"8000:8000"` écouterait implicitement sur 0.0.0.0 :
+    # toute l'API (/sessions, proxy noVNC) serait joignable depuis n'importe quel
+    # poste du LAN, derrière un unique Bearer statique sans rotation ni
+    # rate-limit — en contradiction avec le modèle du §1 de
+    # docs/DEPLOY-SECURITY.md, qui suppose un reverse-proxy authentifiant en
+    # amont. Exposer reste possible, mais reste un acte EXPLICITE de l'opérateur
+    # (OCULAR_BIND=0.0.0.0).
+    ports: ["${OCULAR_BIND:-127.0.0.1}:8000:8000"]
+    volumes:
+      - ./gateway.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    # nginx écrit son pid (redirigé sur /tmp par gateway.conf) et ses fichiers
+    # temporaires ; seul chemin inscriptible sous read_only: true.
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # uid nginx de l'image alpine. Le port 8000 étant > 1024, aucune capability
+    # (NET_BIND_SERVICE) n'est nécessaire pour l'écouter en non-root.
+    user: "101:101"
+    mem_limit: 128m
+    cpus: "0.5"
+    depends_on: [web]
+    networks: [default]   # JAMAIS de réseau per-session ici (cf. ci-dessus)
 
   broker:
     build: { context: .., dockerfile: deploy/Dockerfile.broker }

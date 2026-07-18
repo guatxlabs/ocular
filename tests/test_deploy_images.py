@@ -393,11 +393,72 @@ def test_compose_api_binds_loopback_by_default():
     `ports: ["8000:8000"]` écoutait implicitement sur toutes les interfaces :
     /sessions et le proxy noVNC étaient joignables depuis n'importe quel poste
     du LAN, derrière un unique Bearer statique sans rotation ni rate-limit.
+
+    La publication a été DÉPLACÉE du `web` vers le frontal `gateway` (cf.
+    `test_compose_web_publishes_no_port`) ; la propriété de bind loopback, elle,
+    doit survivre intacte à ce déplacement — c'est ce que verrouille ce test.
     """
-    block = _compose_service_block("web")
+    block = _compose_service_block("gateway")
     assert "${OCULAR_BIND:-127.0.0.1}:8000:8000" in block, (
         "le bind par défaut doit rester la loopback ; exposer doit rester un acte "
         "explicite de l'opérateur (OCULAR_BIND=0.0.0.0)"
+    )
+
+
+def test_compose_web_publishes_no_port():
+    """Le conteneur `web` ne doit publier AUCUN port hôte.
+
+    MODE DE PANNE PRÉVENU (reproduit puis prouvé live avant d'écrire ce test —
+    ce test ÉCHOUE sur le compose d'avant le correctif) :
+
+    le broker attache le web à un réseau dédié par session
+    (`docker network connect ocular-sess-net-{id} ocular-web`) puis l'en détache
+    au teardown. Docker **reprogramme la publication de ports d'un conteneur à
+    chaque changement de ses réseaux** : il tue et respawn le `docker-proxy` du
+    port publié. Toute connexion en vol à travers ce port est coupée sans qu'un
+    octet de réponse ne parte (`curl rc=52, Empty reply from server`), et le
+    proxy renaît pointé sur l'IP du DERNIER réseau attaché — l'IP d'un réseau de
+    session, qui disparaît à la fermeture de celle-ci (`rc=7`).
+
+    `POST /sessions` tient sa connexion cliente ouverte ~8-10 s pendant
+    `_wait_session_ready` : il se faisait donc décapiter par son PROPRE
+    lancement de session (~4 échecs sur 6 mesurés). La session était pourtant
+    bel et bien créée -> le client perdait un `session_id` VIVANT, qui fuyait
+    jusqu'à son TTL en immobilisant un conteneur (~4 g) et un sous-réseau du
+    pool Docker, qui n'en offre qu'une trentaine. Un client qui réessayait en
+    créait une AUTRE : épuisement de ressources auto-infligé.
+
+    Le port publié doit donc rester sur un conteneur que le broker ne re-câble
+    JAMAIS (`gateway`). Vérifié live : le trafic conteneur->conteneur survit
+    intact à un `docker network connect` concurrent — seul le chemin du port
+    publié était touché, d'où la suffisance de ce découplage.
+    """
+    block = _compose_service_block("web")
+    offenders = [line.strip() for line in block.splitlines() if line.strip().startswith("ports:")]
+    assert not offenders, (
+        "le web ne doit publier aucun port : le broker l'attache/détache des "
+        "réseaux per-session, et Docker reprogramme alors le docker-proxy du "
+        f"port publié en tuant les connexions en vol. Trouvé : {offenders}"
+    )
+
+
+def test_compose_gateway_never_joins_a_dynamic_network():
+    """Le frontal ne doit être attaché qu'au réseau `default`.
+
+    Son unique raison d'être est d'être le conteneur que PERSONNE ne re-câble :
+    lui attacher un réseau supplémentaire (a fortiori un réseau de session)
+    rouvrirait exactement le trou refermé par `test_compose_web_publishes_no_port`
+    — Docker reprogrammerait son docker-proxy et tuerait à nouveau les requêtes
+    en vol, port publié à l'appui.
+    """
+    block = _compose_service_block("gateway")
+    assert "networks: [default]" in block, (
+        "le frontal doit rester sur le seul réseau `default` — aucun réseau "
+        "dynamique/per-session ne doit lui être ajouté"
+    )
+    assert "ocular-sessions" not in block, (
+        "le frontal ne doit PAS rejoindre ocular-sessions : il doit rester "
+        "hors de toute topologie que le broker modifie"
     )
 
 
