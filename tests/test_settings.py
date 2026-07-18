@@ -2,7 +2,18 @@ import ocular_settings as s
 
 
 def test_defaults(monkeypatch):
-    for v in ["OCULAR_REDIS_URL", "OCULAR_JOB_MEMORY", "OCULAR_RESULT_TTL", "OCULAR_MAX_HTML_BYTES"]:
+    # REDIS_URL (SANS préfixe) doit figurer ici : `redis_url()` le lit en repli
+    # de OCULAR_REDIS_URL, et c'est le nom que pose deploy/docker-compose.yml.
+    # Sans cet effacement, le test échouait pour quiconque avait sourcé
+    # deploy/.env dans son shell — une suite ROUGE sur du code SAIN, qui envoie
+    # chercher une régression inexistante (vécu pendant l'audit du 2026-07-18).
+    for v in [
+        "OCULAR_REDIS_URL",
+        "REDIS_URL",
+        "OCULAR_JOB_MEMORY",
+        "OCULAR_RESULT_TTL",
+        "OCULAR_MAX_HTML_BYTES",
+    ]:
         monkeypatch.delenv(v, raising=False)
     assert s.redis_url() == "redis://localhost:6379"
     assert s.job_memory() == "2g"
