@@ -26,7 +26,16 @@ def test_build_session_args_is_detached_not_interactive_rm():
 def test_build_session_args_names_container_and_network():
     a = build_session_args("s1")
     assert "--name" in a and "ocular-sess-s1" in a
-    assert "--network" in a and "ocular-sessions" in a
+    # réseau DÉDIÉ à la session (isolation conteneur-à-conteneur) — plus
+    # jamais le réseau partagé `ocular-sessions`.
+    assert "--network" in a and "ocular-sess-net-s1" in a
+    assert "ocular-sessions" not in a
+
+
+def test_session_net_mirrors_session_name():
+    from broker.sessions import _session_net, _session_name
+    assert _session_name("abc") == "ocular-sess-abc"
+    assert _session_net("abc") == "ocular-sess-net-abc"
 
 
 def test_build_session_args_uses_recon_vnc_image_by_default():
