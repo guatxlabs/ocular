@@ -14,18 +14,20 @@ from ocular_logging import get_logger
 # CRITIQUE : comme runner_analysis/render.py — stdout = wrapper JSON pur consommé
 # par broker/launcher.py. Tous les logs partent sur stderr.
 #
-# DOIT s'exécuter AVANT tout import qui déclenche, indirectement, un premier
-# appel à `ocular_logging.get_logger(...)` SANS préciser `stream` — notamment
-# `engine.egress_guard` (plan 3g Task G2), qui fait `logger = get_logger(
-# "egress_guard")` À SON IMPORT. `get_logger` configure un handler UNIQUE,
-# partagé par tout le process (`ocular_logging._CONFIGURED`, cf. docstring
-# du module) : le PREMIER appelant gagne le `stream` pour TOUS les loggers
-# "ocular.*" ultérieurs, y compris celui-ci. Sans cet ordre, les logs du
-# garde (ex. "egress blocked host=...") atterriraient sur stdout et
-# corrompraient le JSON du wrapper que lit `broker/launcher.py` — régression
-# réelle observée empiriquement en intégration avant ce fix (cf.
-# tests/test_egress_integration.py, échec `JSONDecodeError: Extra data`).
-log = get_logger("runner-recon", stream=sys.stderr)
+# L'ORDRE DES IMPORTS N'EST PLUS SENSIBLE. Historiquement, cette ligne devait
+# s'exécuter AVANT tout import déclenchant un premier `get_logger(...)` sans
+# `stream` (notamment `engine.egress_guard`, qui appelle `get_logger(
+# "egress_guard")` À SON IMPORT) : `get_logger` configure un handler UNIQUE
+# partagé par tout le process (`ocular_logging._CONFIGURED`), donc le PREMIER
+# appelant gagnait le flux pour TOUS les loggers "ocular.*". Les logs du garde
+# (ex. "egress blocked host=...") atterrissaient alors sur stdout et
+# corrompaient le JSON du wrapper lu par `broker/launcher.py` — régression
+# réelle observée en intégration (cf. tests/test_egress_integration.py, échec
+# `JSONDecodeError: Extra data`).
+# `get_logger` n'expose plus de paramètre `stream` et écrit toujours sur
+# stderr : aucun ordre d'import ni aucun appelant ne peut plus casser ce
+# contrat. Le placement ci-dessous est conservé par simple cohérence de lecture.
+log = get_logger("runner-recon")
 
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS  # noqa: E402
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard  # noqa: E402
