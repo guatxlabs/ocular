@@ -197,3 +197,75 @@ def test_start_sweeper_starts_a_daemon_thread(monkeypatch):
     assert t.name == "ocular-sweeper"
     assert started["called"] is True
     assert started["registry"] == ("registry-for", client)
+
+
+# --- Défaut C : l'accesseur d'intervalle était appelé HORS du `try` ----------
+# `_time.sleep(reaper_interval())` était placé APRÈS le `except` : une valeur
+# d'env malformée (`OCULAR_REAPER_INTERVAL=60s`) levait donc en dehors de toute
+# garde -> le thread démon mourait SANS UN SEUL LOG, le broker continuait de
+# servir, et plus aucune session n'était jamais reapée (fuite illimitée de
+# conteneurs ~4 Go). Défense en profondeur : la lecture d'intervalle passe DANS
+# le `try`, en plus du durcissement des accesseurs (cf. tests/test_settings.py).
+
+import pytest
+
+_LOOPS = [
+    ("_reaper_loop", "reap", "reaper_interval", "OCULAR_REAPER_INTERVAL"),
+    ("_gc_loop", "collect", "gc_interval", "OCULAR_GC_INTERVAL"),
+    ("_sweeper_loop", "sweep_orphans", "sweep_interval", "OCULAR_SWEEP_INTERVAL"),
+]
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+@pytest.mark.parametrize("bad", ["60s", "abc", "", "-1", "0"])
+def test_daemon_loop_survives_a_malformed_interval_env(monkeypatch, loop, work, interval_fn, env, bad):
+    """Le thread démon doit SURVIVRE à une valeur d'intervalle malformée, et
+    avoir fait son travail au moins une fois."""
+    monkeypatch.setenv(env, bad)
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+
+    calls = []
+    monkeypatch.setattr(main_mod, work, lambda *a, **k: calls.append(1))
+
+    getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent())  # ne doit PAS lever
+    assert calls, f"{loop} n'a pas fait son travail avec {env}={bad!r}"
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+def test_daemon_loop_survives_an_exploding_interval_accessor(monkeypatch, loop, work, interval_fn, env):
+    """Défense en profondeur : même si l'accesseur d'intervalle lui-même
+    explosait, la boucle ne doit pas laisser l'exception tuer le thread."""
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+    monkeypatch.setattr(main_mod, work, lambda *a, **k: None)
+
+    def boom():
+        raise ValueError("accesseur cassé")
+
+    monkeypatch.setattr(main_mod, interval_fn, boom)
+
+    getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent())  # ne doit PAS lever
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+def test_daemon_loop_never_sleeps_zero(monkeypatch, loop, work, interval_fn, env):
+    """`interval=0` -> `sleep(0)` -> boucle folle à 100 % CPU martelant
+    Docker/Redis. L'attente demandée doit toujours être >= 1 s."""
+    monkeypatch.setenv(env, "0")
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+    monkeypatch.setattr(main_mod, work, lambda *a, **k: None)
+
+    waited = []
+
+    class _RecordingStopEvent(_FakeStopEvent):
+        def wait(self, timeout):
+            waited.append(timeout)
+            return super().wait(timeout)
+
+    getattr(main_mod, loop)(object(), stop_event=_RecordingStopEvent())
+    assert waited and all(w >= 1 for w in waited), f"attente non bornée : {waited}"

@@ -1,7 +1,55 @@
+"""Accès centralisé à la configuration par variables d'environnement.
+
+RÈGLE INVARIANTE — **un accesseur ne lève JAMAIS sur une valeur malformée ; il
+retombe sur son défaut** (et applique un plancher). Ce n'est pas du confort :
+ces accesseurs sont appelés depuis les boucles démon du broker (reaper, gc,
+sweeper). Un `int()` nu sur `OCULAR_REAPER_INTERVAL=60s` levait un `ValueError`
+qui tuait le thread SANS UN SEUL LOG — le broker continuait de servir, mais plus
+aucune session n'était jamais reapée : fuite illimitée de conteneurs (~4 Go
+chacun). De même, un intervalle à `0` produisait `sleep(0)`, soit une boucle
+folle à 100 % CPU martelant Docker et Redis.
+
+Tout nouvel accesseur numérique DOIT donc passer par `_env_int` / `_env_float`.
+"""
 from __future__ import annotations
 
 import os
 import re
+
+
+def _env_num(name: str, default, minimum, maximum, cast):
+    """Socle commun de `_env_int`/`_env_float` : lit `name`, le convertit avec
+    `cast`, et retombe SILENCIEUSEMENT sur `default` si la variable est absente,
+    vide ou illisible. Le résultat est ensuite borné à [`minimum`, `maximum`]
+    (bornes ignorées si None) — c'est ce plancher qui interdit qu'un `0` ou un
+    négatif ne devienne un intervalle de boucle."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        val = default
+    else:
+        try:
+            val = cast(raw.strip())
+        except (TypeError, ValueError):
+            val = default
+    if minimum is not None:
+        val = max(minimum, val)
+    if maximum is not None:
+        val = min(maximum, val)
+    return val
+
+
+def _env_int(name: str, default: int, minimum: int | None = 1, maximum: int | None = None) -> int:
+    """Entier de configuration. Ne lève jamais (cf. règle en tête de module).
+    `minimum=1` par défaut : la quasi-totalité de ces réglages (intervalles,
+    timeouts, quotas) n'a aucun sens à 0 ou en négatif."""
+    return int(_env_num(name, default, minimum, maximum, int))
+
+
+def _env_float(
+    name: str, default: float, minimum: float | None = 1.0, maximum: float | None = None
+) -> float:
+    """Flottant de configuration. Mêmes garanties que `_env_int`."""
+    return float(_env_num(name, default, minimum, maximum, float))
 
 
 def redis_url() -> str:
@@ -17,19 +65,19 @@ def job_memory() -> str:
 
 
 def job_pids() -> int:
-    return int(os.environ.get("OCULAR_JOB_PIDS", "256"))
+    return _env_int("OCULAR_JOB_PIDS", 256)
 
 
 def job_timeout() -> int:
-    return int(os.environ.get("OCULAR_JOB_TIMEOUT", "60"))
+    return _env_int("OCULAR_JOB_TIMEOUT", 60)
 
 
 def render_timeout_ms() -> int:
-    return int(os.environ.get("OCULAR_RENDER_TIMEOUT_MS", "15000"))
+    return _env_int("OCULAR_RENDER_TIMEOUT_MS", 15000)
 
 
 def result_ttl() -> int:
-    return int(os.environ.get("OCULAR_RESULT_TTL", "86400"))
+    return _env_int("OCULAR_RESULT_TTL", 86400)
 
 
 def job_ttl() -> int:
@@ -37,11 +85,11 @@ def job_ttl() -> int:
     un job toujours sans résultat est déclaré perdu/expiré (GET /jobs -> unknown),
     ce qui arrête le polling fantôme. Doit couvrir largement le temps de
     traitement le plus long (capture scriptée ~3 min + attente en file)."""
-    return int(os.environ.get("OCULAR_JOB_TTL", "1800"))
+    return _env_int("OCULAR_JOB_TTL", 1800)
 
 
 def max_html_bytes() -> int:
-    return int(os.environ.get("OCULAR_MAX_HTML_BYTES", "5000000"))
+    return _env_int("OCULAR_MAX_HTML_BYTES", 5000000)
 
 
 def log_level() -> str:
@@ -83,19 +131,20 @@ def forward_auth_groups_header() -> str:
 
 
 def session_ttl() -> int:
-    return int(os.environ.get("OCULAR_SESSION_TTL", "1800"))     # 30 min absolu
+    return _env_int("OCULAR_SESSION_TTL", 1800)     # 30 min absolu
 
 
 def session_idle() -> int:
-    return int(os.environ.get("OCULAR_SESSION_IDLE", "600"))     # 10 min inactivité
+    return _env_int("OCULAR_SESSION_IDLE", 600)     # 10 min inactivité
 
 
 def reaper_interval() -> int:
-    return int(os.environ.get("OCULAR_REAPER_INTERVAL", "60"))
+    # plancher 1 s : `sleep(0)` ferait une boucle folle à 100 % CPU.
+    return _env_int("OCULAR_REAPER_INTERVAL", 60, minimum=1)
 
 
 def gc_interval() -> int:
-    return int(os.environ.get("OCULAR_GC_INTERVAL", "600"))
+    return _env_int("OCULAR_GC_INTERVAL", 600, minimum=1)  # plancher : cf. reaper_interval
 
 
 def sweep_interval() -> int:
@@ -104,7 +153,7 @@ def sweep_interval() -> int:
     n'apparaissent qu'en cas d'anomalie (teardown partiel, conteneur tué hors
     flux), un passage toutes les 10 min récupère le pool d'adresses Docker sans
     marteler le démon Docker toutes les minutes."""
-    return int(os.environ.get("OCULAR_SWEEP_INTERVAL", "600"))
+    return _env_int("OCULAR_SWEEP_INTERVAL", 600, minimum=1)  # plancher : cf. reaper_interval
 
 
 _SCREEN_RE = re.compile(r"^\d{3,5}x\d{3,5}$")
@@ -125,7 +174,9 @@ def session_disconnect_grace() -> int:
     (y compris brutalement) avant que le reaper ne la nettoie — distinct de
     `session_idle()` : une session activement pollée via `/live` reste
     connectée (mark_connected efface `disconnected_at`)."""
-    return int(os.environ.get("OCULAR_SESSION_DISCONNECT_GRACE", "45"))
+    # minimum=0 : une grâce nulle (nettoyage dès la déconnexion) est un réglage
+    # LÉGITIME, contrairement à un intervalle de boucle nul.
+    return _env_int("OCULAR_SESSION_DISCONNECT_GRACE", 45, minimum=0)
 
 
 def egress_guard_enabled() -> bool:
@@ -159,7 +210,7 @@ def session_ready_timeout() -> float:
     """Délai global (secondes) laissé au broker pour lancer le conteneur de
     session + au session_server pour répondre `/health`, avant de renvoyer
     504 côté web."""
-    return float(os.environ.get("OCULAR_SESSION_READY_TIMEOUT", "30"))
+    return _env_float("OCULAR_SESSION_READY_TIMEOUT", 30.0, minimum=1.0)
 
 
 def artifacts_dir() -> str:
@@ -184,10 +235,8 @@ def max_sessions() -> int:
     """Plafond de sessions interactives CONCURRENTES (anti-épuisement de
     ressources : chaque session = un conteneur ~4g). Le web refuse (429)
     au-delà. `0` = illimité (comportement historique). Défaut 25."""
-    try:
-        return max(0, int(os.environ.get("OCULAR_MAX_SESSIONS", "25")))
-    except ValueError:
-        return 25
+    # minimum=0 : `0` = illimité, sémantique historique à préserver.
+    return _env_int("OCULAR_MAX_SESSIONS", 25, minimum=0)
 
 
 def llm_enabled() -> bool:

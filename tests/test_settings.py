@@ -67,3 +67,76 @@ def test_sweep_interval_default(monkeypatch):
 def test_sweep_interval_env_override(monkeypatch):
     monkeypatch.setenv("OCULAR_SWEEP_INTERVAL", "30")
     assert s.sweep_interval() == 30
+
+
+# --- Défaut C : une valeur d'env malformée tuait un thread démon en silence ---
+# 13 accesseurs sur 14 faisaient un `int()`/`float()` NU. `OCULAR_REAPER_INTERVAL=60s`
+# -> ValueError. Or l'accesseur d'intervalle était appelé HORS du `try` des
+# boucles démon : le thread mourait SANS UN SEUL LOG, le broker continuait de
+# servir, et plus aucune session n'était jamais reapée (fuite illimitée de
+# conteneurs ~4 Go chacun). `interval=0` -> `sleep(0)` -> boucle folle à 100 %
+# CPU martelant Docker/Redis. `interval=-1` -> ValueError.
+# RÈGLE : un accesseur numérique ne lève JAMAIS ; il retombe sur son défaut et
+# applique un plancher.
+
+import pytest
+
+# (accesseur, variable d'env, défaut, plancher)
+_NUMERIC_ACCESSORS = [
+    ("job_pids", "OCULAR_JOB_PIDS", 256, 1),
+    ("job_timeout", "OCULAR_JOB_TIMEOUT", 60, 1),
+    ("render_timeout_ms", "OCULAR_RENDER_TIMEOUT_MS", 15000, 1),
+    ("result_ttl", "OCULAR_RESULT_TTL", 86400, 1),
+    ("job_ttl", "OCULAR_JOB_TTL", 1800, 1),
+    ("max_html_bytes", "OCULAR_MAX_HTML_BYTES", 5_000_000, 1),
+    ("session_ttl", "OCULAR_SESSION_TTL", 1800, 1),
+    ("session_idle", "OCULAR_SESSION_IDLE", 600, 1),
+    ("reaper_interval", "OCULAR_REAPER_INTERVAL", 60, 1),
+    ("gc_interval", "OCULAR_GC_INTERVAL", 600, 1),
+    ("sweep_interval", "OCULAR_SWEEP_INTERVAL", 600, 1),
+    ("session_disconnect_grace", "OCULAR_SESSION_DISCONNECT_GRACE", 45, 0),
+    ("session_ready_timeout", "OCULAR_SESSION_READY_TIMEOUT", 30, 1),
+    ("max_sessions", "OCULAR_MAX_SESSIONS", 25, 0),
+]
+
+
+@pytest.mark.parametrize("name,env,default,floor", _NUMERIC_ACCESSORS)
+@pytest.mark.parametrize("bad", ["abc", "60s", "", "  ", "1.2.3", "None"])
+def test_numeric_accessor_falls_back_to_default_on_garbage(monkeypatch, name, env, default, floor, bad):
+    monkeypatch.setenv(env, bad)
+    assert getattr(s, name)() == default, (
+        f"RÉGRESSION défaut C : {name}() doit retomber sur son défaut sur {bad!r}, jamais lever"
+    )
+
+
+@pytest.mark.parametrize("name,env,default,floor", _NUMERIC_ACCESSORS)
+def test_numeric_accessor_clamps_to_floor(monkeypatch, name, env, default, floor):
+    """`-5` et `0` ne doivent NI lever NI produire une valeur absurde : sur un
+    intervalle de boucle, 0 signifie `sleep(0)` -> boucle folle à 100 % CPU."""
+    for raw in ("-5", "-1", "0"):
+        monkeypatch.setenv(env, raw)
+        val = getattr(s, name)()
+        assert val >= floor, f"RÉGRESSION défaut C : {name}()={val} sous le plancher {floor}"
+
+
+@pytest.mark.parametrize("name,env,default,floor", _NUMERIC_ACCESSORS)
+def test_numeric_accessor_still_honours_a_valid_override(monkeypatch, name, env, default, floor):
+    monkeypatch.setenv(env, "7")
+    assert getattr(s, name)() == 7
+
+
+@pytest.mark.parametrize("name,env,default,floor", _NUMERIC_ACCESSORS)
+def test_numeric_accessor_default_when_unset(monkeypatch, name, env, default, floor):
+    monkeypatch.delenv(env, raising=False)
+    assert getattr(s, name)() == default
+
+
+def test_loop_intervals_are_never_zero(monkeypatch):
+    """Verrou explicite anti-boucle-folle : un intervalle de boucle démon ne
+    peut JAMAIS valoir 0 (sleep(0) = 100 % CPU à marteler Docker/Redis)."""
+    for env, fn in (("OCULAR_REAPER_INTERVAL", s.reaper_interval),
+                    ("OCULAR_GC_INTERVAL", s.gc_interval),
+                    ("OCULAR_SWEEP_INTERVAL", s.sweep_interval)):
+        for raw in ("0", "-1", "abc", ""):
+            monkeypatch.setenv(env, raw)
+            assert fn() >= 1
