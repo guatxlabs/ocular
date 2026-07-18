@@ -27,6 +27,7 @@ from engine.result import (
     Screenshot,
     StealthInfo,
 )
+from engine.triage import compute_triage
 
 
 def sha256_ref(data: bytes) -> str:
@@ -110,6 +111,12 @@ class ResultBuilder:
         console: Optional[list[dict[str, Any]]] = None,
         dynamic_steps: Optional[list] = None,
     ) -> tuple[OcularResult, dict[str, bytes]]:
+        _findings = static_findings or []
+        _dom = dom_info or DomInfo()
+        triage = compute_triage(
+            _findings, verdict=verdict,
+            network=network or [], console=console or [], dom=_dom,
+        )
         result = OcularResult(
             job_id=job_id,
             profile=profile,
@@ -120,8 +127,8 @@ class ResultBuilder:
             screenshots=self.screenshots,
             network=[NetworkEntry(**n) for n in (network or [])],
             console=[ConsoleEntry(**c) for c in (console or [])],
-            dom=dom_info or DomInfo(),
-            static_findings=static_findings or [],
+            dom=_dom,
+            static_findings=_findings,
             # 3c : journal du mode scripté (déjà des `DynamicStep`, construits
             # par runner_recon/capture.py::journal_to_dynamic_steps). Absent
             # (None) -> liste vide, comme tout autre champ optionnel ici.
@@ -130,6 +137,7 @@ class ResultBuilder:
                 for d in (dynamic_steps or [])
             ],
             stealth=stealth,
+            triage=triage,
             artifacts=self.artifacts,
         )
         return result, self.blobs
