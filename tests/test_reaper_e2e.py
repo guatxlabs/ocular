@@ -31,7 +31,7 @@ def test_reap_e2e_stops_and_purges_real_expired_session(monkeypatch):
     count = reap(registry, now_epoch=now_epoch, ttl=3600, idle=3600)
 
     assert count == 1
-    assert stopped == ["ocular-sess-s1"]
+    assert stopped == ["s1"]
     assert registry.get("s1") is None  # purgé du registre après reap
 
 

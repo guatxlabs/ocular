@@ -159,8 +159,8 @@ def test_two_sessions_cannot_reach_each_other(monkeypatch):
             assert not _can_reach(docker, cb, ca, 6080), \
                 "ISOLATION ROMPUE : la session B joint le :6080 de la session A"
         finally:
-            stop_session(ca)
-            stop_session(cb)
+            stop_session(sid_a)
+            stop_session(sid_b)
     finally:
         subprocess.run([docker, "rm", "-f", probe], capture_output=True, check=False)
 
@@ -180,7 +180,7 @@ def test_stop_session_removes_the_dedicated_network():
         )
         assert net in listed.stdout, "le réseau dédié doit exister après launch"
     finally:
-        stop_session(f"ocular-sess-{sid}")
+        stop_session(sid)
 
     listed = subprocess.run(
         [docker, "network", "ls", "--filter", f"name={net}", "--format", "{{.Name}}"],

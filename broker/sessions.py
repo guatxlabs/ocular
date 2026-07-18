@@ -138,20 +138,32 @@ def launch_session(session_id: str, secret: str = "") -> str:
     return name
 
 
-def stop_session(container: str) -> None:
-    """Arrête et supprime un conteneur de session PUIS libère son réseau dédié
-    (détache le web, supprime le réseau). Best-effort (`check=False`) : robuste
-    au TOCTOU (conteneur/réseau déjà disparu — `reap` peut appeler ceci sur un
-    fantôme sans lever).
+def stop_session(session_id: str) -> None:
+    """Arrête et supprime le conteneur d'une session PUIS libère son réseau
+    dédié (détache le web, supprime le réseau). Best-effort (`check=False`) :
+    robuste au TOCTOU (conteneur/réseau déjà disparu — `reap` peut appeler ceci
+    sur un fantôme sans lever).
 
     L'ORDRE est contraignant : Docker refuse de supprimer un réseau encore
-    utilisé, donc le conteneur part d'abord."""
+    utilisé, donc le conteneur part d'abord.
+
+    PREND UN `session_id`, PAS UN NOM DE CONTENEUR. L'ancienne signature
+    attendait le nom de conteneur alors que tout le code alentour manipule des
+    `session_id` — et les deux sont des `str`, donc une inversion ne levait
+    RIEN : `stop_session("sess-abc")` tuait un conteneur inexistant puis sortait
+    silencieusement sur le garde de préfixe, laissant le SOUS-RÉSEAU de la
+    session en fuite (ressource FINIE du pool Docker). On rend l'erreur bruyante
+    plutôt que possible : passer un nom déjà préfixé lève maintenant."""
+    if session_id.startswith(_CONTAINER_PREFIX):
+        raise ValueError(
+            f"stop_session() prend un session_id, pas un nom de conteneur : "
+            f"{session_id!r} porte déjà le préfixe {_CONTAINER_PREFIX!r}. "
+            f"Passez {session_id[len(_CONTAINER_PREFIX):]!r}."
+        )
+    container = _session_name(session_id)
     _run(["docker", "kill", container], _TIMEOUT_CONTAINER)
     _run(["docker", "rm", "-f", container], _TIMEOUT_CONTAINER)
 
-    if not container.startswith(_CONTAINER_PREFIX):
-        return  # nom inattendu : ne jamais dériver/supprimer un réseau au hasard
-    session_id = container[len(_CONTAINER_PREFIX):]
     net = _session_net(session_id)
     _run(["docker", "network", "disconnect", "-f", net, web_container()], _TIMEOUT_NET)
     _run(["docker", "network", "rm", net], _TIMEOUT_NET)
@@ -215,7 +227,7 @@ def sweep_orphans(registry) -> int:
                 continue  # garde-fou : le filtre `name=` est un substring
             session_id = name[len(_CONTAINER_PREFIX):]
             if registry.get(session_id) is None:
-                stop_session(name)
+                stop_session(session_id)  # session_id, pas `name` (cf. stop_session)
                 removed += 1
         if removed:
             log.info("session orphans swept count=%d", removed)
@@ -267,15 +279,15 @@ def purge_session_results(client, session_id: str) -> int:
 def reap(registry, now_epoch: float, ttl: float, idle: float, disconnect_grace=None) -> int:
     """Détruit les sessions expirées (TTL absolu, inactivité, ou — si
     `disconnect_grace` fourni — fermeture brutale du navigateur au-delà de la
-    grâce) : pour chaque id retourné par `registry.expired`, stoppe le
-    conteneur par son nom **déterministe** `ocular-sess-{id}` (dérivé du
-    session_id, jamais via `registry.get` qui peut renvoyer None sur une
-    course entre l'expiration et le reap — le conteneur existe toujours
-    indépendamment de l'état du registre) puis retire la session du registre.
+    grâce) : pour chaque id retourné par `registry.expired`, stoppe la session
+    via `stop_session`, qui dérive le nom **déterministe** `ocular-sess-{id}`
+    (jamais via `registry.get` qui peut renvoyer None sur une course entre
+    l'expiration et le reap — le conteneur existe toujours indépendamment de
+    l'état du registre) puis retire la session du registre.
     Retourne le nombre de sessions réellement traitées."""
     count = 0
     for session_id in registry.expired(now_epoch, ttl, idle, disconnect_grace=disconnect_grace):
-        stop_session(_session_name(session_id))
+        stop_session(session_id)
         purge_session_results(registry.client, session_id)  # captures éphémères non nommées
         registry.delete(session_id)
         count += 1

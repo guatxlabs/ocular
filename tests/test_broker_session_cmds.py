@@ -97,7 +97,7 @@ def test_stop_cmd_stops_container_by_deterministic_name_and_deletes(monkeypatch)
 
     process_session_cmd({"action": "stop", "session_id": "s1"}, registry)
 
-    assert stopped == ["ocular-sess-s1"]
+    assert stopped == ["s1"]
     assert registry.deleted == ["s1"]
     # captures éphémères de s1 purgées ; celles de s2 intactes
     assert _keys(registry._r) == {"ocular:result:sesscap-s2-bb"}
