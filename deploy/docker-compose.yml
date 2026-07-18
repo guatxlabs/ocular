@@ -9,6 +9,28 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # AUTH optionnelle, sans branche : `requirepass ""` DÉSACTIVE le mot de passe
+    # côté serveur, et l'URL correspondante `redis://:@redis:6379` est parsée par
+    # redis-py en password=None (donc AUCUN AUTH envoyé). Les deux extrémités
+    # dégradent donc proprement vers le comportement actuel quand la variable est
+    # vide — poser OCULAR_REDIS_PASSWORD dans deploy/.env active l'auth des DEUX
+    # côtés d'un coup, sans toucher au compose. Vérifié live dans les deux sens.
+    command: ["redis-server", "--requirepass", "${OCULAR_REDIS_PASSWORD:-}"]
+    read_only: true
+    # mode=1777 OBLIGATOIRE (pas un simple `/data`) : redis tourne en uid 999 et
+    # un tmpfs Docker par défaut est root:root 0755. Sans ce mode, le premier
+    # point de sauvegarde (`save 60 10000`…) échoue en EACCES, et redis bascule
+    # alors en `stop-writes-on-bgsave-error` -> **MISCONF, tout write refusé** :
+    # la stack entière tombe quelques minutes après le démarrage, pas au boot.
+    # Piège vérifié live (reproduit puis corrigé) avant d'être écrit ici.
+    # Contrepartie assumée : la RDB vit en RAM, donc les sessions ne survivent
+    # plus à un `restart` de redis (avant : rootfs du conteneur). Délibéré —
+    # redis porte les secrets de session EN CLAIR, qui n'ont pas à toucher le
+    # disque ; aucun volume n'a jamais été monté ici de toute façon.
+    tmpfs: ["/data:mode=1777"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "999:999"
 
   web:
     build: { context: .., dockerfile: deploy/Dockerfile.web }
@@ -23,7 +45,9 @@ services:
     container_name: "${OCULAR_WEB_CONTAINER:-ocular-web}"
     restart: unless-stopped
     environment:
-      REDIS_URL: "redis://redis:6379"
+      # Vide -> `redis://:@redis:6379` -> password=None côté redis-py (aucun AUTH),
+      # exactement le comportement d'avant. Cf. le bloc `redis` ci-dessus.
+      REDIS_URL: "redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379"
       OCULAR_TOKEN: "${OCULAR_TOKEN:?OCULAR_TOKEN requis}"
       OCULAR_ADMIN_TOKEN: "${OCULAR_ADMIN_TOKEN:-}"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
@@ -85,7 +109,7 @@ services:
     build: { context: .., dockerfile: deploy/Dockerfile.broker }
     restart: unless-stopped
     environment:
-      REDIS_URL: "redis://redis:6379"
+      REDIS_URL: "redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379"
       # NE PAS RETIRER : sans cette variable, artifacts_dir() retombe sur le
       # chemin RELATIF "artifacts" -> /app/artifacts, non inscriptible sous
       # read_only: true. Le volume nommé ne serait plus utilisé du tout.
