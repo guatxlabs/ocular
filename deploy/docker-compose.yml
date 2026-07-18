@@ -55,7 +55,13 @@ services:
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
     user: "10002:10002"
-    ports: ["8000:8000"]
+    # Bind LOOPBACK par défaut. `"8000:8000"` écoutait implicitement sur 0.0.0.0 :
+    # toute l'API (/sessions, proxy noVNC) était joignable depuis n'importe quel
+    # poste du LAN, derrière un unique Bearer statique sans rotation ni rate-limit
+    # — en contradiction avec le modèle du §1 de docs/DEPLOY-SECURITY.md, qui
+    # suppose un reverse-proxy authentifiant en amont. Exposer reste possible,
+    # mais devient un acte EXPLICITE de l'opérateur (OCULAR_BIND=0.0.0.0).
+    ports: ["${OCULAR_BIND:-127.0.0.1}:8000:8000"]
     mem_limit: 1g
     cpus: "1.0"
     volumes:
