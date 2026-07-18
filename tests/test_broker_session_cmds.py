@@ -26,7 +26,7 @@ class _FakeRegistry:
         self._r = _fake_redis(redis_keys)
         self.client = self._r  # cf. SessionRegistry.client (prod appelle registry.client)
 
-    def create(self, session_id, container, kind, target, token, now_iso, secret=""):
+    def create(self, session_id, container, kind, target, token, now_iso, secret="", owner=""):
         self.created.append({
             "session_id": session_id,
             "container": container,
@@ -34,6 +34,7 @@ class _FakeRegistry:
             "target": target,
             "token": token,
             "secret": secret,
+            "owner": owner,
             "now_iso": now_iso,
         })
 
@@ -59,7 +60,8 @@ def test_launch_cmd_launches_container_and_creates_registry_entry(monkeypatch):
 
     process_session_cmd(
         {"action": "launch", "session_id": "s1", "token": "tok-abc",
-         "target": "https://example.com", "secret": "sekret-123"},
+         "target": "https://example.com", "secret": "sekret-123",
+         "owner": "alice@example.org"},
         registry,
     )
 
@@ -71,6 +73,9 @@ def test_launch_cmd_launches_container_and_creates_registry_entry(monkeypatch):
     assert entry["target"] == "https://example.com"
     assert entry["token"] == "tok-abc"
     assert entry["secret"] == "sekret-123"
+    # le propriétaire résolu côté web est threadé TEL QUEL jusqu'au registre :
+    # c'est lui qui porte tout le contrôle d'appartenance des routes de session.
+    assert entry["owner"] == "alice@example.org"
     assert entry["now_iso"]  # horodatage non vide
     # le secret est bien transmis au conteneur via launch_session
     assert launched["secret"] == "sekret-123"
@@ -86,6 +91,9 @@ def test_launch_cmd_defaults_missing_token_and_target(monkeypatch):
     assert entry["token"] == ""
     assert entry["target"] == ""
     assert entry["secret"] == ""
+    # une commande sans `owner` donne une session SANS propriétaire, que le web
+    # refuse ensuite aux non-admins (fail-closed) — jamais une session ouverte.
+    assert entry["owner"] == ""
 
 
 def test_stop_cmd_stops_container_by_deterministic_name_and_deletes(monkeypatch):

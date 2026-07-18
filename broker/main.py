@@ -67,10 +67,11 @@ def process_one(queue: RedisJobQueue, job) -> None:
 def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
     """Une itération de la boucle session-cmds : `launch` démarre le
     conteneur (seul le broker a accès à Docker) et écrit l'entrée registre
-    (container/kind/target/token — le token vient tel quel de la commande,
-    jamais loggé) ; `stop` détruit le conteneur par son nom déterministe et
-    retire l'entrée. Extrait de `run_forever()` pour être testable sans
-    mocker une boucle infinie ni Docker."""
+    (container/kind/target/token/owner — le token comme le propriétaire
+    viennent tels quels de la commande, le token n'est jamais loggé) ; `stop`
+    détruit le conteneur par son nom déterministe et retire l'entrée. Extrait
+    de `run_forever()` pour être testable sans mocker une boucle infinie ni
+    Docker."""
     action = cmd.get("action")
     session_id = cmd.get("session_id")
     if not session_id:
@@ -98,6 +99,12 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
             target=cmd.get("target", ""),
             token=cmd.get("token", ""),
             secret=secret,
+            # Propriétaire résolu côté web (`resolve_identity`) et threadé tel
+            # quel : le broker ne voit aucune requête HTTP, il ne peut pas le
+            # recalculer. Une commande sans `owner` (jamais produite par le web
+            # actuel) donne une session sans propriétaire, que le web refuse
+            # ensuite aux non-admins — fail-closed.
+            owner=cmd.get("owner", ""),
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
         try:

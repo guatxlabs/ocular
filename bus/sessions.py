@@ -33,8 +33,14 @@ class SessionRegistry:
     """Registre Redis des sessions interactives (un hash par session).
 
     Clé : `ocular:session:{session_id}`. Champs : session_id, container, kind,
-    target, token, created_at, last_activity (ces deux derniers stockés en
-    epoch — cohérent avec `expired()` qui compare des epochs).
+    target, token, owner, created_at, last_activity (ces deux derniers stockés
+    en epoch — cohérent avec `expired()` qui compare des epochs).
+
+    `owner` porte l'identité (`web.identity.resolve_identity`) de l'analyste qui
+    a créé la session : c'est la clé du contrôle d'appartenance appliqué par
+    TOUTES les routes de session côté web. En mode bearer (défaut) tous les
+    porteurs du jeton partagé ont l'identité "token" et voient donc les mêmes
+    sessions — comportement inchangé, c'est le MÊME identifiant partagé.
     """
 
     def __init__(self, client) -> None:
@@ -59,6 +65,7 @@ class SessionRegistry:
         token: str,
         now_iso: str,
         secret: str = "",
+        owner: str = "",
     ) -> None:
         """Crée (ou écrase) l'entrée d'une session. `container` peut être VIDE :
         c'est la réservation *pending* que le broker pose AVANT `launch_session`
@@ -77,6 +84,10 @@ class SessionRegistry:
                 "target": target,
                 "token": token,
                 "secret": secret,
+                # Propriétaire : voir la docstring de classe. Une valeur VIDE
+                # dénote une session sans propriétaire connu, que le web refuse
+                # aux non-admins (fail-closed).
+                "owner": owner,
                 "created_at": epoch,
                 "last_activity": epoch,
             },
@@ -160,6 +171,9 @@ class SessionRegistry:
                 # anti-fuite frontière conteneur : le secret n'est JAMAIS
                 # renvoyé dans une liste (comme le token WS filtré côté web).
                 sess.pop("secret", None)
+                # `owner` est délibérément CONSERVÉ ici : c'est sur lui que
+                # `GET /sessions` filtre les sessions d'autrui. C'est la ROUTE
+                # qui le retire de la réponse (comme le token), pas ce registre.
                 out.append(sess)
         return out
 
