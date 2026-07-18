@@ -110,7 +110,7 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
         registry.set_container(session_id, container)
         log.info("session cmd launch session_id=%s container=%s", session_id, container)
     elif action == "stop":
-        stop_session(f"ocular-sess-{session_id}")
+        stop_session(session_id)
         purge_session_results(registry.client, session_id)  # captures éphémères non nommées
         registry.delete(session_id)
         log.info("session cmd stop session_id=%s", session_id)

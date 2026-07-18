@@ -2,6 +2,7 @@ import logging
 import subprocess
 
 import fakeredis
+import pytest
 
 from broker.sessions import (
     _CONTAINER_PREFIX,
@@ -136,7 +137,7 @@ def test_stop_session_kills_then_removes(monkeypatch):
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
 
-    stop_session("ocular-sess-s1")
+    stop_session("s1")
 
     assert calls[0] == ["docker", "kill", "ocular-sess-s1"]
     assert calls[1] == ["docker", "rm", "-f", "ocular-sess-s1"]
@@ -151,7 +152,7 @@ def test_stop_session_is_best_effort_check_false(monkeypatch):
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
 
-    stop_session("ocular-sess-ghost")  # ne doit pas lever malgré returncode 1
+    stop_session("ghost")  # ne doit pas lever malgré returncode 1
 
     # 4 commandes depuis le teardown réseau (kill, rm -f, network disconnect,
     # network rm) : TOUTES best-effort, aucune ne doit lever sur returncode 1.
@@ -189,7 +190,7 @@ def test_reap_stops_by_deterministic_name_and_deletes_each_expired_session(monke
     count = reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
 
     assert count == 2
-    assert stopped == ["ocular-sess-s1", "ocular-sess-s2"]
+    assert stopped == ["s1", "s2"]
     assert registry.deleted == ["s1", "s2"]
 
 
@@ -206,7 +207,7 @@ def test_reap_stops_even_when_registry_get_returns_none(monkeypatch):
     count = reap(registry, now_epoch=1000.0, ttl=3600, idle=600)
 
     assert count == 1
-    assert stopped == ["ocular-sess-ghost"]
+    assert stopped == ["ghost"]
     assert registry.deleted == ["ghost"]
 
 
@@ -406,7 +407,7 @@ def test_stop_session_removes_container_then_network(monkeypatch):
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
     monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
 
-    stop_session("ocular-sess-s1")
+    stop_session("s1")
 
     assert calls[0] == ["docker", "kill", "ocular-sess-s1"]
     assert calls[1] == ["docker", "rm", "-f", "ocular-sess-s1"]
@@ -414,8 +415,13 @@ def test_stop_session_removes_container_then_network(monkeypatch):
     assert calls[3] == ["docker", "network", "rm", "ocular-sess-net-s1"]
 
 
-def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
-    # Nom inattendu -> on ne dérive aucun réseau (pas de `network rm` sauvage).
+def test_stop_session_rejects_a_container_name_instead_of_a_session_id(monkeypatch):
+    """LE piège d'API refermé : `stop_session` attendait un NOM DE CONTENEUR
+    alors que tout le code alentour manipule des `session_id` — et les deux sont
+    des `str`. Une inversion ne levait donc RIEN : on tuait un conteneur
+    inexistant, puis le garde de préfixe faisait sortir la fonction en silence
+    SANS supprimer le réseau -> le sous-réseau de la session fuyait (pool
+    d'adresses Docker = ressource FINIE). Le mauvais usage doit être BRUYANT."""
     calls = []
 
     def fake_run(args, capture_output=None, check=None, timeout=None):
@@ -423,11 +429,36 @@ def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
-    stop_session("un-autre-conteneur")
-    # kill + rm, et RIEN de plus : cet assert verrouille l'absence de TOUT appel
-    # supplémentaire (l'assert suivant, lui, ne couvre que ceux contenant « network »).
-    assert len(calls) == 2
-    assert all("network" not in a for a in calls)
+
+    with pytest.raises(ValueError) as exc:
+        stop_session("ocular-sess-s1")  # ancien style d'appel : NOM de conteneur
+
+    # le message doit ORIENTER vers l'appel correct, pas juste refuser
+    assert "session_id" in str(exc.value)
+    assert "'s1'" in str(exc.value)
+    # et surtout : rien n'a été exécuté sur Docker (pas de demi-teardown)
+    assert calls == []
+
+
+def test_stop_session_derives_container_and_network_from_the_session_id(monkeypatch):
+    """Symétrique : un `session_id` quelconque (sans préfixe) dérive TOUJOURS
+    et le conteneur ET le réseau — c'est la fuite de sous-réseau qui est
+    devenue impossible."""
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, timeout=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    stop_session("un-id-quelconque")
+
+    assert calls[0] == ["docker", "kill", "ocular-sess-un-id-quelconque"]
+    assert calls[1] == ["docker", "rm", "-f", "ocular-sess-un-id-quelconque"]
+    # le teardown réseau n'est PLUS sautable : c'était le mode de fuite
+    assert calls[3] == ["docker", "network", "rm", "ocular-sess-net-un-id-quelconque"]
 
 
 # --- Défaut G : aucune commande conteneur ne doit pouvoir bloquer sans limite -
@@ -455,7 +486,7 @@ def test_every_container_command_declares_a_timeout(monkeypatch):
     monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
 
     launch_session("s1", secret="sec")
-    stop_session("ocular-sess-s1")
+    stop_session("s1")
     sweep_orphans(_FakeReg(alive=set()))
 
     assert calls, "aucune commande capturée"
@@ -472,7 +503,7 @@ def test_launch_session_survives_a_timed_out_command(monkeypatch):
 
 def test_stop_session_survives_a_timed_out_command(monkeypatch):
     monkeypatch.setattr(sessions_mod.subprocess, "run", _timing_out_run)
-    stop_session("ocular-sess-s1")  # ne doit PAS lever
+    stop_session("s1")  # ne doit PAS lever
 
 
 def test_sweep_orphans_survives_a_timed_out_command(monkeypatch):
@@ -563,7 +594,7 @@ def test_sweep_orphans_removes_orphan_containers_only(monkeypatch):
             "--format", "{{.Names}}"] in calls
     # SEUL l'orphelin est stoppé : la session vivante et le conteneur au nom
     # voisin sont épargnés.
-    assert stopped == ["ocular-sess-s-dead"]
+    assert stopped == ["s-dead"]
     assert removed == 1  # le retour compte les CONTENEURS supprimés
 
 
