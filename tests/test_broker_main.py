@@ -1,7 +1,15 @@
 import json
 
 import broker.main as main_mod
-from broker.main import _gc_loop, _reaper_loop, _start_gc, _start_reaper, error_result
+from broker.main import (
+    _gc_loop,
+    _reaper_loop,
+    _start_gc,
+    _start_reaper,
+    _start_sweeper,
+    _sweeper_loop,
+    error_result,
+)
 
 
 class _FakeStopEvent:
@@ -135,3 +143,57 @@ def test_start_gc_starts_a_daemon_thread(monkeypatch):
     assert t.name == "ocular-gc"
     assert started["called"] is True
     assert started["client"] is client
+
+
+# --- Balayage PÉRIODIQUE des orphelins (conteneurs + réseaux de session) -----
+# Sans boucle, un résidu apparu en cours de vie (teardown partiellement échoué,
+# conteneur tué hors flux) survivrait jusqu'au prochain redémarrage du broker,
+# en consommant le pool d'adresses Docker (ressource FINIE).
+
+def test_sweeper_loop_calls_sweep_orphans_once_with_stop_event(monkeypatch):
+    calls = []
+    stop_event = _FakeStopEvent()
+
+    def fake_sweep(registry):
+        calls.append(registry)
+        return 0
+
+    monkeypatch.setattr(main_mod, "sweep_orphans", fake_sweep)
+    monkeypatch.setattr(main_mod, "sweep_interval", lambda: 600)
+
+    registry = object()
+    _sweeper_loop(registry, stop_event=stop_event)  # une itération puis sort via wait()
+
+    assert calls == [registry]
+
+
+def test_sweeper_loop_survives_sweep_exception(monkeypatch):
+    def boom(registry):
+        raise RuntimeError("docker down")
+
+    monkeypatch.setattr(main_mod, "sweep_orphans", boom)
+    monkeypatch.setattr(main_mod, "sweep_interval", lambda: 600)
+
+    stop_event = _FakeStopEvent()
+
+    _sweeper_loop(object(), stop_event=stop_event)  # ne doit PAS lever, malgré l'exception
+
+
+def test_start_sweeper_starts_a_daemon_thread(monkeypatch):
+    started = {}
+
+    def fake_sweeper_loop(registry, stop_event=None):
+        started["registry"] = registry
+        started["called"] = True
+
+    monkeypatch.setattr(main_mod, "_sweeper_loop", fake_sweeper_loop)
+    monkeypatch.setattr(main_mod, "SessionRegistry", lambda client: ("registry-for", client))
+
+    client = object()
+    t = _start_sweeper(client)
+    t.join(timeout=2)
+
+    assert t.daemon is True
+    assert t.name == "ocular-sweeper"
+    assert started["called"] is True
+    assert started["registry"] == ("registry-for", client)

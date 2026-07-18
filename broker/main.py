@@ -23,6 +23,7 @@ from ocular_settings import (
     session_disconnect_grace,
     session_idle,
     session_ttl,
+    sweep_interval,
 )
 
 log = get_logger("broker")
@@ -151,6 +152,39 @@ def _start_gc(client) -> threading.Thread:
     return t
 
 
+def _sweeper_loop(registry, stop_event=None) -> None:
+    """Boucle de balayage des orphelins : appelle `sweep_orphans` à intervalle
+    régulier (`sweep_interval()`). L'appel au démarrage de `run_forever` ne
+    couvre QUE les résidus d'un crash précédent ; un orphelin apparu EN COURS
+    de vie (teardown partiellement échoué, conteneur tué hors flux) survivrait
+    sinon jusqu'au prochain redémarrage du broker, en gardant un sous-réseau du
+    pool d'adresses Docker — ressource FINIE. `stop_event` permet un arrêt
+    propre en test (une seule itération) ; en production (`stop_event=None`)
+    tourne indéfiniment dans un thread démon. Les erreurs de `sweep_orphans`
+    sont capturées pour que le balayage survive à un incident Docker/Redis
+    transitoire."""
+    while stop_event is None or not stop_event.is_set():
+        try:
+            sweep_orphans(registry)
+        except Exception as exc:  # le sweeper survit à une erreur transitoire
+            log.error("orphan sweep error err=%s", str(exc)[:200])
+        if stop_event is not None:
+            if stop_event.wait(sweep_interval()):
+                break
+        else:
+            _time.sleep(sweep_interval())
+
+
+def _start_sweeper(client) -> threading.Thread:
+    """Démarre le balayage des orphelins dans un thread démon (n'empêche jamais
+    l'arrêt du process broker). Réutilise le client Redis déjà créé par
+    `run_forever` (pas de connexion supplémentaire)."""
+    reg = SessionRegistry(client)
+    t = threading.Thread(target=_sweeper_loop, args=(reg,), daemon=True, name="ocular-sweeper")
+    t.start()
+    return t
+
+
 def run_forever() -> None:
     client = redis.Redis.from_url(redis_url())
     queue = RedisJobQueue(client)
@@ -165,6 +199,10 @@ def run_forever() -> None:
         log.error("startup orphan sweep error err=%s", str(exc)[:200])
     _start_reaper(client)
     _start_gc(client)
+    # …puis EN CONTINU : un orphelin peut aussi naître en cours de vie (teardown
+    # partiel), et il retiendrait un sous-réseau du pool Docker jusqu'au prochain
+    # redémarrage si le balayage restait cantonné au démarrage.
+    _start_sweeper(client)
     while True:
         # Timeouts courts (au lieu d'un unique blpop bloquant longtemps sur
         # `ocular:jobs`) pour que la file de commandes de session ne soit
