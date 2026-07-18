@@ -1,4 +1,4 @@
-.PHONY: build-runner up down analyze script test test-int gc clean
+.PHONY: build-runner up down analyze script test test-int calibrate gc clean
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
@@ -47,6 +47,14 @@ test-local:
 # d'images, pas de docker-in-docker). Nécessitent le CLI docker + le venv.
 test-int:
 	. .venv/bin/activate && pytest -m integration -q
+# Calibration HORS-LIGNE des poids de triage (lecture seule de la base saved,
+# aucun réseau). Tourne dans un conteneur jetable -> aucun résidu host. L'image
+# de test embarque déjà numpy (deploy/Dockerfile.test) : pas d'install à la volée.
+# DB= chemin de la base saved ; OUT= fichier de poids proposé ; DATE= suffixe version.
+calibrate:
+	docker build -f deploy/Dockerfile.test -t ocular-test:latest .
+	docker run --rm -v "$(CURDIR):/app" -w /app ocular-test:latest \
+		python -m tools.calibrate_triage --db $(DB) --out $(OUT) --date $(DATE)
 gc:
 	docker compose -f deploy/docker-compose.yml exec -T broker python -m broker.gc
 clean:
