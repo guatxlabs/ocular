@@ -247,3 +247,42 @@ def test_valid_token_uses_constant_time_compare(monkeypatch):
     monkeypatch.setattr(sessions_mod.secrets, "compare_digest", spy)
     reg.valid_token("s1", "secret-tok")
     assert len(calls) == 1
+
+
+# --- C1 : robustesse reaper vs ghost + anti-résurrection (audit 2026-07-18) ---
+
+def test_expired_skips_and_heals_partial_ghost_hash():
+    # Un hash partiel (ex. ressuscité par une TOCTOU touch/delete : uniquement
+    # last_activity, pas de created_at) ne doit PAS faire lever expired() ; il
+    # est ignoré ET supprimé (auto-guérison), sinon le reaper mourrait à vie.
+    reg = _registry()
+    reg.create("live", container="c", kind="k", target="t", token="tok",
+               now_iso="2026-07-13T10:00:00+00:00")
+    reg._r.hset("ocular:session:ghost", "last_activity", "123.0")  # ghost sans created_at
+    ids = reg.expired(now_epoch=200.0, ttl=100000, idle=100000)  # rien à reaper
+    assert ids == []                                    # pas de crash, ghost ignoré
+    assert reg._r.exists("ocular:session:ghost") == 0   # ghost supprimé (auto-guérison)
+    assert reg._r.exists("ocular:session:live") == 1    # session valide intacte
+
+
+def test_touch_does_not_resurrect_deleted_session():
+    # touch après delete concurrent ne doit JAMAIS recréer la clé (anti-ghost).
+    reg = _registry()
+    reg.create("s1", container="c", kind="k", target="t", token="tok",
+               now_iso="2026-07-13T10:00:00+00:00")
+    reg.delete("s1")
+    reg.touch("s1", "2026-07-13T11:00:00+00:00")
+    assert reg._r.exists("ocular:session:s1") == 0
+    reg.mark_disconnected("s1", 123.0)
+    assert reg._r.exists("ocular:session:s1") == 0
+
+
+def test_touch_still_updates_live_session():
+    reg = _registry()
+    reg.create("s1", container="c", kind="k", target="t", token="tok",
+               now_iso="2026-07-13T10:00:00+00:00")
+    before = float(reg.get("s1")["last_activity"])
+    reg.touch("s1", "2026-07-13T12:00:00+00:00")
+    got = reg.get("s1")
+    assert float(got["last_activity"]) > before
+    assert "created_at" in got  # toujours vivant
