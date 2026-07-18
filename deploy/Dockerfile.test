@@ -10,7 +10,7 @@ WORKDIR /app
 # PAQUET seulement (aucun navigateur) : les tests unitaires ne lancent rien.
 RUN pip install --no-cache-dir \
     "pydantic>=2.6" "fastapi>=0.110" "uvicorn>=0.29" "redis>=5.0" "playwright>=1.41" \
-    "jsonschema>=4.21" "websockets>=12" \
+    "jsonschema>=4.21" "websockets>=12" "numpy>=1.26" \
     "pytest>=8.0" "pytest-asyncio>=0.24" "fakeredis>=2.21" "httpx>=0.27"
 
 # ALLOWLIST : on copie UNIQUEMENT le code source + les tests, JAMAIS de secrets
@@ -26,6 +26,9 @@ COPY runner_recon ./runner_recon
 COPY runner_recon_vnc ./runner_recon_vnc
 COPY runner_analysis ./runner_analysis
 COPY schemas ./schemas
+# tools/ = CLI hors-ligne (calibration triage) ; numpy est test-only, jamais
+# dans les images runtime (web/broker/runner). test_calibrate.py l'importe.
+COPY tools ./tools
 COPY tests ./tests
 COPY ocular_settings.py ocular_logging.py saved_store.py ./
 # Certains tests non-integration lisent le Makefile / README / deploy (cibles,

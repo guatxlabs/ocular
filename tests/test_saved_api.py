@@ -226,6 +226,17 @@ def test_verdict_does_not_require_admin_token(tmp_path, monkeypatch):
     assert r.status_code == 200
 
 
+def test_saved_rejects_bad_sort(tmp_path, monkeypatch):
+    # Task 6 : un tri hors-enum est rejeté (422), jamais exécuté en SQL.
+    c, q, tp = _client(tmp_path, monkeypatch)
+    assert c.get("/saved?sort=DROP").status_code == 422
+
+
+def test_saved_accepts_triage_sort(tmp_path, monkeypatch):
+    c, q, tp = _client(tmp_path, monkeypatch)
+    assert c.get("/saved?sort=triage_score&order=asc").status_code == 200
+
+
 def test_saved_detail_and_list_expose_provenance_and_analyst_fields(tmp_path, monkeypatch):
     c, q, tp = _client(tmp_path, monkeypatch)
     _seed_job(q, tp)

@@ -5,9 +5,12 @@ import json
 import os
 import secrets
 import time
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
+from urllib.parse import urlsplit
 
 import redis
 import websockets
@@ -27,6 +30,10 @@ from ocular_logging import get_logger
 from ocular_settings import (
     admin_group,
     job_ttl,
+    llm_allow_internal,
+    llm_base_url,
+    llm_enabled,
+    llm_model,
     max_html_bytes,
     redis_url,
     result_ttl,
@@ -299,6 +306,133 @@ from web.internal_http import (  # noqa: E402
     internal_post_json as _internal_post_json,
     session_host as _session_host,
 )
+
+
+# --- Option LLM d'explication (triage 3o) -----------------------------------
+# OFF par défaut, JAMAIS dans le chemin de scoring. L'explication est opt-in et
+# disciplinée côté egress : le LLM ne voit qu'un résumé structuré (jamais le HTML
+# brut ni les artefacts), et l'appel sortant passe par la garde SSRF.
+
+_LLM_SYSTEM_PROMPT = (
+    "Tu es analyste SOC. À partir du résumé structuré fourni (verdict, triage, "
+    "findings, formulaires/mailto), explique en français, de façon concise, "
+    "pourquoi la page peut être suspecte et quoi vérifier ensuite. Ne donne "
+    "JAMAIS de verdict définitif : ce sont des pistes, pas une conclusion."
+)
+_LLM_TIMEOUT_S = 20
+_LLM_MAX_CHARS = 4000
+
+
+def _llm_summary_payload(result: dict) -> dict:
+    """Résumé structuré envoyé au LLM — fonction PURE (aucun réseau).
+
+    Garde anti-exfil : n'inclut QUE `verdict`, `triage` (score/band/
+    second_opinion/signals) et des vues RÉDUITES de `static_findings`
+    (rule+severity) et `dom` (forms+mailtos). N'inclut JAMAIS le HTML brut,
+    les `artifacts` (dom_html_ref/har_ref), les screenshots, les post-bodies
+    réseau, ni le DOM complet — le LLM ne voit jamais la page réelle."""
+    findings = [
+        {"rule": f.get("rule"), "severity": f.get("severity")}
+        for f in (result.get("static_findings") or [])
+        if isinstance(f, dict)
+    ]
+    dom = result.get("dom") if isinstance(result.get("dom"), dict) else {}
+    # Whitelist TOTALE : on réduit explicitement chaque form à action+method
+    # (jamais wholesale) pour qu'un ajout futur de valeurs de champs à un form
+    # ne puisse pas fuiter silencieusement. `mailtos` reste une liste de
+    # chaînes (cibles mailto:, pas du contenu de page).
+    dom_reduced = {
+        "forms": [
+            {"action": f.get("action"), "method": f.get("method")}
+            for f in (dom.get("forms") or [])
+            if isinstance(f, dict)
+        ],
+        "mailtos": [m for m in (dom.get("mailtos") or []) if isinstance(m, str)],
+    }
+
+    summary: dict = {
+        "verdict": result.get("verdict"),
+        "static_findings": findings,
+        "dom": dom_reduced,
+    }
+
+    triage = result.get("triage")
+    if isinstance(triage, dict):
+        summary["triage"] = {
+            "score": triage.get("score"),
+            "band": triage.get("band"),
+            "second_opinion": triage.get("second_opinion"),
+            "signals": triage.get("signals", []),
+        }
+    else:
+        summary["triage"] = None
+
+    return summary
+
+
+def _llm_explain(summary: dict) -> tuple[str, str]:
+    """Appel LLM gardé egress. Retourne `(texte, modèle)`.
+
+    Garde egress : sauf `llm_allow_internal()`, `validate_capture_url` est
+    appelée AVANT tout appel sortant (rejette loopback/RFC1918/link-local).
+    Si `llm_allow_internal()`, on saute ce contrôle (l'opérateur a explicitement
+    autorisé un hôte interne) mais on exige quand même un scheme http/https +
+    un host non vide. Toute erreur de validation ou réseau -> `_CaptureError`
+    (502 côté route) SANS émettre d'appel sortant en cas d'échec de validation."""
+    base = llm_base_url()
+    if llm_allow_internal():
+        parts = urlsplit(base)
+        if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+            raise _CaptureError(f"OCULAR_LLM_BASE_URL invalide: {base!r}")
+    else:
+        try:
+            validate_capture_url(base)
+        except ValueError as exc:
+            raise _CaptureError(f"LLM base_url refusée par la garde egress: {exc}") from exc
+
+    endpoint = base.rstrip("/") + "/chat/completions"
+    body = json.dumps({
+        "model": llm_model(),
+        "messages": [
+            {"role": "system", "content": _LLM_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(summary)},
+        ],
+        "stream": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_LLM_TIMEOUT_S) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        text = payload["choices"][0]["message"]["content"]
+    except (urllib.error.URLError, OSError) as exc:
+        raise _CaptureError(f"appel LLM échoué: {exc}") from exc
+    except (KeyError, IndexError, ValueError, TypeError) as exc:
+        raise _CaptureError("réponse LLM invalide") from exc
+
+    if not isinstance(text, str):
+        raise _CaptureError("réponse LLM invalide")
+    return text[:_LLM_MAX_CHARS], llm_model()
+
+
+@app.post("/jobs/{job_id}/explain")
+def explain_job(job_id: str, queue: RedisJobQueue = Depends(get_queue)) -> dict:
+    if not llm_enabled() or not llm_base_url():
+        raise HTTPException(status_code=404, detail="option LLM désactivée")
+    result_json = queue.get_result(job_id)
+    if result_json is None:
+        raise HTTPException(status_code=404, detail="job introuvable")
+    try:
+        result = json.loads(result_json)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=500, detail="résultat corrompu")
+    summary = _llm_summary_payload(result)  # verdict/triage/findings — JAMAIS le HTML brut
+    try:
+        text, model = _llm_explain(summary)
+    except _CaptureError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"explanation": text, "model": model}
 
 
 _SESSION_POLL_INTERVAL = 0.5
@@ -707,10 +841,13 @@ def get_saved(ref_or_id: str) -> dict:
 
 
 @app.get("/saved")
-def list_saved() -> list:
+def list_saved(sort: str = "saved_at", order: str = "desc",
+               min_band: str | None = None) -> list:
     conn = _saved_conn()
     try:
-        return saved_store.list_all(conn)
+        return saved_store.list_all(conn, sort=sort, order=order, min_band=min_band)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     finally:
         conn.close()
 

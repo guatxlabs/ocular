@@ -1225,6 +1225,42 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .verdict-controls input{flex:1 1 200px;min-width:140px;background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:9px 12px;font-size:13px}
 .verdict-controls input:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .analystpanel .errbox{margin:12px 0 0}
+/* Triage (2e avis IA/ML) : priorité/100 + bande + décomposition des signaux.
+   Ton de bande = low neutre / medium --warn / high --bad (accent border-left). */
+.triage-panel{margin:0 0 18px;border-left:4px solid var(--mut)}
+.triage-panel.triage-band-medium{border-left-color:var(--warn)}
+.triage-panel.triage-band-high{border-left-color:var(--bad)}
+.triage-none{margin:0 0 18px}
+.triage-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.triage-score{font-size:14px;color:var(--hd)}
+.triage-score b{font-family:var(--font-mono);font-size:16px;font-weight:800}
+.triage-band-pill{font-family:var(--font-mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:3px 10px;border-radius:var(--pill);border:1px solid var(--bd);color:var(--mut);background:var(--card2)}
+.triage-band-medium .triage-band-pill{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)}
+.triage-band-high .triage-band-pill{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 42%,transparent)}
+.triage-opinion{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:13px;color:var(--fg)}
+.triage-2label{color:var(--mut)}
+.triage-diverge{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;letter-spacing:.05em;padding:2px 9px;border-radius:var(--pill);color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border:1px solid color-mix(in srgb,var(--bad) 40%,transparent)}
+.triage-signals{list-style:none;margin:0 0 10px;padding:0;display:flex;flex-direction:column;gap:4px}
+.triage-sig{display:flex;align-items:baseline;gap:10px;font-size:13px}
+.triage-sig .sig-weight{flex:0 0 auto;font-family:var(--font-mono);font-size:12px;font-weight:700;min-width:34px;text-align:right;color:var(--mut)}
+.triage-sig .sig-label{color:var(--hd)}
+.triage-sig .sig-detail{color:var(--mut);font-size:12px}
+.triage-foot{margin:0;font-family:var(--font-mono);font-size:11px}
+.triage-pill{color:var(--mut);background:var(--card2);border-color:var(--bd)}
+.triage-pill.triage-band-medium{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent)}
+.triage-pill.triage-band-high{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+/* Explication LLM (option opt-in) : bouton discret + note générée. La note est
+   une sortie LLM non fiable, posée en textContent côté JS (jamais innerHTML). */
+.llm-panel{margin:0 0 18px}
+.llm-note{margin-top:12px;padding:12px 14px;border:1px solid var(--bd);border-left:3px solid var(--acc);border-radius:var(--radius);background:color-mix(in srgb,var(--acc) 5%,var(--card))}
+.llm-badge{display:inline-block;font-family:var(--font-mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:2px 9px;border-radius:var(--pill);color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,transparent);border:1px solid color-mix(in srgb,var(--acc) 40%,transparent)}
+.llm-note p{margin:8px 0 0;font-size:13px;color:var(--fg);white-space:pre-wrap}
+.llm-muted{margin:12px 0 0;font-size:12px;color:var(--mut)}
+.saved-controls{display:flex;justify-content:flex-end;margin-bottom:12px}
+.saved-sort-label{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
+.saved-sort{background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:6px 10px;font-size:12px;cursor:pointer}
+.saved-sort:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.jobrow .triage-pill{flex:0 0 auto}
 /* Admin : registre « privilégié / destructif » signalé par l'accent danger */
 .admtoken{border-left:3px solid var(--bad);margin-bottom:16px}
 .admlead{display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:700;color:var(--hd);margin-bottom:6px}
