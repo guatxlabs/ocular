@@ -374,8 +374,15 @@
           "type": "string"
         },
         "agrees_with_rules": {
-          "title": "Agrees With Rules",
-          "type": "boolean"
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Agrees With Rules"
         },
         "signals": {
           "items": {

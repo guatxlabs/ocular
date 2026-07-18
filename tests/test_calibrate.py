@@ -73,3 +73,19 @@ def test_calibrate_deterministic_and_shaped(tmp_path):
     assert w1["version"].startswith("calibrated-")
     # le signal clivant a un poids strictement positif
     assert w1["signals"]["external_form"][0] > 0
+
+
+def test_collect_dataset_skips_malformed_row(tmp_path):
+    # Une sauvegarde avec un finding malformé (champ manquant) ne doit pas
+    # avorter la calibration : la ligne est sautée, les bonnes sont gardées.
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    _save_labeled(conn, "sha256:ok", ["External form action"], "malicious")
+    # injecte une sauvegarde au result_json malformé (finding sans champs requis)
+    sid = saved_store.save(conn, {"input_hash": "sha256:bad", "profile": "analysis",
+                                  "verdict": "benign",
+                                  "static_findings": [{"rule": "x"}]},  # manque severity/match/line/context
+                           {}, None, "2026-01-01T00:00:00Z")
+    saved_store.set_analyst_verdict(conn, sid, "legitimate", "a", "2026-01-01T00:00:00Z")
+    X, y = collect_dataset(conn)
+    assert len(X) == len(y) == 1  # seule la ligne valide est retenue
+    assert y == ["malicious"]

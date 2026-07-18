@@ -88,6 +88,10 @@ def _validate_weights(data: Any) -> None:
     if not isinstance(bands, dict) or not _is_number(bands.get("medium")) \
             or not _is_number(bands.get("high")):
         raise ValueError("champ 'bands' invalide (medium/high numériques requis)")
+    # ordre des seuils requis : sinon _band (qui teste >= high AVANT >= medium)
+    # mis-classerait tous les scores (ex. medium=70/high=40 -> score 50 = high).
+    if not (0 <= bands["medium"] < bands["high"] <= 100):
+        raise ValueError("seuils 'bands' incohérents (0 <= medium < high <= 100 requis)")
     signals = data.get("signals")
     if not isinstance(signals, dict):
         raise ValueError("champ 'signals' absent ou non-dict")
@@ -152,11 +156,16 @@ def compute_triage(
 
     band = _band(score, weights["bands"])
     second = _second_opinion(band)
+    # `agrees_with_rules` = None quand le verdict règles n'est PAS un avis
+    # comparable (ex. "unknown" sur une capture en échec) : il n'y a alors rien
+    # à (dés)accorder -> pas de badge « diverge » parasite côté UI (qui ne
+    # l'affiche que sur `=== false`).
+    agrees = (second == verdict) if verdict in ("benign", "suspicious", "malicious") else None
     # tri : base en tête reste informatif ; les signaux par |poids| desc.
     signals_sorted = [contributions[0]] + sorted(
         contributions[1:], key=lambda s: abs(s.weight), reverse=True)
     return Triage(
         score=score, band=band, second_opinion=second,
-        agrees_with_rules=(second == verdict),
+        agrees_with_rules=agrees,
         signals=signals_sorted, weights_version=str(weights["version"]),
     )

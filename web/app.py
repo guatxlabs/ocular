@@ -323,6 +323,10 @@ _LLM_SYSTEM_PROMPT = (
 )
 _LLM_TIMEOUT_S = 20
 _LLM_MAX_CHARS = 4000
+# Cap de lecture de la réponse LLM : le timeout borne le TEMPS, pas les OCTETS.
+# Un endpoint hostile/compromis pourrait streamer un corps illimité dans le
+# conteneur web (OOM). 512 KiB suffit très largement pour une complétion chat.
+_LLM_MAX_RESPONSE_BYTES = 512 * 1024
 
 
 def _llm_summary_payload(result: dict) -> dict:
@@ -510,7 +514,12 @@ def _llm_explain(summary: dict) -> tuple[str, str]:
     opener = _pinned_opener(pinned_ip, is_https)
     try:
         with opener.open(req, timeout=_LLM_TIMEOUT_S) as resp:
-            payload = json.loads(resp.read().decode("utf-8", "replace"))
+            # cap OCTETS (anti-OOM) : lecture bornée + 1 pour détecter le
+            # dépassement sans tout charger.
+            raw = resp.read(_LLM_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _LLM_MAX_RESPONSE_BYTES:
+                raise _CaptureError("réponse LLM trop volumineuse")
+            payload = json.loads(raw.decode("utf-8", "replace"))
         text = payload["choices"][0]["message"]["content"]
     except (urllib.error.URLError, OSError) as exc:
         raise _CaptureError(f"appel LLM échoué: {exc}") from exc
@@ -867,7 +876,12 @@ def create_saved(body: dict, request: Request, queue: RedisJobQueue = Depends(ge
     result_json = queue.get_result(job_id) if job_id else None
     if not result_json:
         raise HTTPException(status_code=404, detail="job inconnu")
-    result = json.loads(result_json)
+    try:
+        result = json.loads(result_json)
+    except (ValueError, TypeError):
+        # cohérent avec get_job/explain_job : une valeur Redis corrompue -> 500
+        # propre plutôt qu'un JSONDecodeError non géré.
+        raise HTTPException(status_code=500, detail="résultat corrompu")
     blobs = {}
     for ref in saved_store.refs_of(result):
         data = _read_artifact_bytes(ref)

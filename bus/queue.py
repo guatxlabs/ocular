@@ -52,7 +52,10 @@ class RedisJobQueue:
         return Job.model_validate_json(raw)
 
     def set_result(self, job_id: str, result_json: str, ttl: Optional[int] = None) -> None:
-        if ttl:
+        # ttl > 0 -> expiration ; None/0/négatif -> clé permanente (Redis
+        # refuserait ex<=0). Le `> 0` explicite évite qu'un ttl négatif
+        # accidentel ne provoque une erreur Redis.
+        if ttl is not None and ttl > 0:
             self._r.set(RESULT_PREFIX + job_id, result_json, ex=ttl)
         else:
             self._r.set(RESULT_PREFIX + job_id, result_json)
