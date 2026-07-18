@@ -215,3 +215,26 @@ def test_malformed_signal_entry_falls_back(tmp_path, monkeypatch):
     # compute_triage ne doit pas lever et doit surfacer l'erreur de chargement.
     tri = compute_triage([_rf("External form action", "medium")], verdict="benign")
     assert any(s.key == "weights_load_error" for s in tri.signals)
+
+
+def test_agrees_with_rules_none_when_verdict_unknown():
+    # verdict règles non comparable ("unknown", ex. capture en échec) -> pas
+    # d'avis à (dés)accorder -> agrees_with_rules None (pas de badge « diverge »).
+    findings = [_rf("Dynamic code evaluation", "high"), _rf("Base64 decode", "medium")]
+    tri = compute_triage(findings, verdict="unknown")
+    assert tri.agrees_with_rules is None
+    assert tri.second_opinion == "malicious"
+
+
+def test_validate_weights_rejects_bad_band_order(tmp_path, monkeypatch):
+    import json as _json
+    bad = tmp_path / "w.json"
+    bad.write_text(_json.dumps({
+        "version": "x", "base": 5,
+        "bands": {"medium": 70, "high": 40},  # medium >= high : incohérent
+        "signals": {"external_form": [10.0, "x"]},
+    }))
+    monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(bad))
+    weights, err = load_weights()
+    assert weights["version"] == "builtin-1"  # fallback
+    assert err is not None

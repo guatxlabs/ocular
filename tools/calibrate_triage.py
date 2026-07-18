@@ -43,11 +43,22 @@ def collect_dataset(conn) -> tuple[list[list[int]], list[str]]:
         return [], []
     X, y = [], []
     for row in rows:
-        result = saved_store.get_result(conn, row["id"])
-        if not result:
+        # tolérance par-ligne : une sauvegarde à l'ancien schéma / avec un
+        # finding malformé (champ manquant, severity hors-Literal) ne doit PAS
+        # avorter TOUTE la calibration -> on saute la ligne (comme le skip
+        # existant sur résultat absent). Idem verdict analyste hors mapping.
+        try:
+            result = saved_store.get_result(conn, row["id"])
+            if not result:
+                continue
+            label = _LABEL_MAP.get(row["analyst_verdict"])
+            if label is None:
+                continue
+            vec = _signal_vector(result)
+        except Exception:  # noqa: BLE001 - robustesse volontaire (outil offline)
             continue
-        X.append(_signal_vector(result))
-        y.append(_LABEL_MAP[row["analyst_verdict"]])
+        X.append(vec)
+        y.append(label)
     return X, y
 
 

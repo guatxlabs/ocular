@@ -88,7 +88,8 @@ class Triage(BaseModel):
     score: int
     band: Literal["low", "medium", "high"]
     second_opinion: Verdict
-    agrees_with_rules: bool
+    # None quand le verdict règles n'est pas un avis comparable (ex. "unknown").
+    agrees_with_rules: Optional[bool]
     signals: list[TriageSignal] = Field(default_factory=list)
     weights_version: str
 
