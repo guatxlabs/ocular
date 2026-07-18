@@ -10,11 +10,20 @@ down:
 	@# Les conteneurs de session (ocular-sess-*) sont lancés hors-compose par le
 	@# broker (docker run) : `compose down` ne les retire pas -> nettoyage explicite
 	@# (sinon orphelins + réseau de session non supprimable).
-	-@ids=$$(docker ps -aq --filter name=ocular-sess-); if [ -n "$$ids" ]; then docker rm -f $$ids; fi
+	@# Même remarque que pour les réseaux : `--filter name=` matche une
+	@# sous-chaîne -> on filtre sur le PRÉFIXE (cf. startswith(_CONTAINER_PREFIX)
+	@# dans broker/sessions.py) pour ne pas emporter un conteneur tiers.
+	-@names=$$(docker ps -a --format '{{.Names}}' --filter name=ocular-sess- | grep '^ocular-sess-'); \
+	  if [ -n "$$names" ]; then docker rm -f $$names; fi
 	@# Idem pour les réseaux DÉDIÉS par session (ocular-sess-net-*), créés hors
 	@# compose par le broker. APRÈS les conteneurs : un réseau encore attaché à
 	@# un conteneur n'est pas supprimable.
-	-@ids=$$(docker network ls -q --filter name=ocular-sess-net-); if [ -n "$$ids" ]; then docker network rm $$ids; fi
+	@# `--filter name=` est un filtre SOUS-CHAÎNE, pas un préfixe : sans garde,
+	@# un réseau tiers `foo-ocular-sess-net-bar` serait supprimé. On filtre donc
+	@# sur le PRÉFIXE, symétriquement au garde-fou `startswith(_NET_PREFIX)` de
+	@# broker/sessions.py::_sweep_orphan_networks.
+	-@names=$$(docker network ls --format '{{.Name}}' --filter name=ocular-sess-net- | grep '^ocular-sess-net-'); \
+	  if [ -n "$$names" ]; then docker network rm $$names; fi
 analyze: build-runner
 	@if [ -n "$(URL)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='capture', url='$(URL)')))"; \
 	elif [ -n "$(FILE)" ]; then . .venv/bin/activate && python -c "from broker.launcher import run_job; from bus.queue import Job; print(run_job(Job(job_id='cli', profile='analysis', html=open('$(FILE)').read())))"; \
