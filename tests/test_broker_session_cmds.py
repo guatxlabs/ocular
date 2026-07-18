@@ -141,7 +141,7 @@ def test_missing_session_id_is_noop(monkeypatch):
 
 
 def _docker_stub(calls, ps_out="", net_out=""):
-    def fake_run(args, capture_output=None, check=None, text=None):
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
         calls.append(list(args))
         if args[:2] == ["docker", "ps"]:
             return type("P", (), {"returncode": 0, "stdout": ps_out, "stderr": ""})()

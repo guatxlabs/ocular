@@ -1,4 +1,5 @@
 import logging
+import subprocess
 
 import fakeredis
 
@@ -90,7 +91,7 @@ def test_launch_session_threads_secret_to_docker_run(monkeypatch):
     # on isole celle du `docker run` pour asserter sur le secret.
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
@@ -113,7 +114,7 @@ def test_build_session_args_never_touches_docker_socket_or_host_net_or_privilege
 def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"deadbeef\n", "stderr": b""})()
 
@@ -128,7 +129,7 @@ def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
 def test_stop_session_kills_then_removes(monkeypatch):
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
@@ -143,7 +144,7 @@ def test_stop_session_kills_then_removes(monkeypatch):
 def test_stop_session_is_best_effort_check_false(monkeypatch):
     seen_check = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         seen_check.append(check)
         return type("P", (), {"returncode": 1, "stdout": b"", "stderr": b"no such container"})()
 
@@ -299,7 +300,7 @@ def test_launch_session_creates_net_runs_then_connects_web(monkeypatch):
     # process_session_cmd n'expose la session au registre.
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
@@ -317,7 +318,7 @@ def test_launch_session_creates_net_runs_then_connects_web(monkeypatch):
 def test_launch_session_survives_network_connect_failure(monkeypatch):
     # Si le web n'est pas joignable, on logue mais on ne lève pas : le poll
     # de santé côté web décidera (504 -> teardown), pas d'exception ici.
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         rc = 1 if args[:3] == ["docker", "network", "connect"] else 0
         return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"no such container"})()
 
@@ -327,7 +328,7 @@ def test_launch_session_survives_network_connect_failure(monkeypatch):
 
 def test_launch_session_survives_network_create_failure(monkeypatch):
     # Pool d'adresses Docker épuisé : on logue un warning distinctif, on ne lève pas.
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         rc = 1 if args[:3] == ["docker", "network", "create"] else 0
         return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"could not find an available predefined subnet"})()
 
@@ -338,7 +339,7 @@ def test_launch_session_survives_network_create_failure(monkeypatch):
 def test_launch_session_survives_docker_run_failure(monkeypatch):
     # 3e chemin best-effort : un `docker run` en échec ne doit pas lever non
     # plus — le nom est toujours retourné, le poll de santé côté web décidera.
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         rc = 1 if args[:3] == ["docker", "run", "-d"] else 0
         return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"boom"})()
 
@@ -350,7 +351,7 @@ def _create_fails_with(stderr: bytes):
     """fake subprocess.run où SEUL `docker network create` échoue, avec le
     stderr fourni (les deux autres commandes best-effort réussissent, donc
     tout warning capturé provient forcément du chemin `network create`)."""
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         rc = 1 if args[:3] == ["docker", "network", "create"] else 0
         return type("P", (), {"returncode": rc, "stdout": b"", "stderr": stderr})()
     return fake_run
@@ -397,7 +398,7 @@ def test_stop_session_removes_container_then_network(monkeypatch):
     # est attaché -> le conteneur doit partir AVANT.
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
@@ -416,7 +417,7 @@ def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
     # Nom inattendu -> on ne dérive aucun réseau (pas de `network rm` sauvage).
     calls = []
 
-    def fake_run(args, capture_output=None, check=None):
+    def fake_run(args, capture_output=None, check=None, timeout=None):
         calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
@@ -426,6 +427,66 @@ def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
     # supplémentaire (l'assert suivant, lui, ne couvre que ceux contenant « network »).
     assert len(calls) == 2
     assert all("network" not in a for a in calls)
+
+
+# --- Défaut G : aucune commande conteneur ne doit pouvoir bloquer sans limite -
+# Un démon bloqué (containerd coincé, disque plein, suppression « Removal In
+# Progress ») figeait l'appel indéfiniment. Selon le point de blocage : reaper
+# figé, sweeper figé, ou — le pire — la BOUCLE PRINCIPALE du broker figée via
+# `process_session_cmd -> launch_session`, plus aucun job ni commande traité,
+# le processus restant « vivant » pour toute sonde de liveness.
+
+def _recording_run(calls, stdout=""):
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
+        calls.append((args, timeout))
+        return type("P", (), {"returncode": 0, "stdout": stdout, "stderr": b""})()
+    return fake_run
+
+
+def _timing_out_run(args, capture_output=None, check=None, text=None, timeout=None):
+    raise subprocess.TimeoutExpired(cmd=args, timeout=timeout or 1)
+
+
+def test_every_container_command_declares_a_timeout(monkeypatch):
+    from broker.sessions import sweep_orphans
+    calls = []
+    monkeypatch.setattr(sessions_mod.subprocess, "run", _recording_run(calls, stdout="ocular-sess-x\n"))
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    launch_session("s1", secret="sec")
+    stop_session("ocular-sess-s1")
+    sweep_orphans(_FakeReg(alive=set()))
+
+    assert calls, "aucune commande capturée"
+    sans_timeout = [a for a, t in calls if t is None]
+    assert not sans_timeout, f"commandes sans timeout : {sans_timeout}"
+    assert all(t > 0 for _, t in calls)
+
+
+def test_launch_session_survives_a_timed_out_command(monkeypatch):
+    monkeypatch.setattr(sessions_mod.subprocess, "run", _timing_out_run)
+    # best-effort : le nom est toujours retourné, jamais d'exception propagée
+    assert launch_session("s1", secret="sec") == "ocular-sess-s1"
+
+
+def test_stop_session_survives_a_timed_out_command(monkeypatch):
+    monkeypatch.setattr(sessions_mod.subprocess, "run", _timing_out_run)
+    stop_session("ocular-sess-s1")  # ne doit PAS lever
+
+
+def test_sweep_orphans_survives_a_timed_out_command(monkeypatch):
+    from broker.sessions import sweep_orphans
+    monkeypatch.setattr(sessions_mod.subprocess, "run", _timing_out_run)
+    assert sweep_orphans(_FakeReg(alive=set())) == 0  # ne doit PAS lever
+
+
+def test_reap_survives_a_timed_out_container_command(monkeypatch):
+    """Le chemin le plus coûteux : un `docker kill/rm` bloqué ne doit pas figer
+    le reaper (sinon plus AUCUNE session n'est jamais nettoyée)."""
+    monkeypatch.setattr(sessions_mod.subprocess, "run", _timing_out_run)
+    registry = _FakeRegistry(expired_ids=["s1"])
+    assert reap(registry, now_epoch=1000.0, ttl=3600, idle=600) == 1
+    assert registry.deleted == ["s1"]
 
 
 class _FakeReg:
@@ -441,7 +502,7 @@ def test_sweep_orphans_removes_orphan_networks_only(monkeypatch):
     from broker.sessions import sweep_orphans
     calls = []
 
-    def fake_run(args, capture_output=None, check=None, text=None):
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
         calls.append(args)
         if args[:2] == ["docker", "ps"]:
             return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -473,7 +534,7 @@ def test_sweep_orphans_network_substring_guard(monkeypatch):
     from broker.sessions import sweep_orphans
     calls = []
 
-    def fake_run(args, capture_output=None, check=None, text=None):
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
         calls.append(args)
         if args[:2] == ["docker", "ps"]:
             return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -495,7 +556,7 @@ def test_sweep_orphan_networks_runs_even_if_docker_ps_fails(monkeypatch):
     from broker.sessions import sweep_orphans
     calls = []
 
-    def fake_run(args, capture_output=None, check=None, text=None):
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
         calls.append(args)
         if args[:2] == ["docker", "ps"]:
             return type("P", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()

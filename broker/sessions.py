@@ -15,9 +15,33 @@ from ocular_settings import session_screen, web_container
 
 log = get_logger("broker.sessions")
 
+# Plafonds de blocage des commandes conteneur. SANS eux, un démon bloqué
+# (containerd coincé, disque plein, suppression « Removal In Progress ») fige
+# l'appel INDÉFINIMENT : reaper figé, sweeper figé, ou — le pire — la boucle
+# principale du broker figée via `process_session_cmd -> launch_session`, plus
+# aucun job ni commande traité, alors que le processus reste « vivant » pour
+# toute sonde de liveness. Un dépassement est traité comme n'importe quel autre
+# échec best-effort (log + on continue) : c'est le contrat du module.
+_TIMEOUT_NET = 15.0     # network create/connect/disconnect/rm/ls, ps
+_TIMEOUT_CONTAINER = 30.0  # run/kill/rm : peuvent légitimement prendre du temps
+_TIMEOUT_RETURNCODE = 124  # convention `timeout(1)` : commande interrompue
+
 _SESSION_IMAGE = "ocular-runner-recon-vnc:latest"
 _CONTAINER_PREFIX = "ocular-sess-"
 _NET_PREFIX = "ocular-sess-net-"
+
+
+def _run(args: list[str], timeout: float, **kwargs):
+    """`subprocess.run` best-effort BORNÉ DANS LE TEMPS. Un dépassement ne
+    remonte JAMAIS d'exception : il est converti en un résultat en échec
+    (`returncode=124`), que les appelants traitent déjà comme tel — aucun
+    d'entre eux ne doit pouvoir bloquer sa boucle sur un démon coincé."""
+    try:
+        return subprocess.run(args, capture_output=True, check=False, timeout=timeout, **kwargs)
+    except subprocess.TimeoutExpired:
+        log.warning("commande conteneur expirée timeout=%ss cmd=%s", timeout, " ".join(args[:3]))
+        empty = "" if kwargs.get("text") else b""
+        return type("P", (), {"returncode": _TIMEOUT_RETURNCODE, "stdout": empty, "stderr": empty})()
 
 
 def _session_name(session_id: str) -> str:
@@ -84,9 +108,7 @@ def launch_session(session_id: str, secret: str = "") -> str:
     net = _session_net(session_id)
     log.info("session launch session_id=%s net=%s", session_id, net)  # jamais le secret
 
-    created = subprocess.run(
-        ["docker", "network", "create", net], capture_output=True, check=False
-    )
+    created = _run(["docker", "network", "create", net], _TIMEOUT_NET)
     if created.returncode != 0:
         stderr = created.stderr.decode(errors="replace")
         if "already exists" not in stderr:
@@ -99,9 +121,7 @@ def launch_session(session_id: str, secret: str = "") -> str:
                 session_id, net, stderr[:200],
             )
 
-    proc = subprocess.run(
-        build_session_args(session_id, secret=secret), capture_output=True, check=False
-    )
+    proc = _run(build_session_args(session_id, secret=secret), _TIMEOUT_CONTAINER)
     if proc.returncode != 0:
         log.warning(
             "session launch failed session_id=%s returncode=%s stderr=%s",
@@ -109,9 +129,7 @@ def launch_session(session_id: str, secret: str = "") -> str:
         )
 
     web = web_container()
-    conn = subprocess.run(
-        ["docker", "network", "connect", net, web], capture_output=True, check=False
-    )
+    conn = _run(["docker", "network", "connect", net, web], _TIMEOUT_NET)
     if conn.returncode != 0:
         log.warning(
             "session network connect failed session_id=%s net=%s web=%s stderr=%s",
@@ -128,18 +146,15 @@ def stop_session(container: str) -> None:
 
     L'ORDRE est contraignant : Docker refuse de supprimer un réseau encore
     utilisé, donc le conteneur part d'abord."""
-    subprocess.run(["docker", "kill", container], capture_output=True, check=False)
-    subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+    _run(["docker", "kill", container], _TIMEOUT_CONTAINER)
+    _run(["docker", "rm", "-f", container], _TIMEOUT_CONTAINER)
 
     if not container.startswith(_CONTAINER_PREFIX):
         return  # nom inattendu : ne jamais dériver/supprimer un réseau au hasard
     session_id = container[len(_CONTAINER_PREFIX):]
     net = _session_net(session_id)
-    subprocess.run(
-        ["docker", "network", "disconnect", "-f", net, web_container()],
-        capture_output=True, check=False,
-    )
-    subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)
+    _run(["docker", "network", "disconnect", "-f", net, web_container()], _TIMEOUT_NET)
+    _run(["docker", "network", "rm", net], _TIMEOUT_NET)
 
 
 def _sweep_orphan_networks(registry) -> int:
@@ -149,9 +164,9 @@ def _sweep_orphan_networks(registry) -> int:
     orphelin est inerte mais consomme un sous-réseau du pool d'adresses Docker,
     qui est une ressource FINIE : sans ce balayage, les lancements finiraient
     par échouer. Best-effort."""
-    proc = subprocess.run(
+    proc = _run(
         ["docker", "network", "ls", "--filter", f"name={_NET_PREFIX}", "--format", "{{.Name}}"],
-        capture_output=True, check=False, text=True,
+        _TIMEOUT_NET, text=True,
     )
     if proc.returncode != 0:
         return 0
@@ -163,11 +178,8 @@ def _sweep_orphan_networks(registry) -> int:
         session_id = name[len(_NET_PREFIX):]
         if registry.get(session_id) is not None:
             continue  # session vivante : on ne touche pas à son réseau
-        subprocess.run(
-            ["docker", "network", "disconnect", "-f", name, web],
-            capture_output=True, check=False,
-        )
-        subprocess.run(["docker", "network", "rm", name], capture_output=True, check=False)
+        _run(["docker", "network", "disconnect", "-f", name, web], _TIMEOUT_NET)
+        _run(["docker", "network", "rm", name], _TIMEOUT_NET)
         removed += 1
     if removed:
         log.info("session orphan networks swept count=%d", removed)
@@ -187,9 +199,9 @@ def sweep_orphans(registry) -> int:
     (`check=False`) : une absence de Docker ou une erreur transitoire renvoie 0
     sans lever. Retourne le nombre de **conteneurs** supprimés (le compte des
     réseaux part dans un log dédié)."""
-    proc = subprocess.run(
+    proc = _run(
         ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
-        capture_output=True, check=False, text=True,
+        _TIMEOUT_NET, text=True,
     )
     removed = 0
     # Un `docker ps` en échec neutralise le balayage CONTENEURS uniquement : pas
