@@ -399,4 +399,59 @@ def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
     stop_session("un-autre-conteneur")
+    assert len(calls) == 2  # kill + rm, et RIEN de plus (sinon l'assert suivant est vacue)
     assert all("network" not in a for a in calls)
+
+
+class _FakeReg:
+    """Registre minimal : seules les sessions listées sont 'vivantes'."""
+    def __init__(self, alive):
+        self._alive = set(alive)
+
+    def get(self, session_id):
+        return {"session_id": session_id} if session_id in self._alive else None
+
+
+def test_sweep_orphans_removes_orphan_networks_only(monkeypatch):
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if args[:3] == ["docker", "network", "ls"]:
+            # un réseau orphelin (s-dead) + un réseau de session vivante (s-live)
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "ocular-sess-net-s-dead\nocular-sess-net-s-live\n",
+                                  "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    sweep_orphans(_FakeReg(alive={"s-live"}))
+
+    assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
+    assert ["docker", "network", "rm", "ocular-sess-net-s-live"] not in calls
+    assert ["docker", "network", "disconnect", "-f", "ocular-sess-net-s-dead", "ocular-web"] in calls
+
+
+def test_sweep_orphans_network_substring_guard(monkeypatch):
+    # `--filter name=` est un filtre SUBSTRING : un réseau au nom voisin ne
+    # doit pas être supprimé.
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if args[:3] == ["docker", "network", "ls"]:
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "prefixe-ocular-sess-net-x\n", "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    sweep_orphans(_FakeReg(alive=set()))
+    assert all(a[:3] != ["docker", "network", "rm"] for a in calls)

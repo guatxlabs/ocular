@@ -21,7 +21,7 @@ _NET_PREFIX = "ocular-sess-net-"
 
 
 def _session_name(session_id: str) -> str:
-    return f"ocular-sess-{session_id}"
+    return f"{_CONTAINER_PREFIX}{session_id}"
 
 
 def _session_net(session_id: str) -> str:
@@ -142,31 +142,69 @@ def stop_session(container: str) -> None:
     subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)
 
 
+def _sweep_orphan_networks(registry) -> int:
+    """Supprime les réseaux `ocular-sess-net-*` qui ne correspondent à AUCUNE
+    session vivante — résidus d'un crash broker, d'un `compose down`, ou d'un
+    `network rm` qui avait échoué (conteneur pas encore parti). Un réseau
+    orphelin est inerte mais consomme un sous-réseau du pool d'adresses Docker,
+    qui est une ressource FINIE : sans ce balayage, les lancements finiraient
+    par échouer. Best-effort."""
+    proc = subprocess.run(
+        ["docker", "network", "ls", "--filter", f"name={_NET_PREFIX}", "--format", "{{.Name}}"],
+        capture_output=True, check=False, text=True,
+    )
+    if proc.returncode != 0:
+        return 0
+    removed = 0
+    web = web_container()
+    for name in proc.stdout.split():
+        if not name.startswith(_NET_PREFIX):
+            continue  # garde-fou : le filtre `name=` est un substring
+        session_id = name[len(_NET_PREFIX):]
+        if registry.get(session_id) is not None:
+            continue  # session vivante : on ne touche pas à son réseau
+        subprocess.run(
+            ["docker", "network", "disconnect", "-f", name, web],
+            capture_output=True, check=False,
+        )
+        subprocess.run(["docker", "network", "rm", name], capture_output=True, check=False)
+        removed += 1
+    if removed:
+        log.info("session orphan networks swept count=%d", removed)
+    return removed
+
+
 def sweep_orphans(registry) -> int:
     """Supprime les conteneurs de session `ocular-sess-*` qui ne correspondent
     à AUCUNE session vivante du registre — orphelins laissés par un crash du
     broker OU par `docker compose down` (les conteneurs de session sont lancés
-    hors-compose via `docker run`, donc JAMAIS retirés par `compose down` ; ils
-    bloqueraient aussi la suppression du réseau `ocular-sessions`). Appelé au
-    démarrage du broker : à la reprise, tout conteneur sans session vivante est
-    forcément un résidu -> on le supprime. Best-effort (`check=False`) : une
-    absence de Docker ou une erreur transitoire renvoie 0 sans lever."""
+    hors-compose via `docker run`, donc JAMAIS retirés par `compose down`).
+    Balaie ENSUITE les réseaux dédiés `ocular-sess-net-*` restés sans session
+    vivante, qui consommeraient un sous-réseau du pool d'adresses Docker.
+    Appelé au démarrage du broker : à la reprise, tout conteneur (ou réseau)
+    sans session vivante est forcément un résidu -> on le supprime. Best-effort
+    (`check=False`) : une absence de Docker ou une erreur transitoire renvoie 0
+    sans lever. Retourne le nombre de **conteneurs** supprimés (le compte des
+    réseaux part dans un log dédié)."""
     proc = subprocess.run(
-        ["docker", "ps", "-a", "--filter", "name=ocular-sess-", "--format", "{{.Names}}"],
+        ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
         capture_output=True, check=False, text=True,
     )
     if proc.returncode != 0:
         return 0
     removed = 0
     for name in proc.stdout.split():
-        if not name.startswith("ocular-sess-"):
+        if not name.startswith(_CONTAINER_PREFIX):
             continue  # garde-fou : le filtre `name=` est un substring
-        session_id = name[len("ocular-sess-"):]
+        session_id = name[len(_CONTAINER_PREFIX):]
         if registry.get(session_id) is None:
             stop_session(name)
             removed += 1
     if removed:
         log.info("session orphans swept count=%d", removed)
+    # Les conteneurs orphelins sont partis -> leurs réseaux peuvent être libérés
+    # (ordre contraignant, comme dans stop_session).
+    _sweep_orphan_networks(registry)
     return removed
 
 
