@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -447,28 +448,103 @@ def _owned_session_or_404(conn, registry: SessionRegistry, session_id: str) -> d
     return sess
 
 
-def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
-    """Poll d'abord le registre (écrit par le broker une fois le conteneur
-    lancé) puis le `/health` du session_server via le réseau interne, jusqu'à
-    `deadline` (epoch monotonic). Extrait pour être monkeypatchable en test
-    sans dépendre d'un vrai conteneur."""
-    while time.monotonic() < deadline:
-        sess = registry.get(session_id)
-        if sess and sess.get("container"):
-            break
-        time.sleep(_SESSION_POLL_INTERVAL)
-    else:
-        return False
+# --- Disponibilité d'une session : états et sonde ----------------------------
+# Trois états, DANS CET ORDRE (une session ne recule jamais) :
+#   "pending"  — l'entrée registre existe (réservation posée par le broker) mais
+#                le conteneur n'est PAS encore lancé (`container` vide) ;
+#   "starting" — conteneur lancé, mais son `session_server` ne répond pas encore
+#                `/health` (Xvfb + navigateur + websockify démarrent) ;
+#   "ready"    — `/health` répond : le WS noVNC et /capture sont utilisables.
+# Une session INCONNUE n'a pas d'état : c'est un 404 (cf. `_owned_session_or_404`),
+# jamais un quatrième état — sans quoi la route deviendrait un oracle d'existence.
+SESSION_STATE_PENDING = "pending"
+SESSION_STATE_STARTING = "starting"
+SESSION_STATE_READY = "ready"
 
-    health_url = f"http://{_session_host(session_id)}:8090/health"
+
+def _session_state(registry: SessionRegistry, session_id: str, sess: dict | None = None) -> str:
+    """Sonde NON BLOQUANTE de disponibilité : un seul tour des deux contrôles
+    (registre puis `/health` interne), sans aucun `sleep`. C'est la brique
+    UNIQUE partagée par `GET /sessions/{id}` (qui la rend telle quelle) et par
+    `_wait_session_ready` (qui la répète jusqu'à une échéance) — les deux
+    chemins ne peuvent donc pas diverger sur ce qu'est « prête ».
+
+    `sess` permet de réutiliser l'entrée déjà chargée par le contrôle
+    d'appartenance, sans deuxième aller-retour Redis."""
+    if sess is None:
+        sess = registry.get(session_id)
+    if not sess or not sess.get("container"):
+        return SESSION_STATE_PENDING
+    if _internal_get_ok(f"http://{_session_host(session_id)}:8090/health"):
+        return SESSION_STATE_READY
+    return SESSION_STATE_STARTING
+
+
+def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
+    """Répète `_session_state` jusqu'à `ready` ou `deadline` (epoch monotonic).
+
+    N'est PLUS sur le chemin d'une requête HTTP depuis que `POST /sessions`
+    répond 202 : seul le thread d'amorçage (`_session_bootstrap`) l'appelle,
+    pour savoir quand pousser la navigation initiale. Reste monkeypatchable en
+    test sans dépendre d'un vrai conteneur."""
     while time.monotonic() < deadline:
-        if _internal_get_ok(health_url):
+        if _session_state(registry, session_id) == SESSION_STATE_READY:
             return True
         time.sleep(_SESSION_POLL_INTERVAL)
     return False
 
 
-@app.post("/sessions", response_model=SessionResponse)
+def _session_bootstrap(
+    registry: SessionRegistry,
+    cmd_queue: SessionCmdQueue,
+    session_id: str,
+    secret: str,
+    url: str | None,
+    html: str | None,
+) -> None:
+    """Amorçage HORS du chemin de requête : attend que la session soit prête,
+    puis pousse la navigation initiale (`/goto` ou `/load`) dans le conteneur.
+
+    Tourne dans un thread démon lancé par `create_session`. C'est CE travail
+    qui prenait ~7-9 s en synchrone et privait le client de son `session_id`
+    quand il abandonnait : il n'a plus rien à voir avec la réponse HTTP.
+
+    En cas d'échec de démarrage, la session est stoppée (même filet de sécurité
+    qu'avant : un conteneur qui ne démarre pas n'immobilise pas 4 Go jusqu'à son
+    TTL). Le client, lui, DÉTIENT l'identifiant depuis la première milliseconde
+    et peut de toute façon `DELETE` — il verra alors un 404 sur la sonde, qu'il
+    traite comme un échec terminal."""
+    deadline = time.monotonic() + session_ready_timeout()
+    if not _wait_session_ready(registry, session_id, deadline):
+        cmd_queue.enqueue_cmd("stop", session_id)
+        log.warning("session start timeout session_id=%s", session_id)
+        return
+    host = _session_host(session_id)
+    if url:
+        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": url}, secret)
+    else:
+        ok = _internal_post_json(f"http://{host}:8090/load", {"html": html}, secret)
+    if not ok:
+        log.warning("session goto/load failed session_id=%s", session_id)
+
+
+def _spawn_session_bootstrap(*args) -> None:
+    """Lance `_session_bootstrap` dans un thread démon. Indirection délibérée :
+    les tests la monkeypatchent pour exécuter (ou non) l'amorçage de façon
+    déterministe, sans avoir à joindre un thread."""
+    threading.Thread(
+        target=_session_bootstrap, args=args, daemon=True, name="ocular-session-bootstrap"
+    ).start()
+
+
+# 202 Accepted, PAS 200 : la session est ACCEPTÉE, pas encore PRÊTE. Le client
+# reçoit `session_id` + `token` immédiatement (< 1 ms de travail en propre), puis
+# sonde `GET /sessions/{id}` jusqu'à l'état "ready". C'est tout l'objet du
+# changement : en synchrone, un client qui abandonnait pendant les ~7-9 s
+# d'attente n'apprenait JAMAIS son `session_id` et laissait donc une session
+# — un conteneur ~4 Go et un sous-réseau du pool — que PERSONNE ne pouvait
+# supprimer avant son TTL.
+@app.post("/sessions", response_model=SessionResponse, status_code=202)
 def create_session(
     req: SessionRequest,
     request: Request,
@@ -528,21 +604,60 @@ def create_session(
         session_id, ip, "url" if req.url else "html",
     )
 
-    deadline = time.monotonic() + session_ready_timeout()
-    if not _wait_session_ready(registry, session_id, deadline):
-        cmd_queue.enqueue_cmd("stop", session_id)
-        log.warning("session start timeout session_id=%s", session_id)
-        raise HTTPException(status_code=504, detail="session non prête")
-
-    host = _session_host(session_id)
-    if req.url:
-        ok = _internal_post_json(f"http://{host}:8090/goto", {"url": req.url}, session_secret)
-    else:
-        ok = _internal_post_json(f"http://{host}:8090/load", {"html": req.html}, session_secret)
-    if not ok:
-        log.warning("session goto/load failed session_id=%s", session_id)
+    # Attente de disponibilité + navigation initiale : DÉPORTÉES hors du chemin
+    # de requête (cf. `_session_bootstrap`). On répond tout de suite.
+    _spawn_session_bootstrap(registry, cmd_queue, session_id, session_secret, req.url, req.html)
 
     return SessionResponse(session_id=session_id, token=token)
+
+
+@app.get("/sessions/{session_id}")
+def get_session(
+    session_id: str,
+    request: Request,
+    registry: SessionRegistry = Depends(get_session_registry),
+) -> dict:
+    """État de disponibilité d'une session — la sonde que le client interroge
+    après le 202 de `POST /sessions`, jusqu'à `state == "ready"`.
+
+    Renvoie `{session_id, state, ready, kind, target, created_at,
+    last_activity}` :
+      • `state` ∈ "pending" | "starting" | "ready" (cf. `_session_state`) ;
+      • `ready` est le booléen de commodité `state == "ready"`, pour que le
+        client n'ait pas à coder en dur la liste des états intermédiaires — un
+        état ajouté plus tard ne cassera pas sa condition d'arrêt.
+
+    NI `token` NI `secret` NE SORTENT (même filtrage que `list_active` : le
+    token capability WS n'est jamais renvoyé par une route de lecture, le secret
+    conteneur ne sort jamais du tout). `owner` non plus, sauf à l'admin — il
+    porte l'identité IdP d'un tiers.
+
+    Appartenance appliquée EXACTEMENT comme les autres routes de session :
+    `_checked_session_id` puis `_owned_session_or_404`, donc 404 indistinguable
+    entre « inconnue », « hors gabarit » et « appartient à autrui » (l'admin
+    passe outre). Cette route est un point de sondage répété : c'est
+    précisément là qu'un 403 aurait fait un oracle d'existence commode."""
+    session_id = _checked_session_id(session_id)
+    sess = _owned_session_or_404(request, registry, session_id)
+    if not sess:
+        # `_owned_session_or_404` laisse passer l'ADMIN même sur une session
+        # absente (il court-circuite l'appartenance) et rend alors None. Les
+        # autres routes ignorent sa valeur de retour ; celle-ci la LIT, donc
+        # elle doit conclure elle-même : inconnue = 404, admin ou pas.
+        raise HTTPException(status_code=404, detail="session inconnue")
+    state = _session_state(registry, session_id, sess=sess)
+    out = {
+        "session_id": session_id,
+        "state": state,
+        "ready": state == SESSION_STATE_READY,
+        "kind": sess.get("kind", ""),
+        "target": sess.get("target", ""),
+        "created_at": sess.get("created_at", ""),
+        "last_activity": sess.get("last_activity", ""),
+    }
+    if _admin_granted(request):
+        out["owner"] = sess.get("owner", "")
+    return out
 
 
 @app.get("/sessions")

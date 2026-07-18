@@ -366,7 +366,7 @@ def test_created_session_records_the_caller_as_owner(monkeypatch):
     )
 
     r = client.post("/sessions", json={"url": "https://example.com"}, headers=_as(_ALICE))
-    assert r.status_code == 200
+    assert r.status_code == 202
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd["action"] == "launch"
     assert cmd["owner"] == _ALICE

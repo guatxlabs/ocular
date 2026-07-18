@@ -22,6 +22,18 @@ _SID = "sess-0123456789ab"
 _BEARER_OWNER = "token"
 
 
+def _inline_bootstrap(monkeypatch):
+    """Exécute l'amorçage de session (attente + navigation initiale) EN LIGNE
+    au lieu du thread démon de production. `POST /sessions` ne l'attend plus
+    (202 immédiat) : sans cette bascule, un test qui vérifie l'appel `/goto`
+    courserait un thread. Elle ne remet PAS l'attente sur le chemin de requête
+    — c'est le test dédié `test_create_session_does_not_wait_on_request_path`
+    qui verrouille ce point, sans cette bascule."""
+    monkeypatch.setattr(
+        app_mod, "_spawn_session_bootstrap", lambda *a: app_mod._session_bootstrap(*a)
+    )
+
+
 def _client(monkeypatch):
     monkeypatch.setenv("OCULAR_TOKEN", "t")
     redis_client = fakeredis.FakeStrictRedis()
@@ -71,6 +83,7 @@ def test_create_session_oversized_html_rejected(monkeypatch):
 def test_create_session_success_url_returns_token_and_enqueues_launch(monkeypatch):
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
+    _inline_bootstrap(monkeypatch)
     seen = {}
 
     def fake_post(url, payload, secret, timeout=5.0):
@@ -80,7 +93,9 @@ def test_create_session_success_url_returns_token_and_enqueues_launch(monkeypatc
     monkeypatch.setattr(app_mod, "_internal_post_json", fake_post)
 
     r = client.post("/sessions", json={"url": "https://example.com"})
-    assert r.status_code == 200
+    # 202 Accepted : la session est acceptée, PAS encore prête (le client sonde
+    # ensuite `GET /sessions/{id}`).
+    assert r.status_code == 202
     body = r.json()
     assert body["session_id"].startswith("sess-")
     assert isinstance(body["token"], str) and len(body["token"]) > 20
@@ -107,9 +122,10 @@ def test_create_session_bare_domain_normalized_to_https(monkeypatch):
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
     monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
+    _inline_bootstrap(monkeypatch)
 
     r = client.post("/sessions", json={"url": "example.com"})
-    assert r.status_code == 200
+    assert r.status_code == 202
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd["target"] == "https://example.com/"
@@ -119,9 +135,10 @@ def test_create_session_explicit_http_scheme_respected(monkeypatch):
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda registry, sid, deadline: True)
     monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
+    _inline_bootstrap(monkeypatch)
 
     r = client.post("/sessions", json={"url": "http://example.com"})
-    assert r.status_code == 200
+    assert r.status_code == 202
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
     assert cmd["target"] == "http://example.com/"
@@ -130,6 +147,7 @@ def test_create_session_explicit_http_scheme_respected(monkeypatch):
 def test_create_session_html_uses_load_endpoint(monkeypatch):
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda *a, **k: True)
+    _inline_bootstrap(monkeypatch)
     calls = []
 
     def fake_post(url, payload, secret, timeout=5.0):
@@ -139,7 +157,7 @@ def test_create_session_html_uses_load_endpoint(monkeypatch):
     monkeypatch.setattr(app_mod, "_internal_post_json", fake_post)
 
     r = client.post("/sessions", json={"html": "<h1>x</h1>"})
-    assert r.status_code == 200
+    assert r.status_code == 202
     assert len(calls) == 1
     assert calls[0][0].endswith("/load")
     assert calls[0][1] == {"html": "<h1>x</h1>"}
@@ -150,12 +168,18 @@ def test_create_session_html_uses_load_endpoint(monkeypatch):
     assert calls[0][2] == cmd["secret"]
 
 
-def test_create_session_timeout_returns_504_and_enqueues_stop(monkeypatch):
+def test_create_session_timeout_still_answers_202_and_enqueues_stop(monkeypatch):
+    """Un démarrage qui n'aboutit pas ne rend PLUS 504 : le client a déjà reçu
+    son 202 et son `session_id` — c'est la sonde qui lui apprendra l'échec. Le
+    filet de sécurité serveur (stop du conteneur) est conservé, simplement
+    déplacé dans l'amorçage."""
     client, _, cmd_queue = _client(monkeypatch)
     monkeypatch.setattr(app_mod, "_wait_session_ready", lambda *a, **k: False)
+    _inline_bootstrap(monkeypatch)
 
     r = client.post("/sessions", json={"url": "https://example.com"})
-    assert r.status_code == 504
+    assert r.status_code == 202
+    assert r.json()["session_id"].startswith("sess-")
 
     launch_cmd = cmd_queue.dequeue_cmd(timeout=1)
     stop_cmd = cmd_queue.dequeue_cmd(timeout=1)
@@ -283,7 +307,7 @@ def test_created_session_id_matches_the_validated_format(monkeypatch):
     monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
 
     r = client.post("/sessions", json={"url": "https://example.com"})
-    assert r.status_code == 200
+    assert r.status_code == 202
     assert re.fullmatch(r"sess-[0-9a-f]{12}", r.json()["session_id"])
 
 
