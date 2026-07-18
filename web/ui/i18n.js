@@ -156,7 +156,29 @@ const I18N_EN = {
   'Classer': 'Classify', 'légitime': 'legitimate', 'suspect': 'suspicious', 'malveillant': 'malicious',
   'note (optionnelle)': 'note (optional)', 'Note analyste': 'Analyst note',
   'Verdict invalide.': 'Invalid verdict.',
+  // session interactive — création ASYNCHRONE (202 + sondage de disponibilité).
+  // Libellés de PROGRESSION : le démarrage prend ~7-9 s, c'est normal ; l'UI doit
+  // le montrer plutôt que de rester figée sur un spinner muet. Posés après le
+  // rendu -> traduits via `t()`, pas par `i18nWalk`.
+  'Démarrage du conteneur…': 'Starting the container…',
+  'Préparation du navigateur…': 'Preparing the browser…',
+  'La session n\'a pas démarré à temps — elle a été supprimée. Réessaie.':
+    'The session did not start in time — it has been deleted. Try again.',
+  'La session a été interrompue avant d\'être prête — elle a été supprimée. Réessaie.':
+    'The session was interrupted before it was ready — it has been deleted. Try again.',
+  'Impossible de suivre le démarrage de la session (réseau) — elle a été supprimée. Réessaie.':
+    'Could not track the session start-up (network) — it has been deleted. Try again.',
 };
+
+// Traduction d'une chaîne CONSTRUITE APRÈS le rendu (libellé de progression,
+// message d'erreur posé dynamiquement) : `i18nWalk` ne passe qu'une fois, à la
+// fin du rendu de la vue (cf. core.js), donc il ne verrait jamais ces
+// chaînes-là. MÊME dictionnaire, même règle : hors LANG='en' ou hors clé
+// connue, la chaîne FR d'origine est rendue telle quelle.
+export function t(fr) {
+  if (LANG !== 'en') return fr;
+  return I18N_EN[fr] || fr;
+}
 
 export function i18nWalk(root) {
   if (LANG !== 'en' || !root) return;

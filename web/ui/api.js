@@ -89,9 +89,18 @@ export async function artifactObjectUrl(id, ref) {
 
 // ---- sessions interactives (feature « interactive » T8) --------------------
 
-// POST /sessions {url|html} -> {session_id, token}. Le `token` est un capability
-// éphémère à garder EN MÉMOIRE (jamais localStorage) : il authentifie le WebSocket
-// via sous-protocole, pas via l'URL. 400 = url interdite (SSRF), 504 = non prête.
+// POST /sessions {url|html} -> **202** {session_id, token}. Le `token` est un
+// capability éphémère à garder EN MÉMOIRE (jamais localStorage) : il authentifie
+// le WebSocket via sous-protocole, pas via l'URL. 400 = url interdite (SSRF),
+// 422 = payload manquant/trop gros.
+//
+// 202 « accepté » ne veut PAS dire « prête » : le conteneur met ~7-9 s à démarrer.
+// L'appelant DOIT ensuite sonder `pollSessionReady()` — et, s'il renonce,
+// appeler `deleteSession()`. C'est tout l'objet de ce contrat : l'identifiant est
+// connu du client dès la première milliseconde, donc une session est TOUJOURS
+// nettoyable. Avant, la réponse n'arrivait qu'une fois la session prête et un
+// client qui abandonnait entre-temps laissait fuir un conteneur (~4 Go) jusqu'à
+// son TTL, sans que personne ne puisse le supprimer.
 export async function createSession(body) {
   const res = await authFetch('/sessions', {
     method: 'POST',
@@ -108,6 +117,60 @@ export async function createSession(body) {
     throw e;
   }
   return res.json();
+}
+
+// GET /sessions/{id} -> {session_id, state, ready, kind, target, ...}.
+// `state` ∈ 'pending' (conteneur pas encore lancé) | 'starting' (lancé, pas encore
+// sain) | 'ready'. Ne renvoie JAMAIS le token ni le secret de session.
+// 404 = session inconnue OU appartenant à un autre analyste (indistinguables, à
+// dessein) — pendant un sondage, c'est un échec TERMINAL : le serveur a renoncé
+// et détruit la session.
+export async function getSession(id) {
+  const res = await authFetch('/sessions/' + encodeURIComponent(id));
+  if (!res.ok) throw await httpError(res);
+  return res.json();
+}
+
+// Cadence et plafond du sondage de disponibilité. Le plafond client est
+// DÉLIBÉRÉMENT plus large que celui du serveur (OCULAR_SESSION_READY_TIMEOUT,
+// 30 s par défaut) : on veut voir le 404 que produit l'abandon serveur plutôt
+// que de renoncer avant lui et de traiter en « timeout client » un cas où le
+// serveur a déjà nettoyé.
+const SESSION_POLL_MS = 600;
+const SESSION_READY_TIMEOUT_MS = 45000;
+
+// Sonde `GET /sessions/{id}` jusqu'à `ready`. Résout avec le dernier état lu.
+// `onState(state, elapsedMs)` est appelé à chaque tour pour l'affichage d'une
+// progression (l'attente de ~7-9 s est NORMALE : elle ne doit pas ressembler à
+// un blocage). `isCancelled()` permet d'arrêter la boucle si la vue est fermée.
+//
+// Rejette avec une erreur portant :
+//   • `e.timedOut = true`   — plafond atteint, la session n'est jamais devenue
+//                             prête. L'APPELANT DOIT ALORS `deleteSession()`.
+//   • `e.status === 404`    — le serveur a renoncé et détruit la session.
+//   • toute autre erreur    — panne réseau/serveur pendant le sondage ; là aussi
+//                             l'appelant doit tenter le nettoyage.
+export async function pollSessionReady(id, opts) {
+  const o = opts || {};
+  const onState = o.onState || (() => {});
+  const isCancelled = o.isCancelled || (() => false);
+  const timeoutMs = o.timeoutMs || SESSION_READY_TIMEOUT_MS;
+  const intervalMs = o.intervalMs || SESSION_POLL_MS;
+  const t0 = Date.now();
+
+  for (;;) {
+    if (isCancelled()) return null;
+    const info = await getSession(id);       // 404/500 -> throw (httpError)
+    if (isCancelled()) return null;
+    if (info && info.ready) return info;
+    onState((info && info.state) || 'pending', Date.now() - t0);
+    if (Date.now() - t0 >= timeoutMs) {
+      const e = new Error('session non prête');
+      e.timedOut = true;
+      throw e;
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 // DELETE /sessions/{id} -> {deleted}. Détruit la session côté serveur (arrêt du conteneur).
