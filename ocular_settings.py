@@ -8,10 +8,6 @@ def redis_url() -> str:
     return os.environ.get("OCULAR_REDIS_URL", os.environ.get("REDIS_URL", "redis://localhost:6379"))
 
 
-def artifacts_dir() -> str:
-    return os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
-
-
 def runner_image() -> str:
     return os.environ.get("OCULAR_RUNNER_IMAGE", "ocular-runner-analysis:latest")
 
