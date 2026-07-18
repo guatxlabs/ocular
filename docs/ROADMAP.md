@@ -64,7 +64,9 @@ Deux passes d'audit adversarial multi-agents (Opus) : (A) **sécu réseau/pivot*
 
 **Confirmé solide (auditeurs)** : séparation de privilèges (web sans docker.sock), sandbox conteneurs (seccomp deny-défaut, cap-drop ALL, non-root, `--network none` analyse), egress pin anti-rebinding + no-redirect, injections SQL/commande/traversal/XSS systématiquement fermées, ReDoS borné, secrets jamais loggés/committés, numpy test-only.
 
-**⏳ Backlog post-audit (Minors, non bloquants)** : cap de taille du DOM/screenshot rendu côté runner (OOM depuis une page hostile bloatée — conteneur-borné) ; helpers UI `verdictPill`/`fmtIso`/`shortHash` à sortir de `views/saved.js` vers `core.js` ; accessor `artifacts_dir()` ; `httpError()` factorisé dans `api.js` ; VNC-passwd par session (déjà documenté résiduel opérateur).
+**Backlog post-audit — traité (2026-07-18)** : ✅ cap taille DOM/screenshot côté runner (`ResultBuilder`, `OCULAR_MAX_ARTIFACT_BYTES`) ; ✅ helpers UI `verdictPill`/`fmtIso`/`shortHash`+`TONE_STYLE` → `core.js` ; ✅ accessor `artifacts_dir()` ; ✅ `httpError()` factorisé dans `api.js`.
+
+**⏳ Reste (décision de design, non bloquant)** : **isolation VNC inter-sessions**. Aujourd'hui websockify/x11vnc (port conteneur 6080) n'a pas d'auth propre ; l'accès est protégé par (a) l'auth du proxy WS côté web (token capability avant `accept()`), (b) le `X-Session-Secret` sur les endpoints de contrôle, (c) l'isolation réseau `ocular-sessions`. Résiduel : un conteneur COMPROMIS sur ce réseau pourrait joindre directement le :6080 d'un pair. Le VNC-passwd (DES 8 char) serait une fausse sécurité ; le vrai correctif est **un réseau docker par session** (isolation conteneur-à-conteneur), à cadrer comme mini-chantier broker. Documenté résiduel opérateur L3 en attendant.
 
 ## ✅ Phase 3n — refactors qualité (dette de l'audit 3m) — LIVRÉE (2026-07-16, 594 tests / 0 échec)
 
