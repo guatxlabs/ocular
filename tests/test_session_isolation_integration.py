@@ -78,15 +78,29 @@ def test_two_sessions_cannot_reach_each_other(monkeypatch):
     # conteneur durci comme le web réellement déployé — seulement contre un
     # conteneur permissif. Le tmpfs /tmp est le pendant du `tmpfs: ["/tmp"]`
     # du compose, requis pour démarrer avec un rootfs read-only.
-    subprocess.run(
+    run = subprocess.run(
         [docker, "run", "-d", "--name", probe,
          "--read-only", "--tmpfs", "/tmp",
          "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
          "--user", "10002:10002",
          "--entrypoint", "sleep", _SESSION_IMAGE, "3600"],
-        capture_output=True, check=False,
+        capture_output=True, check=False, text=True,
     )
     try:
+        # Échec de démarrage de la sonde => sans cette vérification, le test ne
+        # tombe qu'après ~60 s d'attente sur « la sonde doit joindre la session A »,
+        # ce qui pointe le diagnostic vers l'isolation réseau alors que le vrai
+        # problème est le `docker run` ci-dessus. On le constate tout de suite,
+        # avec le stderr du run dans le message.
+        state = subprocess.run(
+            [docker, "inspect", "-f", "{{.State.Running}}", probe],
+            capture_output=True, check=False, text=True,
+        )
+        assert state.stdout.strip() == "true", (
+            f"la sonde {probe} n'a pas démarré (docker run rc={run.returncode}) ; "
+            f"run stderr={run.stderr.strip()!r} ; inspect={state.stdout.strip()!r} "
+            f"stderr={state.stderr.strip()!r}"
+        )
         try:
             launch_session(sid_a)
             launch_session(sid_b)

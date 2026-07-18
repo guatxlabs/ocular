@@ -45,25 +45,109 @@ Un processus qui **échappe au bac à sable Firefox**, ou une dépendance compro
 Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que vous fixez en §2.3 : tout réseau de session est, par construction, alloué **à l'intérieur** de ces bases. **Écrivez les règles contre les bases du pool, jamais contre un sous-réseau de réseau nommé.**
 
 **À faire (choisir au moins un) :**
-- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie **des bases du pool d'adresses Docker** (`default-address-pools`, cf. §2.3) vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `127/8`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast, et — en réseau IPv6/DNS64/NAT64 — le préfixe NAT64 `64:ff9b::/96` (+ `64:ff9b:1::/48`) qui traduit vers l'IPv4 interne — **sauf** le strict nécessaire. *(Le garde applicatif rejette déjà ces formes NAT64/IPv4-embedding depuis 2026-07-18 ; la règle L3 reste la défense en profondeur pour un canal hors-garde.)*
+- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie **des bases du pool d'adresses Docker** (`default-address-pools`, cf. §2.3) vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast, et — en réseau IPv6/DNS64/NAT64 — le préfixe NAT64 `64:ff9b::/96` (+ `64:ff9b:1::/48`) qui traduit vers l'IPv4 interne. *(Le garde applicatif rejette déjà ces formes NAT64/IPv4-embedding depuis 2026-07-18 ; la règle L3 reste la défense en profondeur pour un canal hors-garde.)*
 
-  Avec le pool d'exemple de §2.3 (`172.16.0.0/12` et `10.200.0.0/16`), une base par ligne `-s` :
-  ```
+  > **`127.0.0.0/8` n'a rien à faire ici.** Le loopback n'est **jamais** forwardé : un
+  > paquet à destination de `127/8` ne traverse pas `FORWARD`, donc pas `DOCKER-USER`.
+  > Une ligne `-d 127.0.0.0/8` y est **inopérante** — la poser donne l'illusion d'une
+  > protection qui n'existe pas. Le loopback du conteneur est déjà traité côté code
+  > (prefs navigateur, §1) ; le loopback de l'**hôte** est protégé par `route_localnet=0`
+  > (défaut) et par l'absence de port publié (§1), pas par `DOCKER-USER`.
+
+  #### Trois règles de rédaction, à respecter dans cet ordre
+  1. **Les exceptions se posent en `RETURN`, JAMAIS en `ACCEPT`.** Un `-j ACCEPT` dans
+     `DOCKER-USER` **termine la traversée de `FORWARD`** : la chaîne
+     `DOCKER-ISOLATION-STAGE-1/2`, qui est parcourue **après** `DOCKER-USER`, n'est
+     alors plus jamais atteinte pour ce flux. C'est elle — et non les DROP ci-dessous —
+     qui assure l'isolation session↔session, session→`broker`, session→`redis`. Un seul
+     `ACCEPT` mal placé **rouvre silencieusement le pivot déclaré fermé en §2.3/§2.5**,
+     sans qu'aucun test ni aucun log ne le signale. `RETURN` rend simplement la main à
+     `FORWARD`, où `DOCKER-ISOLATION` continue de faire son travail.
+  2. **`-I` insère en TÊTE de chaîne** : les règles s'installent dans l'**ordre inverse**
+     du listing. L'ordre *voulu* dans la chaîne est **exceptions `RETURN` d'abord, DROP
+     ensuite** — donc on tape les **DROP d'abord** et les **`RETURN` en dernier**.
+     N'utilisez **pas** `-A` : Docker termine `DOCKER-USER` par un `-j RETURN`, une règle
+     appendue atterrirait **après** lui et serait morte.
+  3. **Une base ne se couvre pas elle-même sans exception intra-base.** Le conteneur
+     `web` est attaché à **chaque** réseau de session (nécessaire au proxy noVNC
+     `web`→`session:6080` et au pilotage `web`→`session:8090`, cf. §2.5) : `web` et
+     session **partagent le sous-réseau de la session**, donc la même base de pool. Un
+     `-s <base> -d <supra-réseau contenant la base>` matche ce trafic légitime et le
+     **DROP** — la session interactive meurt (de façon intermittente : seulement pour
+     les sessions allouées dans la base concernée). Ces règles n'étant **pas** à état,
+     le trafic **retour** session→`web` est cassé de la même façon.
+
+  Avec le pool d'exemple de §2.3 (`172.16.0.0/12` et `10.200.0.0/16`) :
+  ```sh
+  # --- 1) DROP (tapés en premier => finiront EN BAS de la chaîne) --------------
   # Base 1 du pool : 172.16.0.0/12  (couvre TOUT réseau de session qui y sera alloué)
   iptables -I DOCKER-USER -s 172.16.0.0/12 -d 169.254.0.0/16 -j DROP
-  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 10.0.0.0/8      -j DROP
-  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 192.168.0.0/16  -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 10.0.0.0/8     -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 172.16.0.0/12  -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 192.168.0.0/16 -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 100.64.0.0/10  -j DROP
   # Base 2 du pool : 10.200.0.0/16
   iptables -I DOCKER-USER -s 10.200.0.0/16 -d 169.254.0.0/16 -j DROP
-  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 10.0.0.0/8      -j DROP
-  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 172.16.0.0/12   -j DROP
-  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 192.168.0.0/16  -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 10.0.0.0/8     -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 172.16.0.0/12  -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 192.168.0.0/16 -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 100.64.0.0/10  -j DROP
+
+  # --- 2) EXCEPTIONS intra-base (tapées en DERNIER => atterrissent EN TÊTE) ----
+  # Trafic INTRA-pool (web <-> session sur le réseau dédié) — REQUIS, sinon le
+  # proxy noVNC (:6080) et le pilotage de session (:8090) sont coupés.
+  # RETURN (jamais ACCEPT) : rend la main à FORWARD, où DOCKER-ISOLATION-STAGE-1/2
+  # continue d'isoler les réseaux de session entre eux.
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 172.16.0.0/12 -j RETURN
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 10.200.0.0/16 -j RETURN
   ```
-  *(Une base qui chevauche une destination bloquée — ici `10.200.0.0/16` dans `10/8`, ou `172.16.0.0/12` en `-d` de lui-même — se couvre elle-même : les sessions ne se joignent pas entre elles, ce qui est déjà la propriété garantie par le code en §2.3. Si votre plan d'adressage exige que les conteneurs se parlent, restreignez la destination plutôt que d'omettre la ligne.)*
+  Vérifiez l'ordre obtenu avec `iptables -L DOCKER-USER -n --line-numbers` : les deux
+  `RETURN` doivent apparaître **avant** les `DROP`.
+
+  **Ce que ces exceptions n'affaiblissent pas.** Un `RETURN` intra-base laisse repartir
+  le paquet dans `FORWARD`, où `DOCKER-ISOLATION-STAGE-1` le renvoie vers `STAGE-2` dès
+  que le bridge d'**entrée** et celui de **sortie** diffèrent, et `STAGE-2` le **DROP**
+  si la sortie est un bridge Docker. Conséquence : session A → session B, session →
+  `broker`, session → `redis` restent bloqués (bridges disjoints) ; seul le trafic
+  **sur le même bridge** — c'est-à-dire `web`↔sa session — passe. **L'isolation
+  inter-sessions vient des bridges disjoints + `DOCKER-ISOLATION`, pas de ces DROP.**
+
+  **Contrainte d'adressage à respecter.** L'exception intra-base exempte *toute* la
+  base : elle n'est sûre que si la base du pool est **découpée dans de l'espace
+  d'adressage qui n'héberge aucun service interne réel**. Ne réutilisez pas un préfixe
+  de votre LAN comme base de pool — sinon une session pourrait joindre ce LAN via
+  l'exception (le paquet sortirait par une interface non-Docker, donc hors du filet
+  `DOCKER-ISOLATION`).
+
+  **Si vous n'avez PAS personnalisé `default-address-pools`**, le pool **intégré** de
+  Docker est `172.17.0.0/16` … `172.31.0.0/16` **plus `192.168.0.0/16` découpé en `/20`**
+  (~31 réseaux). Il faut alors couvrir **les deux** portions — un `-s` dérivé de la seule
+  plage `172.x` **raterait entièrement `192.168.0.0/16`**, c'est-à-dire le no-op
+  silencieux que toute cette section vise à éliminer :
+  ```sh
+  BASES=$(for i in $(seq 17 31); do echo 172.$i.0.0/16; done
+          for j in $(seq 0 16 240); do echo 192.168.$j.0/20; done)
+  for B in $BASES; do   # DROP d'abord
+    for D in 169.254.0.0/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10; do
+      iptables -I DOCKER-USER -s "$B" -d "$D" -j DROP
+    done
+  done
+  for B in $BASES; do   # puis les exceptions intra-base => en tête de chaîne
+    iptables -I DOCKER-USER -s "$B" -d "$B" -j RETURN
+  done
+  ```
+  Les exceptions portent ici sur chaque **base exacte** (`/16` ou `/20`), pas sur les
+  agrégats `172.16.0.0/12` / `192.168.0.0/16` : n'exemptez **jamais** un agrégat plus
+  large que le pool, il contiendrait votre LAN. C'est verbeux et fragile — d'où le
+  prérequis ci-dessous.
+
+  **En pratique, appliquer §2.1 fait de « fixer explicitement `default-address-pools`
+  (§2.3) » un PRÉREQUIS**, pas une option : sans bases déclarées, vous n'avez aucune
+  valeur stable et étroite à mettre derrière `-s`/`-d`.
 - **ou** réseau `internal: true` + un unique **conteneur egress-proxy** (le garde en sidecar) détenant la seule interface externe → chokepoint L3.
 - **ou** exécuter les runners dans un namespace réseau sans route vers l'interne.
 
-**Lien §2.1 ↔ §2.3 : le pool que vous fixez en §2.3 EST le périmètre des règles ci-dessus.** Les deux réglages ne sont pas indépendants — modifier `default-address-pools` sans réécrire les `-s` de `DOCKER-USER` remet le tier interactif hors périmètre.
+**Lien §2.1 ↔ §2.3 : le pool que vous fixez en §2.3 EST le périmètre des règles ci-dessus.** Les deux réglages ne sont pas indépendants — modifier `default-address-pools` sans réécrire les `-s`/`-d` de `DOCKER-USER` remet le tier interactif hors périmètre, **et** invalide les exceptions intra-base (proxy noVNC coupé).
 
 ### 2.2 Egress DNS (HIGH)
 Le garde résout **chaque** nom demandé (même ceux qu'il va bloquer) via le resolver du conteneur → une page hostile peut **exfiltrer par requêtes DNS** (`<données>.exfil.attaquant.com`) et sonder des noms internes, **même si le CONNECT TCP est ensuite refusé**.
@@ -77,27 +161,40 @@ compromis ne peut plus joindre le `:6080` (websockify, sans auth propre) ni le
 `:8090` d'un pair. Prouvé par `tests/test_session_isolation_integration.py`.
 
 **PRÉREQUIS DE DÉPLOIEMENT — pool d'adresses Docker.** Chaque session consomme
-un sous-réseau du pool d'adresses local. Le pool **par défaut** de Docker
-(`base 172.17.0.0/12, size 16`) ne fournit qu'une poignée de réseaux `/16` —
-avec `OCULAR_MAX_SESSIONS` à 25, une charge soutenue peut **l'épuiser**
+un sous-réseau du pool d'adresses local. Le pool **intégré** de Docker (celui
+qui s'applique quand `default-address-pools` n'est pas déclaré) est
+`172.17.0.0/16` … `172.31.0.0/16` **plus `192.168.0.0/16` découpé en `/20`** —
+soit **~31 réseaux** répartis sur **deux plages disjointes**. Avec
+`OCULAR_MAX_SESSIONS` à 25, une charge soutenue peut **l'épuiser**
 (`docker network create` échoue, la session part en 504 — fail-safe mais
 dégradé, et le broker logue `session network create failed … pool d'adresses
-Docker épuisé ?`). **À faire** : élargir le pool dans `/etc/docker/daemon.json`,
+Docker épuisé ?`).
+
+**À faire** : déclarer explicitement le pool dans `/etc/docker/daemon.json`,
 par ex.
 ```json
 {"default-address-pools":[{"base":"172.16.0.0/12","size":24},
                           {"base":"10.200.0.0/16","size":24}]}
 ```
-(des `/24` donnent des centaines de réseaux), **ou** abaisser
-`OCULAR_MAX_SESSIONS`. Redémarrer le démon Docker après modification.
+(des `/24` donnent des centaines de réseaux). Redémarrer le démon Docker après
+modification. Choisissez des bases dans de l'espace d'adressage **non utilisé
+par votre réseau interne** (cf. la contrainte d'adressage de §2.1).
+
+Abaisser `OCULAR_MAX_SESSIONS` est une réponse à la **tenue en charge**
+uniquement : cela réduit la consommation de sous-réseaux, mais **ne définit
+aucun périmètre L3** — ce n'est donc **pas** une alternative à la déclaration du
+pool dès lors que §2.1 est appliquée.
 
 **⚠️ Ce pool est aussi le périmètre du filtrage L3 de §2.1.** Les réseaux de
 session étant éphémères et alloués dynamiquement, il n'y a **pas** de
 sous-réseau stable à épingler : les bases que vous déclarez ici sont ce contre
-quoi les règles `DOCKER-USER` doivent être écrites (`-s <base du pool>`). **À
-faire :** après toute modification de `default-address-pools`, réécrire les
-règles de §2.1 — sinon les sessions sortent silencieusement du périmètre du
-contrôle CRITIQUE.
+quoi les règles `DOCKER-USER` doivent être écrites (`-s <base du pool>`, plus
+l'exception intra-base `-s <base> -d <base> -j RETURN`). **Déclarer
+`default-address-pools` est donc un PRÉREQUIS de §2.1**, pas une option de
+confort. **À faire :** après toute modification de `default-address-pools`,
+réécrire les règles de §2.1 — sinon les sessions sortent silencieusement du
+périmètre du contrôle CRITIQUE, et l'exception qui maintient le proxy noVNC en
+vie ne correspond plus à rien.
 
 ### 2.4 Redis (MEDIUM)
 Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topologie : Redis n'est sur **aucun réseau de session** — il vit sur le réseau `default` du compose, et les sessions vivent chacune sur leur propre réseau dédié). **À faire :** poser `requirepass`/ACL et mettre le secret dans `REDIS_URL` (défense en profondeur des tokens/secrets au repos).
@@ -121,9 +218,10 @@ Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant 
 
 - [ ] `OCULAR_REQUIRE_EGRESS_GUARD=1` (refus fail-closed si garde off).
 - [ ] Filtrage **egress L3** (DOCKER-USER DROP metadata+RFC1918, ou réseau `internal` + egress-proxy) — §2.1.
+- [ ] Si §2.1 appliquée : **exception intra-base en `RETURN`** posée **en tête** de `DOCKER-USER` pour chaque base du pool (sinon proxy noVNC/pilotage coupés), et **aucun `-j ACCEPT`** dans `DOCKER-USER` (il court-circuiterait `DOCKER-ISOLATION`) — §2.1.
 - [ ] **DNS** sortant restreint à un resolver contrôlé — §2.2.
 - ~~**Isolation inter-sessions** (réseau par session / pare-feu)~~ — ✅ fermé dans le code (réseau docker par session), §2.3.
-- [ ] **Pool d'adresses Docker** élargi (`default-address-pools`) ou `OCULAR_MAX_SESSIONS` abaissé — §2.3.
+- [ ] **Pool d'adresses Docker** déclaré explicitement (`default-address-pools`) — **prérequis** de §2.1, et le seul périmètre L3 stable ; `OCULAR_MAX_SESSIONS` ne règle que la tenue en charge — §2.3.
 - [ ] **Redis** avec `requirepass` — §2.4.
 - [ ] `web` **jamais exposé en direct** : derrière un reverse-proxy authentifié qui strippe les en-têtes d'identité clients ; garder `OCULAR_TOKEN` comme filet ; pare-feu session→web — §2.5.
 - [ ] Dépendances **épinglées** + checksum Camoufox — §2.6.
