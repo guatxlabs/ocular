@@ -31,6 +31,7 @@ from ocular_settings import (
     llm_base_url,
     llm_enabled,
     max_html_bytes,
+    max_sessions,
     redis_url,
     result_ttl,
     saved_db_path,
@@ -359,6 +360,12 @@ def create_session(
         raise HTTPException(status_code=422, detail="html trop volumineux")
     if not req.url and not req.html:
         raise HTTPException(status_code=422, detail="url ou html requis")
+    # Plafond anti-épuisement de ressources : chaque session = un conteneur
+    # ~4g. Refuse (429) au-delà d'OCULAR_MAX_SESSIONS sessions actives (0 =
+    # illimité). Le reaper libère les slots (idle/ttl/déconnexion).
+    cap = max_sessions()
+    if cap and len(registry.list_active()) >= cap:
+        raise HTTPException(status_code=429, detail="trop de sessions actives, réessayez plus tard")
     if req.url:
         # Même normalisation qu'à la soumission d'un job capture (cf.
         # submit_job) : AVANT la garde SSRF, pour que "example.com" devienne

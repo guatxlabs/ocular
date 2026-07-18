@@ -398,3 +398,28 @@ def test_web_sessions_module_never_imports_docker():
         assert "docker" not in text.lower(), f"{f} ne doit pas référencer docker"
         assert "broker.launcher" not in text, f"{f} ne doit pas importer broker.launcher"
         assert "subprocess" not in text, f"{f} ne doit pas utiliser subprocess"
+
+
+def test_create_session_rejected_over_max_sessions(monkeypatch):
+    # Plafond anti-épuisement : au-delà d'OCULAR_MAX_SESSIONS actives -> 429,
+    # AVANT tout enqueue de launch.
+    monkeypatch.setenv("OCULAR_MAX_SESSIONS", "2")
+    client, registry, cmd_queue = _client(monkeypatch)
+    for i in range(2):
+        registry.create(f"s{i}", container=f"c{i}", kind="recon-vnc",
+                        target="t", token=f"tok{i}", now_iso="2026-07-18T10:00:00+00:00")
+    r = client.post("/sessions", json={"url": "https://example.com"})
+    assert r.status_code == 429
+    assert cmd_queue.dequeue_cmd(timeout=1) is None  # aucun launch enqueue
+
+
+def test_create_session_allowed_under_max_sessions(monkeypatch):
+    # Sous le plafond, la création n'est pas bloquée par le cap (elle échoue
+    # plus loin en 504 faute de conteneur réel — mais PAS en 429).
+    monkeypatch.setenv("OCULAR_MAX_SESSIONS", "5")
+    monkeypatch.setenv("OCULAR_SESSION_READY_TIMEOUT", "0")
+    client, registry, _ = _client(monkeypatch)
+    registry.create("s0", container="c0", kind="recon-vnc", target="t",
+                    token="tok0", now_iso="2026-07-18T10:00:00+00:00")
+    r = client.post("/sessions", json={"url": "https://example.com"})
+    assert r.status_code != 429
