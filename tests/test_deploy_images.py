@@ -320,3 +320,105 @@ def test_build_runner_still_builds_exactly_three_images():
         "ocular-runner-recon-vnc",
     ):
         assert image in build_runner_block
+
+
+# --- Durcissement du déploiement (audit sécurité 2026-07-18) -----------------
+# Ces gardes sont NON-integration : elles lisent le compose, sans Docker.
+
+_HARDENED_SERVICES = ("web", "broker", "redis")
+
+
+@pytest.mark.parametrize("service", _HARDENED_SERVICES)
+def test_compose_service_is_hardened(service):
+    """Les TROIS services du plan de contrôle gardent les 4 flags de durcissement.
+
+    MODE DE PANNE PRÉVENU : avant l'audit, seul le `web` était durci — le
+    `broker`, qui est pourtant le SEUL à monter `/var/run/docker.sock`,
+    tournait root / rootfs inscriptible / toutes capabilities, et `redis`
+    idem. Une régression silencieuse d'un de ces flags rouvrirait les étapes
+    intermédiaires d'une RCE (implant persistant, SUID, abus de capability)
+    sur le tier le plus sensible de la stack.
+    """
+    block = _compose_service_block(service)
+    assert "read_only: true" in block, f"{service} : read_only manquant"
+    assert 'cap_drop: ["ALL"]' in block, f"{service} : cap_drop ALL manquant"
+    assert 'security_opt: ["no-new-privileges:true"]' in block, (
+        f"{service} : no-new-privileges manquant"
+    )
+    user_lines = [ln.strip() for ln in block.splitlines() if ln.strip().startswith("user:")]
+    assert len(user_lines) == 1, f"{service} : `user:` attendu une fois, vu {user_lines}"
+    uid = user_lines[0].split(":", 1)[1].strip().strip('"').strip("'").split(":")[0]
+    assert uid.isdigit() and uid != "0", f"{service} : doit tourner non-root, vu {user_lines[0]!r}"
+
+
+def test_compose_broker_docker_gid_is_parameterised():
+    """Le broker est non-root : son accès au socket Docker passe par `group_add`.
+
+    MODE DE PANNE PRÉVENU — ne pas figer ce GID : le socket est
+    `root:docker` avec un GID SPÉCIFIQUE À L'HÔTE (965 sur la machine de
+    dev, 999 sur un Debian/Ubuntu standard). Un GID en dur casserait l'accès
+    Docker — donc TOUTES les sessions interactives — sur la plupart des hôtes.
+    """
+    block = _compose_service_block("broker")
+    assert "group_add:" in block, "broker : group_add requis pour l'accès au socket Docker"
+    assert "${OCULAR_DOCKER_GID:-" in block, (
+        "le GID du socket doit rester interpolé depuis l'environnement, jamais en dur"
+    )
+    # Le broker écrit hors /artifacts uniquement dans /tmp : le CLI docker doit y
+    # être pointé, sinon il vise $HOME/.docker sur un rootfs gelé.
+    assert 'DOCKER_CONFIG: "/tmp/.docker"' in block, "broker : DOCKER_CONFIG doit viser le tmpfs"
+    assert 'OCULAR_ARTIFACTS_DIR: "/artifacts"' in block, (
+        "sans cette variable, artifacts_dir() retombe sur un chemin relatif "
+        "(/app/artifacts) non inscriptible sous read_only: true"
+    )
+
+
+def test_compose_redis_tmpfs_carries_writable_mode():
+    """Le tmpfs /data de redis DOIT porter mode=1777.
+
+    MODE DE PANNE PRÉVENU (reproduit live avant d'écrire ce test) : redis
+    tourne en uid 999, or un tmpfs Docker par défaut est root:root 0755. Sans
+    le mode, le premier point de sauvegarde échoue en EACCES et redis bascule
+    en `stop-writes-on-bgsave-error` -> `MISCONF`, TOUT write refusé. La stack
+    ne tombe pas au démarrage mais quelques minutes après : régression
+    particulièrement traître.
+    """
+    block = _compose_service_block("redis")
+    assert "/data:mode=1777" in block, "redis : tmpfs /data doit être inscriptible par uid 999"
+
+
+def test_compose_api_binds_loopback_by_default():
+    """L'API ne doit pas être publiée sur 0.0.0.0 par défaut.
+
+    `ports: ["8000:8000"]` écoutait implicitement sur toutes les interfaces :
+    /sessions et le proxy noVNC étaient joignables depuis n'importe quel poste
+    du LAN, derrière un unique Bearer statique sans rotation ni rate-limit.
+    """
+    block = _compose_service_block("web")
+    assert "${OCULAR_BIND:-127.0.0.1}:8000:8000" in block, (
+        "le bind par défaut doit rester la loopback ; exposer doit rester un acte "
+        "explicite de l'opérateur (OCULAR_BIND=0.0.0.0)"
+    )
+
+
+def test_compose_redis_url_degrades_to_no_auth_when_password_empty():
+    """`requirepass` optionnel, sans branche — et surtout sans casser le défaut.
+
+    Vide -> `redis-server --requirepass ""` (auth désactivée côté serveur) et
+    `redis://:@redis:6379`, que redis-py parse en password=None (aucun AUTH
+    envoyé). Les deux extrémités doivent lire la MÊME variable, sinon poser un
+    mot de passe authentifie un côté et pas l'autre -> stack morte.
+    """
+    expected = "redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379"
+    for service in ("web", "broker"):
+        block = _compose_service_block(service)
+        urls = [
+            line.split(":", 1)[1].strip().strip('"').strip("'")
+            for line in block.splitlines()
+            if line.strip().startswith("REDIS_URL:")
+        ]
+        assert urls == [expected], f"{service} : REDIS_URL attendu {expected!r}, vu {urls}"
+    redis_block = _compose_service_block("redis")
+    assert '"--requirepass", "${OCULAR_REDIS_PASSWORD:-}"' in redis_block, (
+        "redis doit lire la MÊME variable que l'URL des clients"
+    )
