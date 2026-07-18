@@ -58,7 +58,8 @@ services:
     depends_on: [redis]
     networks:
       - default          # redis
-      - ocular-sessions  # web -> conteneurs de session (proxy interactif)
+      - ocular-sessions  # vestigial : le proxy interactif passe désormais par
+                         # les réseaux per-session attachés dynamiquement
     # PAS de docker.sock — contrainte de sécurité
 
   broker:
@@ -88,11 +89,13 @@ services:
     depends_on: [redis]
     networks:
       - default          # redis
-      - ocular-sessions  # broker lance les sessions avec --network ocular-sessions
-    # Le broker lance les conteneurs de session avec `--network ocular-sessions`
-    # (broker/sessions.py::_SESSION_NETWORK, en dur, nom non préfixé). Le réseau
-    # doit donc exister sous ce nom stable — voir `networks.ocular-sessions.name`
-    # ci-dessous. `docker compose up` le crée automatiquement.
+      - ocular-sessions  # vestigial (voir `networks.ocular-sessions` ci-dessous)
+    # Le broker crée un réseau DÉDIÉ PAR SESSION (`ocular-sess-net-{id}`), y
+    # lance le conteneur de session, et y attache dynamiquement le conteneur web
+    # (docker network connect). Le réseau est supprimé au teardown de la session,
+    # et les réseaux orphelins sont balayés au démarrage du broker. Deux sessions
+    # sont donc sur des réseaux disjoints. AUCUNE session ne rejoint plus
+    # `ocular-sessions`.
 
 volumes:
   ocular-artifacts:
@@ -101,6 +104,10 @@ volumes:
 networks:
   default: {}
   ocular-sessions:
-    name: ocular-sessions  # nom stable, non préfixé par le projet compose,
-    # cohérent avec broker/sessions.py::_SESSION_NETWORK. PAS internal: true —
-    # les conteneurs de session ont besoin d'egress Internet (navigation/appels).
+    name: ocular-sessions  # nom stable, non préfixé par le projet compose.
+    # VESTIGIAL : depuis l'isolation réseau par session, plus AUCUN conteneur de
+    # session ne rejoint ce réseau — le broker en crée un dédié par session
+    # (`ocular-sess-net-{id}`). Seuls web et broker y restent attachés. Conservé
+    # pour ne rien casser sur les déploiements existants ; supprimable
+    # ultérieurement (avec les entrées `networks:` de web et broker).
+    # PAS internal: true — les conteneurs ont besoin d'egress Internet.
