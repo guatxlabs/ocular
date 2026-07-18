@@ -118,27 +118,57 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
         log.warning("session cmd action inconnue session_id=%s action=%s", session_id, action)
 
 
-def _reaper_loop(registry, stop_event=None) -> None:
-    """Boucle du reaper de sessions : appelle `reap` à intervalle régulier
-    (`reaper_interval()`). `stop_event` permet un arrêt propre en test (une
-    seule itération) ; en production (`stop_event=None`) tourne indéfiniment
-    dans un thread démon. Les erreurs de `reap` sont capturées pour que le
-    reaper survive à un incident Redis/Docker transitoire."""
+def _daemon_loop(work, interval_fn, error_label: str, stop_event=None) -> None:
+    """Corps COMMUN des boucles démon (reaper / GC / sweeper), qui répétaient
+    toutes trois la même structure : « tant que pas d'arrêt demandé : travaille,
+    absorbe et journalise l'exception, dors ».
+
+    `work` et `interval_fn` sont des callables SANS argument : les boucles
+    appelantes capturent leurs dépendances dans une lambda, ce qui préserve la
+    résolution des globales AU MOMENT DE L'APPEL (les tests monkeypatchent
+    `main_mod.reap`, `main_mod.gc_interval`, … : une référence capturée à
+    l'import les manquerait).
+
+    `error_label` garde les journaux DISTINCTS d'une boucle à l'autre : une
+    ligne « erreur » indifférenciée rendrait indiscernable une panne Docker du
+    sweeper d'une panne Redis du reaper, exactement au moment où on en a besoin.
+
+    Invariants que les tests existants verrouillent, à ne pas simplifier :
+    - le travail est RETENTÉ à chaque tour malgré une exception à CHAQUE tour
+      (jamais de `return` dans l'`except` : le broker resterait « vivant » pour
+      une sonde de liveness alors que plus rien n'est reapé/collecté/balayé) ;
+    - la LECTURE D'INTERVALLE est DANS le `try` : placée après l'`except`, une
+      valeur d'env malformée (`OCULAR_REAPER_INTERVAL=60s`) levait hors de toute
+      garde et tuait le thread démon SANS UN SEUL LOG ;
+    - repli sur `_FALLBACK_INTERVAL`, jamais 0 (`sleep(0)` = 100 % CPU)."""
     while stop_event is None or not stop_event.is_set():
         try:
-            reap(registry, _time.time(), session_ttl(), session_idle(), session_disconnect_grace())
-            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
-            # `except`, une valeur d'env malformée (`OCULAR_REAPER_INTERVAL=60s`) levait
-            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
-            interval = reaper_interval()
-        except Exception as exc:  # le reaper survit à une erreur transitoire
-            log.error("reaper error err=%s", str(exc)[:200])
+            work()
+            interval = interval_fn()
+        except Exception as exc:  # la boucle survit à une erreur transitoire
+            log.error("%s err=%s", error_label, str(exc)[:200])
             interval = _FALLBACK_INTERVAL
         if stop_event is not None:
             if stop_event.wait(interval):
                 break
         else:
             _time.sleep(interval)
+
+
+def _reaper_loop(registry, stop_event=None) -> None:
+    """Boucle du reaper de sessions : appelle `reap` à intervalle régulier
+    (`reaper_interval()`). `stop_event` permet un arrêt propre en test (une
+    seule itération) ; en production (`stop_event=None`) tourne indéfiniment
+    dans un thread démon. Les erreurs de `reap` sont capturées pour que le
+    reaper survive à un incident Redis/Docker transitoire."""
+    _daemon_loop(
+        lambda: reap(
+            registry, _time.time(), session_ttl(), session_idle(), session_disconnect_grace()
+        ),
+        lambda: reaper_interval(),
+        "reaper error",
+        stop_event=stop_event,
+    )
 
 
 def _start_reaper(client) -> threading.Thread:
@@ -158,21 +188,12 @@ def _gc_loop(client, stop_event=None) -> None:
     tourne indéfiniment dans un thread démon. Les erreurs de `collect` sont
     capturées pour que le GC survive à un incident Redis/disque transitoire
     (les artefacts s'accumuleraient sinon jusqu'au prochain redémarrage)."""
-    while stop_event is None or not stop_event.is_set():
-        try:
-            collect(artifacts_dir(), client)
-            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
-            # `except`, une valeur d'env malformée (`OCULAR_GC_INTERVAL=60s`) levait
-            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
-            interval = gc_interval()
-        except Exception as exc:  # le GC survit à une erreur transitoire
-            log.error("gc error err=%s", str(exc)[:200])
-            interval = _FALLBACK_INTERVAL
-        if stop_event is not None:
-            if stop_event.wait(interval):
-                break
-        else:
-            _time.sleep(interval)
+    _daemon_loop(
+        lambda: collect(artifacts_dir(), client),
+        lambda: gc_interval(),
+        "gc error",
+        stop_event=stop_event,
+    )
 
 
 def _start_gc(client) -> threading.Thread:
@@ -195,21 +216,12 @@ def _sweeper_loop(registry, stop_event=None) -> None:
     tourne indéfiniment dans un thread démon. Les erreurs de `sweep_orphans`
     sont capturées pour que le balayage survive à un incident Docker/Redis
     transitoire."""
-    while stop_event is None or not stop_event.is_set():
-        try:
-            sweep_orphans(registry)
-            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
-            # `except`, une valeur d'env malformée (`OCULAR_SWEEP_INTERVAL=60s`) levait
-            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
-            interval = sweep_interval()
-        except Exception as exc:  # le sweeper survit à une erreur transitoire
-            log.error("orphan sweep error err=%s", str(exc)[:200])
-            interval = _FALLBACK_INTERVAL
-        if stop_event is not None:
-            if stop_event.wait(interval):
-                break
-        else:
-            _time.sleep(interval)
+    _daemon_loop(
+        lambda: sweep_orphans(registry),
+        lambda: sweep_interval(),
+        "orphan sweep error",
+        stop_event=stop_event,
+    )
 
 
 def _start_sweeper(client) -> threading.Thread:
