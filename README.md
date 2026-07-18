@@ -192,6 +192,12 @@ cible :
   600 s), contrôlés par un reaper qui tourne dans le broker (thread démon, intervalle
   `OCULAR_REAPER_INTERVAL`, 60 s) et détruit (`docker kill` + `docker rm -f`) tout conteneur
   expiré, même orphelin (nom déterministe `ocular-sess-{id}`, pas de dépendance au registre).
+- **Balayage des orphelins** : au démarrage du broker *et* périodiquement (thread démon,
+  intervalle `OCULAR_SWEEP_INTERVAL`, 600 s), les conteneurs `ocular-sess-*` et les réseaux
+  `ocular-sess-net-*` sans session vivante au registre sont supprimés. Sans ce passage
+  périodique, un résidu né en cours de vie (teardown partiellement échoué, conteneur tué hors
+  flux) retiendrait un sous-réseau du pool d'adresses Docker — ressource finie — jusqu'au
+  prochain redémarrage du broker.
 
 **⚠️ Avertissement — IP exposée et contenu rendu côté conteneur.** Comme le profil `capture`, une
 session interactive fait naviguer réellement Camoufox vers l'URL cible (ou rend le HTML fourni) :

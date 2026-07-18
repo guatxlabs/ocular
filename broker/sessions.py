@@ -181,8 +181,9 @@ def sweep_orphans(registry) -> int:
     hors-compose via `docker run`, donc JAMAIS retirés par `compose down`).
     Balaie ENSUITE les réseaux dédiés `ocular-sess-net-*` restés sans session
     vivante, qui consommeraient un sous-réseau du pool d'adresses Docker.
-    Appelé au démarrage du broker : à la reprise, tout conteneur (ou réseau)
-    sans session vivante est forcément un résidu -> on le supprime. Best-effort
+    Appelé au démarrage du broker ET périodiquement (`_sweeper_loop`, cf.
+    `sweep_interval()`) : tout conteneur (ou réseau) sans session vivante est
+    forcément un résidu -> on le supprime. Best-effort
     (`check=False`) : une absence de Docker ou une erreur transitoire renvoie 0
     sans lever. Retourne le nombre de **conteneurs** supprimés (le compte des
     réseaux part dans un log dédié)."""
@@ -193,10 +194,9 @@ def sweep_orphans(registry) -> int:
     removed = 0
     # Un `docker ps` en échec neutralise le balayage CONTENEURS uniquement : pas
     # de `return` anticipé ici, sinon le balayage RÉSEAU (indépendant, et dont le
-    # `docker network ls` aurait pu réussir) sauterait lui aussi. Comme
-    # `sweep_orphans` n'est appelée qu'au DÉMARRAGE du broker, « ce sera rattrapé
-    # au prochain cycle » voudrait dire « au prochain redémarrage » — le pool
-    # d'adresses Docker fuirait d'ici là.
+    # `docker network ls` aurait pu réussir) sauterait lui aussi : le rattrapage
+    # au prochain cycle du sweeper ne doit pas être la seule chance de libérer un
+    # sous-réseau du pool d'adresses Docker.
     if proc.returncode == 0:
         for name in proc.stdout.split():
             if not name.startswith(_CONTAINER_PREFIX):

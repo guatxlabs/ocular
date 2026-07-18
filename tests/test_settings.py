@@ -53,3 +53,17 @@ def test_web_container_blank_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("OCULAR_WEB_CONTAINER", "   ")
     from ocular_settings import web_container
     assert web_container() == "ocular-web"
+
+
+# --- Balayage périodique des orphelins ---------------------------------------
+
+def test_sweep_interval_default(monkeypatch):
+    # 600 s : les résidus n'apparaissent qu'en cas d'anomalie — un balayage
+    # toutes les 10 min suffit sans marteler le démon Docker.
+    monkeypatch.delenv("OCULAR_SWEEP_INTERVAL", raising=False)
+    assert s.sweep_interval() == 600
+
+
+def test_sweep_interval_env_override(monkeypatch):
+    monkeypatch.setenv("OCULAR_SWEEP_INTERVAL", "30")
+    assert s.sweep_interval() == 30

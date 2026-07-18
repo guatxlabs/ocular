@@ -98,6 +98,15 @@ def gc_interval() -> int:
     return int(os.environ.get("OCULAR_GC_INTERVAL", "600"))
 
 
+def sweep_interval() -> int:
+    """Période du balayage des orphelins (conteneurs `ocular-sess-*` et réseaux
+    `ocular-sess-net-*` sans session vivante). Défaut 600 s : les résidus
+    n'apparaissent qu'en cas d'anomalie (teardown partiel, conteneur tué hors
+    flux), un passage toutes les 10 min récupère le pool d'adresses Docker sans
+    marteler le démon Docker toutes les minutes."""
+    return int(os.environ.get("OCULAR_SWEEP_INTERVAL", "600"))
+
+
 _SCREEN_RE = re.compile(r"^\d{3,5}x\d{3,5}$")
 
 
