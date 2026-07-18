@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+import saved_store
 import saved_store as ss
 
 
@@ -257,3 +258,25 @@ def test_list_all_and_get_by_hash_expose_new_fields():
     meta = ss.get_by_hash(c, _result()["input_hash"])
     for field in ("saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at"):
         assert field in meta
+
+
+def test_save_persists_triage(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    result = {
+        "input_hash": "sha256:aa", "profile": "analysis", "job_id": "j",
+        "verdict": "benign",
+        "triage": {"score": 63, "band": "medium"},
+    }
+    sid = saved_store.save(conn, result, {}, "lbl", "2026-01-01T00:00:00Z")
+    meta = saved_store.get_meta(conn, sid)
+    assert meta["triage_score"] == 63
+    assert meta["triage_band"] == "medium"
+
+
+def test_save_without_triage_is_null(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    result = {"input_hash": "sha256:bb", "profile": "analysis", "verdict": "benign"}
+    sid = saved_store.save(conn, result, {}, None, "2026-01-01T00:00:00Z")
+    meta = saved_store.get_meta(conn, sid)
+    assert meta["triage_score"] is None
+    assert meta["triage_band"] is None
