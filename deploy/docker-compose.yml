@@ -8,7 +8,12 @@ services:
     # Nom DÉTERMINISTE : le broker attache ce conteneur aux réseaux per-session
     # (docker network connect). Sans container_name, Docker générerait
     # `<projet>-web-1`, que le broker ne peut pas deviner.
-    container_name: ocular-web
+    # Le nom dérive de la MÊME variable que celle lue par le broker plus bas
+    # (OCULAR_WEB_CONTAINER) : source unique, les deux ne peuvent pas diverger
+    # même si un opérateur la surcharge dans deploy/.env.
+    # Contrepartie assumée : `container_name` interdit `docker compose up
+    # --scale web=N` — le web est un singleton du plan de contrôle.
+    container_name: "${OCULAR_WEB_CONTAINER:-ocular-web}"
     restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
