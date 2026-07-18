@@ -190,18 +190,23 @@ def sweep_orphans(registry) -> int:
         ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}", "--format", "{{.Names}}"],
         capture_output=True, check=False, text=True,
     )
-    if proc.returncode != 0:
-        return 0
     removed = 0
-    for name in proc.stdout.split():
-        if not name.startswith(_CONTAINER_PREFIX):
-            continue  # garde-fou : le filtre `name=` est un substring
-        session_id = name[len(_CONTAINER_PREFIX):]
-        if registry.get(session_id) is None:
-            stop_session(name)
-            removed += 1
-    if removed:
-        log.info("session orphans swept count=%d", removed)
+    # Un `docker ps` en échec neutralise le balayage CONTENEURS uniquement : pas
+    # de `return` anticipé ici, sinon le balayage RÉSEAU (indépendant, et dont le
+    # `docker network ls` aurait pu réussir) sauterait lui aussi. Comme
+    # `sweep_orphans` n'est appelée qu'au DÉMARRAGE du broker, « ce sera rattrapé
+    # au prochain cycle » voudrait dire « au prochain redémarrage » — le pool
+    # d'adresses Docker fuirait d'ici là.
+    if proc.returncode == 0:
+        for name in proc.stdout.split():
+            if not name.startswith(_CONTAINER_PREFIX):
+                continue  # garde-fou : le filtre `name=` est un substring
+            session_id = name[len(_CONTAINER_PREFIX):]
+            if registry.get(session_id) is None:
+                stop_session(name)
+                removed += 1
+        if removed:
+            log.info("session orphans swept count=%d", removed)
     # Les conteneurs orphelins sont partis -> leurs réseaux peuvent être libérés
     # (ordre contraignant, comme dans stop_session).
     _sweep_orphan_networks(registry)

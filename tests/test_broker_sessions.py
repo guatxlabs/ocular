@@ -2,7 +2,13 @@ import logging
 
 import fakeredis
 
-from broker.sessions import build_session_args, launch_session, reap, stop_session
+from broker.sessions import (
+    _NET_PREFIX,
+    build_session_args,
+    launch_session,
+    reap,
+    stop_session,
+)
 import broker.sessions as sessions_mod
 
 
@@ -399,7 +405,9 @@ def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
     stop_session("un-autre-conteneur")
-    assert len(calls) == 2  # kill + rm, et RIEN de plus (sinon l'assert suivant est vacue)
+    # kill + rm, et RIEN de plus : cet assert verrouille l'absence de TOUT appel
+    # supplémentaire (l'assert suivant, lui, ne couvre que ceux contenant « network »).
+    assert len(calls) == 2
     assert all("network" not in a for a in calls)
 
 
@@ -432,6 +440,11 @@ def test_sweep_orphans_removes_orphan_networks_only(monkeypatch):
 
     sweep_orphans(_FakeReg(alive={"s-live"}))
 
+    # Le filtre du `network ls` est ANCRÉ sur `_NET_PREFIX` : sans cet assert sur
+    # la commande complète, muter le préfixe passerait inaperçu (les fakes ne
+    # matchent que args[:3]) alors qu'en vrai le balayage listerait autre chose.
+    assert ["docker", "network", "ls", "--filter", f"name={_NET_PREFIX}",
+            "--format", "{{.Name}}"] in calls
     assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
     assert ["docker", "network", "rm", "ocular-sess-net-s-live"] not in calls
     assert ["docker", "network", "disconnect", "-f", "ocular-sess-net-s-dead", "ocular-web"] in calls
@@ -455,3 +468,28 @@ def test_sweep_orphans_network_substring_guard(monkeypatch):
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
     sweep_orphans(_FakeReg(alive=set()))
     assert all(a[:3] != ["docker", "network", "rm"] for a in calls)
+
+
+def test_sweep_orphan_networks_runs_even_if_docker_ps_fails(monkeypatch):
+    # Les deux balayages sont INDÉPENDANTS : un `docker ps` en échec ne doit pas
+    # faire sauter le nettoyage réseau. `sweep_orphans` n'étant appelée qu'une
+    # fois AU DÉMARRAGE du broker, « rattrapé au prochain cycle » signifierait en
+    # pratique « au prochain redémarrage » -> le pool d'adresses fuit.
+    from broker.sessions import sweep_orphans
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None, text=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            return type("P", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+        if args[:3] == ["docker", "network", "ls"]:
+            return type("P", (), {"returncode": 0,
+                                  "stdout": "ocular-sess-net-s-dead\n", "stderr": ""})()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    # Contrat inchangé : le retour compte les CONTENEURS supprimés -> 0 ici.
+    assert sweep_orphans(_FakeReg(alive=set())) == 0
+    assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
