@@ -21,8 +21,10 @@ interactif.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
+import logging
 import os
 import secrets
 from typing import Any, Literal, Optional
@@ -39,10 +41,26 @@ from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, wrapper_payload
 
 
+log = logging.getLogger("ocular.session_server")
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    """Rien au démarrage (la page Camoufox/le garde egress ne démarrent
-    qu'à la demande, cf. `_ensure_browser`). À l'arrêt PROPRE du conteneur
+    """Au démarrage : lance le navigateur EN TÂCHE DE FOND (`_boot_browser`).
+
+    C'est le cœur de la correction « disponibilité ≠ vivacité ». Avant, la page
+    Camoufox ne démarrait qu'au premier `/goto` (paresseusement) tandis que
+    `/health` répondait OK dès qu'uvicorn écoutait : le web annonçait `ready`
+    ~4 s avant que la session sache réellement servir, et une capture lancée
+    immédiatement après `ready` — ce que le contrat documenté prescrit —
+    tombait sur `/capture` -> 409 « no active session », rendu 502 au client.
+
+    La tâche est lancée SANS être attendue : uvicorn doit accepter les
+    connexions tout de suite pour que `/health` puisse répondre « pas encore
+    prête » (503) au lieu de faire expirer la sonde en connexion refusée. C'est
+    `/health` qui porte désormais l'information, pas le fait d'écouter.
+
+    À l'arrêt PROPRE du conteneur
     (SIGTERM géré par uvicorn), ferme au mieux le navigateur puis stoppe le
     garde egress (`_state["guard"]`) — best-effort : ne lève jamais (le
     conteneur s'arrête de toute façon). Si le conteneur est tué net
@@ -50,7 +68,14 @@ async def _lifespan(_app: FastAPI):
     accepté (cf. docstring `_ensure_browser`, c'est un enfant du même
     conteneur éphémère — aucune ressource ne fuit au-delà de sa durée de
     vie)."""
+    task = asyncio.create_task(_boot_browser())
     yield
+    # L'amorçage peut être encore en vol si le conteneur est arrêté tôt : on
+    # l'annule avant de démonter, sinon `cm.__aexit__` court contre un
+    # `__aenter__` non terminé.
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
     cm = _state.get("cm")
     if cm is not None:
         with contextlib.suppress(Exception):
@@ -88,9 +113,20 @@ def require_session_secret(
 # quand `egress_guard_enabled()` — vit tant que la session vit, un seul par
 # conteneur (comme `page`/`cap`), stoppé par `_shutdown` (best-effort — cf.
 # docstring `_ensure_browser`).
+# `boot_error` : type de l'exception qui a fait échouer le lancement du
+# navigateur à l'amorçage, lu par `/health` pour rester NON prêt (fail-closed)
+# plutôt que d'annoncer une session qui ne servira jamais.
 _state: dict[str, Any] = {
-    "cm": None, "page": None, "cap": None, "target": None, "kind": None, "guard": None,
+    "cm": None, "page": None, "cap": None, "target": None, "kind": None,
+    "guard": None, "boot_error": None,
 }
+
+# Sérialise `_ensure_browser` : depuis que le navigateur démarre à l'amorçage,
+# un `/goto` peut arriver PENDANT ce lancement. Sans verrou, les deux appels
+# voient `page is None` et lancent chacun un Camoufox (et un garde egress) —
+# le premier fuirait, écrasé dans `_state`. Créé au niveau module : depuis
+# Python 3.10 `asyncio.Lock()` ne se lie plus à une boucle à la construction.
+_browser_lock = asyncio.Lock()
 
 # Snippets JS partagés (source unique engine/browser_js) : indicateur de
 # challenge Turnstile (on l'évalue à la capture pour distinguer « challenge
@@ -163,8 +199,39 @@ def build_capture_result(
 
 
 async def _ensure_browser() -> None:
-    """Démarre la page Camoufox unique de cette session (idempotent — un
-    `page` déjà vivant court-circuite).
+    """Garantit qu'une page Camoufox est vivante (idempotent, et SÛR en
+    concurrence : un seul lancement même si l'amorçage et un `/goto` entrent
+    ensemble — cf. `_browser_lock`). Le lancement lui-même est dans
+    `_launch_browser`."""
+    if _state["page"] is not None:
+        return
+    async with _browser_lock:
+        # Re-vérification SOUS verrou : l'appelant qui attendait le verrou
+        # pendant que l'autre lançait ne doit pas relancer derrière lui.
+        if _state["page"] is not None:
+            return
+        await _launch_browser()
+
+
+async def _boot_browser() -> None:
+    """Lancement à l'amorçage du conteneur (tâche de fond de `_lifespan`).
+
+    Ne propage JAMAIS : une panne de lancement ne doit pas tuer le conteneur,
+    elle doit rendre la session durablement NON prête. `/health` reste alors
+    503, la sonde du web n'atteint jamais `ready`, son échéance
+    (`session_ready_timeout`) expire et la session est stoppée — filet de
+    sécurité déjà en place dans `web._session_bootstrap`. On ne consigne que le
+    TYPE de l'exception : les messages Camoufox portent des chemins internes."""
+    try:
+        await _ensure_browser()
+    except Exception as exc:  # pragma: no cover - dépend de l'environnement réel
+        _state["boot_error"] = type(exc).__name__
+        log.warning("session browser boot failed error=%s", type(exc).__name__)
+
+
+async def _launch_browser() -> None:
+    """Démarre la page Camoufox unique de cette session. Appelé UNIQUEMENT
+    sous `_browser_lock` (via `_ensure_browser`).
 
     Egress guard (plan 3g Task G2) : ce tier interactif est réseau-ON comme
     le tier batch (`runner_recon/capture.py`) — même câblage. Quand
@@ -186,8 +253,6 @@ async def _ensure_browser() -> None:
     Fail-safe : si `guard.start()` lève, l'exception remonte — jamais de
     fallback silencieux vers un Camoufox sans proxy (même politique que le
     tier batch)."""
-    if _state["page"] is not None:
-        return
     # Kwargs durcis + politique egress (garde/strict/warning) FACTORISÉS dans
     # engine.egress_policy — source unique partagée avec le tier batch (audit 3m).
     launch_kwargs = hardened_launch_kwargs()
@@ -221,8 +286,26 @@ async def _ensure_browser() -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, bool]:
-    return {"ok": True}
+async def health() -> Any:
+    """DISPONIBILITÉ réelle, pas vivacité du process : vert UNIQUEMENT quand la
+    page Camoufox est vivante, donc quand `/goto` et `/capture` savent servir.
+
+    C'est le signal que consomme `web._session_state` — la sonde partagée par
+    `GET /sessions/{id}` et `_wait_session_ready`, qui ne tient pour prête
+    qu'une réponse 2xx (`web.internal_http.internal_get_ok`). Un 503 la laisse
+    donc en `starting`, sans qu'aucun des deux consommateurs n'ait à changer :
+    ils ne peuvent pas diverger, ils lisent le même `/health`.
+
+    Le signal est un ÉTAT OBSERVÉ (`_state["page"]`), jamais une temporisation :
+    il arrive exactement quand le navigateur est prêt, aussi vite sur une
+    machine rapide que tard sur une machine chargée.
+
+    Reste la seule route SANS secret (cf. `require_session_secret`) : c'est une
+    sonde d'infrastructure, et elle ne divulgue que « prête / pas encore »."""
+    if _state["page"] is not None:
+        return {"ok": True, "state": "ready"}
+    state = "error" if _state.get("boot_error") else "starting"
+    return JSONResponse({"ok": False, "state": state}, status_code=503)
 
 
 @app.post("/goto", dependencies=[Depends(require_session_secret)])

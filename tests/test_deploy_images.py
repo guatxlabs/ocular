@@ -145,8 +145,16 @@ def test_runner_recon_vnc_image_builds_and_smokes():
     read-only, seccomp recon, user non-root, tmpfs /work+/tmp) ; `--network
     none` suffit ici (aucun test ne navigue réellement, seul le poll interne
     au conteneur via `docker exec` compte). On vérifie :
-      - health : `GET localhost:8090/health` (session_server FastAPI) répond
-        `{"ok": true}` ;
+      - health : `GET localhost:8090/health` (session_server FastAPI) finit par
+        répondre `{"ok": true, "state": "ready"}`. Ce contrôle est DEVENU FORT :
+        `/health` ne passe au vert qu'une fois la page Camoufox réellement
+        lancée (correctif « disponibilité ≠ vivacité »), donc ce test prouve
+        désormais que le navigateur démarre POUR DE BON sous le durcissement
+        complet (cap-drop ALL, seccomp recon, read-only, non-root) — il ne
+        prouvait avant que la présence d'un uvicorn qui écoute. Le 503
+        intermédiaire fait partie du contrat : on boucle jusqu'au 200 (et non
+        jusqu'à la première réponse), sans quoi on retomberait exactement dans
+        le défaut corrigé ;
       - noVNC : `GET localhost:6080/vnc.html` (servi par websockify --web)
         répond 200 ;
       - clipboard-off : le process x11vnc tourne bien avec `-noclipboard`,
@@ -180,8 +188,12 @@ def test_runner_recon_vnc_image_builds_and_smokes():
             capture_output=True,
         )
 
+        # `curl -fsS` échoue (code retour non nul, stdout vide) tant que
+        # `/health` répond 503 : on boucle donc sur le SUCCÈS de curl, qui vaut
+        # ici « 2xx », c'est-à-dire « navigateur prêt ». Marge large (60 s) :
+        # le lancement de Camoufox s'ajoute désormais au démarrage d'uvicorn.
         health_body = None
-        for _ in range(30):
+        for _ in range(60):
             probe = subprocess.run(
                 [_docker(), "exec", name, "curl", "-fsS", "http://localhost:8090/health"],
                 cwd=_ROOT,
@@ -192,8 +204,8 @@ def test_runner_recon_vnc_image_builds_and_smokes():
                 health_body = probe.stdout
                 break
             time.sleep(1)
-        assert health_body is not None, "session_server /health injoignable après 30s"
-        assert json.loads(health_body) == {"ok": True}, health_body
+        assert health_body is not None, "session_server jamais prêt après 60s"
+        assert json.loads(health_body) == {"ok": True, "state": "ready"}, health_body
 
         novnc = subprocess.run(
             [

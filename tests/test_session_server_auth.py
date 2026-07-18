@@ -20,9 +20,14 @@ def client(monkeypatch):
 
 
 def test_health_needs_no_secret(client):
-    r = client.get("/health")
-    assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    """`/health` reste la seule route ouverte. Le code n'est plus
+    inconditionnellement 200 : il porte désormais la DISPONIBILITÉ réelle
+    (503 tant que le navigateur n'est pas lancé, cf.
+    `tests/test_session_server_readiness.py`). Ce qui se teste ici, c'est
+    l'ABSENCE d'exigence de secret — donc « pas 403 », dans les deux états."""
+    assert client.get("/health").status_code == 503  # navigateur pas lancé
+    ss._state["page"] = object()
+    assert client.get("/health").status_code == 200
 
 
 @pytest.mark.parametrize("path,body", [
