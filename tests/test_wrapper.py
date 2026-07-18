@@ -147,3 +147,23 @@ def test_emit_wrapper_writes_json_with_base64_blobs(monkeypatch):
     assert payload["result"]["job_id"] == "job-1"
     ref = result.screenshots[0].image_ref
     assert payload["blobs"][ref] == "iVBORw0KGgpBQUE="
+
+
+from engine.wrapper import ResultBuilder
+from engine.result import StaticFinding, DomInfo
+
+
+def test_build_populates_triage():
+    b = ResultBuilder()
+    findings = [StaticFinding(rule="Dynamic code evaluation", severity="high",
+                              match="m", line=1, context="c"),
+                StaticFinding(rule="Base64 decode", severity="medium",
+                              match="m", line=1, context="c")]
+    result, _ = b.build(
+        job_id="j", profile="analysis", target="t", input_hash=None,
+        verdict="malicious", dom_info=DomInfo(), static_findings=findings,
+        network=[], console=[],
+    )
+    assert result.triage is not None
+    assert result.triage.band == "high"
+    assert result.triage.weights_version == "builtin-1"
