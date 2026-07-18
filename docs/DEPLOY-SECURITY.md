@@ -382,8 +382,20 @@ réécrire les règles de §2.1 — sinon les sessions sortent silencieusement d
 périmètre du contrôle CRITIQUE, et l'exception qui maintient le proxy noVNC en
 vie ne correspond plus à rien.
 
-### 2.4 Redis (MEDIUM)
-Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topologie : Redis n'est sur **aucun réseau de session** — il vit sur le réseau `default` du compose, et les sessions vivent chacune sur leur propre réseau dédié). **À faire :** poser `requirepass`/ACL et mettre le secret dans `REDIS_URL` (défense en profondeur des tokens/secrets au repos).
+### 2.4 Redis (MEDIUM) — ⚠️ partiellement fermé (2026-07-18)
+Redis n'a **toujours pas d'authentification PAR DÉFAUT** (protégé par la topologie : il n'est sur **aucun réseau de session** — il vit sur le réseau `default` du compose, et les sessions vivent chacune sur leur propre réseau dédié). Le conteneur est en revanche désormais **durci** (§2.8).
+
+**Le mécanisme d'auth est câblé et testé, il ne reste qu'à poser le secret.** Une seule variable arme les deux extrémités d'un coup :
+
+```bash
+# dans deploy/.env (non versionné)
+OCULAR_REDIS_PASSWORD=$(openssl rand -base64 32)
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+Le serveur reçoit `--requirepass "$OCULAR_REDIS_PASSWORD"` et `web`/`broker` lisent `redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379` — **la même variable**, donc les deux côtés ne peuvent pas diverger. Variable **vide** = comportement historique exact : `requirepass ""` désactive l'auth côté serveur, et `redis://:@redis:6379` est parsée par redis-py en `password=None` (aucun `AUTH` envoyé). **Vérifié live dans les deux sens** (sans mot de passe : `PING` → `PONG` ; avec : `PING` → `NOAUTH Authentication required`, et une session interactive complète passe de bout en bout).
+
+**Résiduel assumé :** le défaut reste « pas d'auth » pour ne pas casser les déploiements existants au `docker compose up`. En réseau sensible, **poser la variable** — c'est une commande, sans édition du compose.
 
 ### 2.5 Co-tenance plan de contrôle (MEDIUM)
 Depuis l'isolation réseau par session (2026-07-18), le résiduel se réduit au **seul `web`** :
@@ -398,6 +410,43 @@ Binaire Camoufox téléchargé au **build** sans vérification de checksum ; dé
 ### 2.7 Option LLM d'explication (`POST /jobs/{id}/explain`) — OFF par défaut
 Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant (depuis `web`) passe par la garde egress (`validate_capture_url`/`resolve_allowed_ip`) et est **épinglé sur l'IP résolue** (anti DNS-rebinding, vérif TLS préservée) ; le résumé envoyé au LLM est une **whitelist** (verdict/triage/findings — jamais le HTML brut/artefacts). **Contraintes opérateur du pinning :** l'appel LLM **ne suit aucune redirection** et **ignore les proxies d'environnement** (`http_proxy`/`https_proxy`) — nécessaire pour que le pin tienne. Donc : un endpoint LLM qui répond par un 3xx, ou qui n'est joignable qu'à travers un proxy sortant, **ne fonctionnera pas** ; pointer `OCULAR_LLM_BASE_URL` directement sur l'hôte final. Un hôte interne (Ollama LAN) exige `OCULAR_LLM_ALLOW_INTERNAL=1` (lève le blocage RFC1918 **pour cet hôte seulement**).
 
+### 2.8 Durcissement des conteneurs du plan de contrôle — ✅ FERMÉ DANS LE CODE (2026-07-18)
+
+**Constat d'audit.** Seul le `web` était durci. Le **`broker` n'avait aucun** des quatre flags — il tournait **root**, rootfs inscriptible, **toutes capabilities** — **alors que c'est lui, et lui seul, qui monte `/var/run/docker.sock`**. `redis` non plus. La posture était donc inversée : le tier le plus privilégié était le moins contraint.
+
+**Ce qui est appliqué dans `deploy/docker-compose.yml`** — les trois services (`web`, `broker`, `redis`) portent désormais :
+
+| | `read_only` | `tmpfs` | `cap_drop: ALL` | `no-new-privileges` | `user:` non-root |
+|---|---|---|---|---|---|
+| `web` | ✅ | `/tmp` | ✅ | ✅ | `10002:10002` |
+| `broker` | ✅ | `/tmp` | ✅ | ✅ | `10002:10002` + `group_add` |
+| `redis` | ✅ | `/data:mode=1777` | ✅ | ✅ | `999:999` |
+
+**⚠️ Ce que ça ne fait PAS — à lire avant de cocher quoi que ce soit.** Quiconque atteint le socket Docker peut lancer `docker run -v /:/host --privileged` et devenir **root sur l'hôte**. Ces flags **ne ferment pas** ce chemin : seul le retrait du socket le fermerait, et le broker ne peut pas fonctionner sans. Ils ferment les **étapes intermédiaires** d'une RCE dans le broker — implant persistant sur le rootfs, escalade via binaire SUID, abus de capability — et suppriment l'incohérence de posture. **Le socket Docker monté reste le risque structurel n°1 de la stack** ; le vrai correctif serait un proxy de socket filtrant (type `docker-socket-proxy`) restreignant les verbes autorisés, non fait à ce jour.
+
+**GID du socket Docker — action opérateur REQUISE.** Le broker étant non-root, il obtient l'accès au socket (`srw-rw---- root:docker`) via `group_add`. Ce GID est **spécifique à l'hôte** — un GID en dur casserait l'accès Docker, donc toutes les sessions interactives, sur la plupart des machines. Il est donc paramétré, avec `999` (Debian/Ubuntu standard) pour défaut :
+
+```bash
+stat -c '%g' /var/run/docker.sock      # ex. 965
+echo "OCULAR_DOCKER_GID=965" >> deploy/.env
+```
+
+En cas de mauvaise valeur, **l'échec est bruyant et sans risque de sécurité** : le broker perd le socket et les sessions échouent — il ne repasse pas root.
+
+**Note `redis` — changement de comportement assumé.** Redis n'a jamais eu de volume : sa RDB s'écrivait sur le rootfs du conteneur (perdue à chaque recréation, conservée sur simple `restart`). Elle vit désormais sur un **tmpfs**, donc **en RAM** : les sessions ne survivent plus à un `restart` du conteneur redis. C'est délibéré — Redis porte les **secrets de session en clair**, qui n'ont pas à toucher le disque. Le `mode=1777` du tmpfs est **obligatoire** (redis tourne en uid 999, un tmpfs Docker est root:root 0755 par défaut) : sans lui, la première sauvegarde échoue et redis bascule en `MISCONF`, **refusant tout write** quelques minutes après le démarrage. Gardé par `tests/test_deploy_images.py`.
+
+### 2.9 Exposition réseau de l'API — ✅ DÉFAUT SÛR (2026-07-18)
+
+`ports: ["8000:8000"]` écoutait implicitement sur `0.0.0.0` : **toute l'API** (`/sessions`, proxy noVNC) était joignable depuis n'importe quel poste du LAN, protégée par un **unique Bearer statique**, sans rotation ni rate-limit — en contradiction directe avec le modèle du §1, qui suppose un reverse-proxy authentifiant en amont.
+
+Le bind par défaut est désormais la **loopback** : `${OCULAR_BIND:-127.0.0.1}:8000:8000`. Exposer reste possible mais devient un **acte explicite** :
+
+```bash
+OCULAR_BIND=0.0.0.0   # dans deploy/.env — UNIQUEMENT derrière un reverse-proxy authentifiant
+```
+
+**Résiduel inchangé :** le Bearer statique reste sans rotation ni rate-limit. La loopback ne remplace pas le reverse-proxy du §2.5 — elle évite juste que l'omission de celui-ci expose l'API à tout le LAN.
+
 ---
 
 ## 3. Checklist de déploiement en réseau sensible
@@ -410,7 +459,10 @@ Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant 
 - [ ] **DNS** sortant restreint à un resolver contrôlé — §2.2.
 - ~~**Isolation inter-sessions** (réseau par session / pare-feu)~~ — ✅ fermé dans le code (réseau docker par session), §2.3.
 - [ ] **Pool d'adresses Docker** déclaré explicitement (`default-address-pools`) — **prérequis** de §2.1, et le seul périmètre L3 stable ; `OCULAR_MAX_SESSIONS` ne règle que la tenue en charge — §2.3.
-- [ ] **Redis** avec `requirepass` — §2.4.
+- [ ] **Redis** avec `requirepass` : poser `OCULAR_REDIS_PASSWORD` dans `deploy/.env` (mécanisme câblé, défaut = pas d'auth) — §2.4.
+- [ ] **`OCULAR_DOCKER_GID`** posé à la valeur réelle de l'hôte (`stat -c '%g' /var/run/docker.sock`) — sinon le broker perd le socket et **toutes les sessions interactives échouent** — §2.8.
+- [ ] **`OCULAR_BIND`** laissé sur la loopback, sauf reverse-proxy authentifiant en amont — §2.9.
+- ~~**Durcissement des conteneurs du plan de contrôle** (`read_only`/`cap_drop`/`no-new-privileges`/non-root)~~ — ✅ fermé dans le code, §2.8. **Ne ferme PAS** l'évasion via le socket Docker (§2.8), seulement ses étapes intermédiaires.
 - [ ] `web` **jamais exposé en direct** : derrière un reverse-proxy authentifié qui strippe les en-têtes d'identité clients ; garder `OCULAR_TOKEN` comme filet ; pare-feu session→web — §2.5.
 - [ ] Dépendances **épinglées** + checksum Camoufox — §2.6.
 - [ ] Ne **jamais** poser `OCULAR_EGRESS_GUARD=0` en prod (réservé à l'analyse d'une cible interne de confiance en environnement isolé).
@@ -420,4 +472,4 @@ Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant 
 
 ## 4. Posture
 
-La séparation de privilèges et le bac à sable process d'Ocular sont **solides** (pas d'injection de commande, seccomp strict, non-root, éphémère, analyse `--network none`). Le garde egress est **bien implémenté comme filtre HTTP/CONNECT** (anti-rebinding, blocage metadata/interne, canaux UDP fermés côté navigateur). **La couche à durcir au déploiement est le réseau L3** (§2) : c'est là, et non dans le code applicatif, que se joue la garantie « Ocular n'est pas un pivot » une fois posé dans un vrai réseau.
+La séparation de privilèges et le bac à sable process d'Ocular sont **solides** (pas d'injection de commande, seccomp strict, non-root, éphémère, analyse `--network none`). Depuis 2026-07-18, les **trois conteneurs du plan de contrôle** sont durcis de façon homogène (§2.8) — le `broker`, qui détient le socket Docker, n'est plus le tier le moins contraint de la stack. **Ce durcissement ne supprime pas le risque structurel du socket Docker monté** : il en ferme les étapes intermédiaires, pas la sortie vers l'hôte (§2.8). Le garde egress est **bien implémenté comme filtre HTTP/CONNECT** (anti-rebinding, blocage metadata/interne, canaux UDP fermés côté navigateur). **La couche à durcir au déploiement est le réseau L3** (§2) : c'est là, et non dans le code applicatif, que se joue la garantie « Ocular n'est pas un pivot » une fois posé dans un vrai réseau.
