@@ -4,6 +4,7 @@ import subprocess
 import fakeredis
 
 from broker.sessions import (
+    _CONTAINER_PREFIX,
     _NET_PREFIX,
     build_session_args,
     launch_session,
@@ -526,6 +527,44 @@ def test_sweep_orphans_removes_orphan_networks_only(monkeypatch):
     assert ["docker", "network", "rm", "ocular-sess-net-s-dead"] in calls
     assert ["docker", "network", "rm", "ocular-sess-net-s-live"] not in calls
     assert ["docker", "network", "disconnect", "-f", "ocular-sess-net-s-dead", "ocular-web"] in calls
+
+
+def test_sweep_orphans_removes_orphan_containers_only(monkeypatch):
+    """Défaut H : les trois tests de `sweep_orphans` renvoyaient tous un
+    `docker ps` VIDE — le corps de boucle qui appelle `stop_session` sur un
+    conteneur orphelin (celui qui a détruit une vraie session dans le repro de
+    l'audit) n'était exercé par AUCUN test, et le garde-fou
+    `startswith(_CONTAINER_PREFIX)` n'était vérifié que côté réseau."""
+    from broker.sessions import sweep_orphans
+    calls = []
+    stopped = []
+
+    def fake_run(args, capture_output=None, check=None, text=None, timeout=None):
+        calls.append(args)
+        if args[:2] == ["docker", "ps"]:
+            # un orphelin, une session vivante, et un nom VOISIN que le filtre
+            # `name=` (substring) ramène alors qu'il ne nous appartient pas.
+            return type("P", (), {
+                "returncode": 0,
+                "stdout": "ocular-sess-s-dead\nocular-sess-s-live\nprefixe-ocular-sess-x\n",
+                "stderr": "",
+            })()
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(sessions_mod, "stop_session", lambda c: stopped.append(c))
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    removed = sweep_orphans(_FakeReg(alive={"s-live"}))
+
+    # Le filtre du `docker ps` est ANCRÉ sur `_CONTAINER_PREFIX` (miroir de
+    # l'assert réseau) : muter le préfixe listerait autre chose en vrai.
+    assert ["docker", "ps", "-a", "--filter", f"name={_CONTAINER_PREFIX}",
+            "--format", "{{.Names}}"] in calls
+    # SEUL l'orphelin est stoppé : la session vivante et le conteneur au nom
+    # voisin sont épargnés.
+    assert stopped == ["ocular-sess-s-dead"]
+    assert removed == 1  # le retour compte les CONTENEURS supprimés
 
 
 def test_sweep_orphans_network_substring_guard(monkeypatch):
