@@ -6,7 +6,9 @@ from broker.main import (
     _reaper_loop,
     _start_gc,
     _start_reaper,
+    _start_session_cmds,
     _start_sweeper,
+    _session_cmd_loop,
     _sweeper_loop,
     error_result,
 )
@@ -205,6 +207,52 @@ def test_start_sweeper_starts_a_daemon_thread(monkeypatch):
     assert t.name == "ocular-sweeper"
     assert started["called"] is True
     assert started["registry"] == ("registry-for", client)
+
+
+def test_start_session_cmds_starts_a_daemon_thread(monkeypatch):
+    started = {}
+
+    def fake_session_cmd_loop(cmd_queue, registry, stop_event=None):
+        started["cmd_queue"] = cmd_queue
+        started["registry"] = registry
+        started["called"] = True
+
+    monkeypatch.setattr(main_mod, "_session_cmd_loop", fake_session_cmd_loop)
+    monkeypatch.setattr(main_mod, "SessionCmdQueue", lambda client: ("cmds-for", client))
+    monkeypatch.setattr(main_mod, "SessionRegistry", lambda client: ("registry-for", client))
+
+    client = object()
+    t = _start_session_cmds(client)
+    t.join(timeout=2)
+
+    assert t.daemon is True
+    assert t.name == "ocular-session-cmds"
+    assert started["called"] is True
+    assert started["cmd_queue"] == ("cmds-for", client)
+    assert started["registry"] == ("registry-for", client)
+
+
+def test_session_cmd_loop_survives_an_unexpected_error(monkeypatch):
+    """Même invariant que les 3 autres démons : la boucle RETENTE malgré une
+    exception à CHAQUE tour, au lieu de laisser mourir le thread (plus aucune
+    session ne serait alors lancée ni arrêtée, en silence)."""
+    calls = {"n": 0}
+
+    def boom(_cmd_queue, _registry):
+        calls["n"] += 1
+        raise RuntimeError("redis en vrac")
+
+    monkeypatch.setattr(main_mod, "_consume_session_cmd", boom)
+
+    _session_cmd_loop(object(), object(), stop_event=_FakeStopEvent(n_iterations=3))
+
+    assert calls["n"] == 3, "la boucle doit RETENTER à chaque tour, pas abandonner"
+
+
+def test_session_cmd_loop_never_sleeps_zero():
+    """`_daemon_loop` dormirait 0 s -> boucle folle à 100 % CPU si un jour
+    `dequeue_cmd` rendait la main instantanément (doubles de test)."""
+    assert main_mod._SESSION_CMD_INTERVAL > 0
 
 
 # --- Défaut C : l'accesseur d'intervalle était appelé HORS du `try` ----------
