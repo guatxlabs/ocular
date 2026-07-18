@@ -13,20 +13,28 @@ from broker.main import (
 
 
 class _FakeStopEvent:
-    """Simule un `threading.Event` sans dépendre du temps réel : reste
-    "non déclenché" jusqu'à ce que `wait()` soit appelé une fois, ce qui le
-    fait basculer -> garantit exactement une itération de `_reaper_loop`
-    quel que soit `reaper_interval()`."""
+    """Simule un `threading.Event` sans dépendre du temps réel : ne bascule
+    qu'après `n_iterations` appels à `wait()` -> la boucle testée effectue
+    EXACTEMENT `n_iterations` tours, quel que soit l'intervalle configuré.
 
-    def __init__(self) -> None:
+    Le paramètre est essentiel (défaut F) : avec un événement qui bascule dès
+    le premier `wait()`, les tests « la boucle survit à une exception » ne
+    prouvaient que « ne lève pas au premier tour ». Une implémentation où le
+    reaper, le GC et le sweeper ABANDONNENT définitivement à la première erreur
+    transitoire (`except ...: return`) les satisfaisait tous."""
+
+    def __init__(self, n_iterations: int = 1) -> None:
+        self._remaining = n_iterations
         self._set = False
 
     def is_set(self) -> bool:
         return self._set
 
     def wait(self, timeout: float) -> bool:
-        self._set = True
-        return True
+        self._remaining -= 1
+        if self._remaining <= 0:
+            self._set = True
+        return self._set
 
 
 def test_error_result_is_valid_json_even_with_special_chars():
@@ -269,3 +277,88 @@ def test_daemon_loop_never_sleeps_zero(monkeypatch, loop, work, interval_fn, env
 
     getattr(main_mod, loop)(object(), stop_event=_RecordingStopEvent())
     assert waited and all(w >= 1 for w in waited), f"attente non bornée : {waited}"
+
+
+# --- Défaut F : prouver que les boucles CONTINUENT DE TOURNER ----------------
+# Une erreur transitoire (Redis qui redémarre, démon conteneur indisponible)
+# doit être absorbée tour après tour : si un thread démon abandonnait à la
+# première, plus aucune session ne serait jamais reapée, aucun artefact
+# collecté, aucun orphelin balayé — le broker restant « vivant » pour toute
+# sonde de liveness. Les tests ci-dessous imposent N tours ET des exceptions à
+# CHAQUE tour ; ils échouent sur une implémentation qui `return` dans l'`except`.
+
+_N_ITERATIONS = 4
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+def test_daemon_loop_keeps_working_despite_an_exception_every_iteration(
+    monkeypatch, loop, work, interval_fn, env
+):
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("panne transitoire")
+
+    monkeypatch.setattr(main_mod, work, boom)
+
+    stop_event = _FakeStopEvent(_N_ITERATIONS)
+    getattr(main_mod, loop)(object(), stop_event=stop_event)  # ne doit PAS lever
+
+    assert len(calls) == _N_ITERATIONS, (
+        f"{loop} a abandonné après {len(calls)} tour(s) : le travail doit être "
+        f"retenté à chaque itération malgré l'exception"
+    )
+    assert stop_event.is_set()  # la boucle est bien sortie par l'événement d'arrêt
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+def test_daemon_loop_recovers_after_a_transient_exception(
+    monkeypatch, loop, work, interval_fn, env
+):
+    """Cas réaliste : la panne cesse. Le tour suivant doit RÉUSSIR — ce qui
+    n'arrive que si la boucle a survécu au tour en échec."""
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+
+    outcomes = []
+
+    def flaky(*a, **k):
+        if not outcomes:
+            outcomes.append("boom")
+            raise RuntimeError("panne transitoire")
+        outcomes.append("ok")
+
+    monkeypatch.setattr(main_mod, work, flaky)
+
+    getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent(3))
+
+    assert outcomes == ["boom", "ok", "ok"], f"{loop} n'a pas repris après la panne"
+
+
+@pytest.mark.parametrize("loop,work,interval_fn,env", _LOOPS)
+def test_daemon_loop_keeps_working_despite_an_exploding_interval_accessor(
+    monkeypatch, loop, work, interval_fn, env
+):
+    """Même exigence quand c'est l'accesseur d'intervalle qui explose à chaque
+    tour : la boucle retombe sur l'intervalle de repli et continue."""
+    monkeypatch.setattr(main_mod, "session_ttl", lambda: 1800)
+    monkeypatch.setattr(main_mod, "session_idle", lambda: 600)
+    monkeypatch.setattr(main_mod, "session_disconnect_grace", lambda: 45)
+
+    calls = []
+    monkeypatch.setattr(main_mod, work, lambda *a, **k: calls.append(1))
+
+    def boom():
+        raise ValueError("accesseur cassé")
+
+    monkeypatch.setattr(main_mod, interval_fn, boom)
+
+    getattr(main_mod, loop)(object(), stop_event=_FakeStopEvent(_N_ITERATIONS))
+
+    assert len(calls) == _N_ITERATIONS
