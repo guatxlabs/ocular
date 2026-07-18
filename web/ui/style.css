@@ -1249,6 +1249,13 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .triage-pill{color:var(--mut);background:var(--card2);border-color:var(--bd)}
 .triage-pill.triage-band-medium{color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 38%,transparent)}
 .triage-pill.triage-band-high{color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+/* Explication LLM (option opt-in) : bouton discret + note générée. La note est
+   une sortie LLM non fiable, posée en textContent côté JS (jamais innerHTML). */
+.llm-panel{margin:0 0 18px}
+.llm-note{margin-top:12px;padding:12px 14px;border:1px solid var(--bd);border-left:3px solid var(--acc);border-radius:var(--radius);background:color-mix(in srgb,var(--acc) 5%,var(--card))}
+.llm-badge{display:inline-block;font-family:var(--font-mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:2px 9px;border-radius:var(--pill);color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,transparent);border:1px solid color-mix(in srgb,var(--acc) 40%,transparent)}
+.llm-note p{margin:8px 0 0;font-size:13px;color:var(--fg);white-space:pre-wrap}
+.llm-muted{margin:12px 0 0;font-size:12px;color:var(--mut)}
 .saved-controls{display:flex;justify-content:flex-end;margin-bottom:12px}
 .saved-sort-label{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
 .saved-sort{background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:6px 10px;font-size:12px;cursor:pointer}
