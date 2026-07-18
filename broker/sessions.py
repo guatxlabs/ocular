@@ -16,6 +16,8 @@ from ocular_settings import session_screen, web_container
 log = get_logger("broker.sessions")
 
 _SESSION_IMAGE = "ocular-runner-recon-vnc:latest"
+_CONTAINER_PREFIX = "ocular-sess-"
+_NET_PREFIX = "ocular-sess-net-"
 
 
 def _session_name(session_id: str) -> str:
@@ -27,7 +29,7 @@ def _session_net(session_id: str) -> str:
     session vit sur son propre réseau bridge : deux sessions n'ont donc aucune
     route l'une vers l'autre (un conteneur compromis ne peut plus joindre le
     :6080/:8090 d'un pair). Le web y est attaché dynamiquement par le broker."""
-    return f"ocular-sess-net-{session_id}"
+    return f"{_NET_PREFIX}{session_id}"
 
 
 def build_session_args(
@@ -119,12 +121,25 @@ def launch_session(session_id: str, secret: str = "") -> str:
 
 
 def stop_session(container: str) -> None:
-    """Arrête et supprime un conteneur de session. Best-effort (`check=False`)
-    : robuste au TOCTOU (conteneur déjà mort/absent entre le check d'expiration
-    et l'arrêt effectif — `reap` peut appeler ceci sur un conteneur fantôme
-    sans lever)."""
+    """Arrête et supprime un conteneur de session PUIS libère son réseau dédié
+    (détache le web, supprime le réseau). Best-effort (`check=False`) : robuste
+    au TOCTOU (conteneur/réseau déjà disparu — `reap` peut appeler ceci sur un
+    fantôme sans lever).
+
+    L'ORDRE est contraignant : Docker refuse de supprimer un réseau encore
+    utilisé, donc le conteneur part d'abord."""
     subprocess.run(["docker", "kill", container], capture_output=True, check=False)
     subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+
+    if not container.startswith(_CONTAINER_PREFIX):
+        return  # nom inattendu : ne jamais dériver/supprimer un réseau au hasard
+    session_id = container[len(_CONTAINER_PREFIX):]
+    net = _session_net(session_id)
+    subprocess.run(
+        ["docker", "network", "disconnect", "-f", net, web_container()],
+        capture_output=True, check=False,
+    )
+    subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)
 
 
 def sweep_orphans(registry) -> int:

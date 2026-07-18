@@ -145,7 +145,9 @@ def test_stop_session_is_best_effort_check_false(monkeypatch):
 
     stop_session("ocular-sess-ghost")  # ne doit pas lever malgré returncode 1
 
-    assert seen_check == [False, False]
+    # 4 commandes depuis le teardown réseau (kill, rm -f, network disconnect,
+    # network rm) : TOUTES best-effort, aucune ne doit lever sur returncode 1.
+    assert seen_check == [False, False, False, False]
 
 
 class _FakeRegistry:
@@ -365,3 +367,36 @@ def test_launch_session_network_create_warning_only_when_not_already_exists(monk
     assert "pool d'adresses" in warnings[0]
     assert "default-address-pools" in warnings[0]
     assert "could not find an available predefined subnet" in warnings[0]
+
+
+def test_stop_session_removes_container_then_network(monkeypatch):
+    # ORDRE CONTRAIGNANT : Docker refuse `network rm` tant qu'un conteneur y
+    # est attaché -> le conteneur doit partir AVANT.
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    stop_session("ocular-sess-s1")
+
+    assert calls[0] == ["docker", "kill", "ocular-sess-s1"]
+    assert calls[1] == ["docker", "rm", "-f", "ocular-sess-s1"]
+    assert calls[2] == ["docker", "network", "disconnect", "-f", "ocular-sess-net-s1", "ocular-web"]
+    assert calls[3] == ["docker", "network", "rm", "ocular-sess-net-s1"]
+
+
+def test_stop_session_ignores_container_without_session_prefix(monkeypatch):
+    # Nom inattendu -> on ne dérive aucun réseau (pas de `network rm` sauvage).
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    stop_session("un-autre-conteneur")
+    assert all("network" not in a for a in calls)
