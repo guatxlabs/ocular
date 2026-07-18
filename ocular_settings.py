@@ -161,8 +161,10 @@ def artifacts_dir() -> str:
 
 def web_container() -> str:
     """Nom du conteneur web, que le broker attache/détache aux réseaux
-    per-session (`docker network connect`). Le compose fixe
-    `container_name: ocular-web` pour que ce nom soit DÉTERMINISTE (sinon
+    per-session (`docker network connect`). Le compose dérive le
+    `container_name` du service web de cette MÊME variable (source unique :
+    les deux ne peuvent pas diverger, même si un opérateur la surcharge),
+    avec `ocular-web` pour défaut — le nom reste ainsi DÉTERMINISTE (sinon
     Docker génère `<projet>-web-1`, non devinable par le broker).
     Surchargeable par `OCULAR_WEB_CONTAINER` ; une valeur vide retombe sur
     le défaut (un nom vide ferait échouer `network connect` de façon opaque)."""

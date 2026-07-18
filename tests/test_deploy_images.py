@@ -244,6 +244,68 @@ def test_readme_documents_3c():
     assert "make script" in readme
 
 
+_WEB_CONTAINER_EXPR = "${OCULAR_WEB_CONTAINER:-ocular-web}"
+
+
+def _compose_service_block(service: str) -> str:
+    """Bloc texte d'un service de `deploy/docker-compose.yml`.
+
+    Parsing TEXTE volontaire : `yaml` n'est pas une dépendance de test du
+    projet (aucun `import yaml` dans la suite, aucun requirements), on
+    n'en introduit pas une pour une garde de déploiement.
+    """
+    compose = (_ROOT / "deploy" / "docker-compose.yml").read_text()
+    assert f"\n  {service}:" in compose, f"service `{service}` absent du compose"
+    after = compose.split(f"\n  {service}:", 1)[1]
+    lines = []
+    for line in after.splitlines():
+        # Fin du bloc : première ligne non vide indentée de <= 2 espaces
+        # (service suivant ou section top-level `volumes:`/`networks:`).
+        if line.strip() and not line.startswith("    "):
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def test_compose_web_container_name_is_single_source_of_truth():
+    """Le `container_name` du web ET la variable `OCULAR_WEB_CONTAINER` passée
+    au broker doivent dériver de la MÊME expression interpolée.
+
+    MODE DE PANNE PRÉVENU — ne pas « simplifier » ce test : si quelqu'un
+    re-fige `container_name: ocular-web` en dur (ou change un seul des deux
+    côtés), un opérateur qui surcharge `OCULAR_WEB_CONTAINER` dans
+    `deploy/.env` obtient un broker qui attache aux réseaux per-session un
+    conteneur qui n'existe PAS : `docker network connect` échoue et TOUTES
+    les sessions interactives deviennent injoignables depuis le web. Rien
+    d'autre dans la suite n'attraperait cette divergence.
+    """
+    web = _compose_service_block("web")
+    broker = _compose_service_block("broker")
+
+    web_names = [
+        line.split(":", 1)[1].strip().strip('"').strip("'")
+        for line in web.splitlines()
+        if line.strip().startswith("container_name:")
+    ]
+    assert len(web_names) == 1, f"container_name web attendu une seule fois : {web_names}"
+    assert web_names[0] == _WEB_CONTAINER_EXPR, (
+        "le container_name du web doit rester l'expression interpolée "
+        f"{_WEB_CONTAINER_EXPR}, pas une valeur en dur : {web_names[0]!r}"
+    )
+
+    broker_vars = [
+        line.split(":", 1)[1].strip().strip('"').strip("'")
+        for line in broker.splitlines()
+        if line.strip().startswith("OCULAR_WEB_CONTAINER:")
+    ]
+    assert len(broker_vars) == 1, f"OCULAR_WEB_CONTAINER broker attendu une fois : {broker_vars}"
+    assert broker_vars[0] == _WEB_CONTAINER_EXPR, (
+        "le broker doit lire la MÊME expression que le container_name du web : "
+        f"{broker_vars[0]!r}"
+    )
+    assert web_names[0] == broker_vars[0], (web_names, broker_vars)
+
+
 def test_build_runner_still_builds_exactly_three_images():
     """3c réutilise `ocular-runner-recon` (le conteneur `capture` 3a) : il ne
     doit PAS y avoir de 6e image. `build-runner` construit toujours les 3
