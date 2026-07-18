@@ -156,7 +156,7 @@ def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
     # brut, les artefacts (dom_html_ref/har_ref), les screenshots, ni les
     # post-bodies réseau — seulement verdict/triage + findings réduits (rule/
     # severity) et dom réduit (forms/mailtos).
-    from web.app import _llm_summary_payload
+    from web.llm import llm_summary_payload
 
     RAW_HTML = "<html><body>SECRET PASSWORD leak</body></html>"
     result = {
@@ -188,7 +188,7 @@ def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
         "artifacts": {"dom_html_ref": "sha256:deadbeef", "har_ref": "sha256:cafe"},
     }
 
-    summary = _llm_summary_payload(result)
+    summary = llm_summary_payload(result)
 
     # Contient bien ce qui doit être présent
     assert summary["verdict"] == "malicious"
@@ -243,7 +243,7 @@ def test_resolve_llm_pin_rejects_internal_without_optin():
     # _resolve_llm_pin applique la garde egress : un hôte loopback sans opt-in
     # -> _CaptureError, aucune IP épinglée retournée.
     import pytest
-    from web.app import _resolve_llm_pin
+    from web.llm import _resolve_llm_pin
     from web.internal_http import CaptureError
 
     with pytest.raises(CaptureError):
@@ -252,7 +252,7 @@ def test_resolve_llm_pin_rejects_internal_without_optin():
 
 def test_resolve_llm_pin_allows_internal_with_optin():
     # Avec opt-in, un hôte interne est autorisé ET épinglé sur son IP littérale.
-    from web.app import _resolve_llm_pin
+    from web.llm import _resolve_llm_pin
 
     endpoint, pinned_ip, is_https = _resolve_llm_pin(
         "http://127.0.0.1:11434/v1", allow_internal=True)
@@ -263,7 +263,7 @@ def test_resolve_llm_pin_allows_internal_with_optin():
 
 def test_resolve_llm_pin_rejects_bad_scheme():
     import pytest
-    from web.app import _resolve_llm_pin
+    from web.llm import _resolve_llm_pin
     from web.internal_http import CaptureError
 
     with pytest.raises(CaptureError):
@@ -272,10 +272,10 @@ def test_resolve_llm_pin_rejects_bad_scheme():
 
 def test_resolve_llm_pin_public_host_returns_resolved_ip(monkeypatch):
     # Hors opt-in, on épingle l'IP renvoyée par resolve_allowed_ip (publique).
-    import web.app as appmod
+    import web.llm as llmmod
 
-    monkeypatch.setattr(appmod, "resolve_allowed_ip", lambda host, port=0: "93.184.216.34")
-    endpoint, pinned_ip, is_https = appmod._resolve_llm_pin(
+    monkeypatch.setattr(llmmod, "resolve_allowed_ip", lambda host, port=0: "93.184.216.34")
+    endpoint, pinned_ip, is_https = llmmod._resolve_llm_pin(
         "https://llm.example.com/v1", allow_internal=False)
     assert pinned_ip == "93.184.216.34"
     assert is_https is True
@@ -286,7 +286,7 @@ def test_pinned_http_connection_targets_pinned_ip(monkeypatch):
     # La connexion épinglée ouvre la socket sur l'IP épinglée, PAS sur le
     # hostname (défait le rebinding : http.client ne re-résout pas).
     import socket
-    from web.app import _PinnedHTTPConnection
+    from web.llm import _PinnedHTTPConnection
 
     captured = {}
 
@@ -307,7 +307,7 @@ def test_pinned_http_connection_targets_pinned_ip(monkeypatch):
 def test_llm_opener_does_not_follow_redirects():
     # Anti-SSRF : l'opener LLM ne suit AUCUNE redirection (un 3xx cross-scheme
     # d'un endpoint hostile rouvrirait la SSRF via un handler non épinglé).
-    from web.app import _NoRedirect, _pinned_opener
+    from web.llm import _NoRedirect, _pinned_opener
 
     # redirect_request renvoie None -> urllib ne suit pas.
     assert _NoRedirect().redirect_request(
@@ -328,7 +328,7 @@ def test_pinned_https_connection_keeps_cert_verification():
     # http.client stable inter-versions), pas sur le handler (dont le _context
     # reste None en 3.11).
     import ssl
-    from web.app import _PinnedHTTPSConnection
+    from web.llm import _PinnedHTTPSConnection
 
     ctx = _PinnedHTTPSConnection("llm.example.com", "93.184.216.34")._context
     assert ctx.verify_mode == ssl.CERT_REQUIRED
