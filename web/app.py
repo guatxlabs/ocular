@@ -707,10 +707,13 @@ def get_saved(ref_or_id: str) -> dict:
 
 
 @app.get("/saved")
-def list_saved() -> list:
+def list_saved(sort: str = "saved_at", order: str = "desc",
+               min_band: str | None = None) -> list:
     conn = _saved_conn()
     try:
-        return saved_store.list_all(conn)
+        return saved_store.list_all(conn, sort=sort, order=order, min_band=min_band)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     finally:
         conn.close()
 
