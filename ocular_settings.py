@@ -134,6 +134,13 @@ def forward_auth_groups_header() -> str:
     return os.environ.get("OCULAR_FORWARD_GROUPS_HEADER", "X-Forwarded-Groups")
 
 
+def forward_for_header() -> str:
+    """En-tête portant l'IP cliente transmise par le frontal de confiance.
+    Lu UNIQUEMENT si `trust_forward_auth()` est actif — même surface de
+    confiance que les en-têtes d'identité (cf. `web/identity.py`)."""
+    return os.environ.get("OCULAR_FORWARD_FOR_HEADER", "X-Forwarded-For")
+
+
 def session_ttl() -> int:
     return _env_int("OCULAR_SESSION_TTL", 1800)     # 30 min absolu
 

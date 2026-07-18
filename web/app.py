@@ -40,7 +40,7 @@ from ocular_settings import (
     session_ready_timeout,
     trust_forward_auth,
 )
-from web.identity import has_admin_group, resolve_groups, resolve_identity
+from web.identity import client_ip, has_admin_group, resolve_groups, resolve_identity
 from web.llm import llm_explain, llm_summary_payload
 from web.middleware import MaxBodySizeMiddleware
 from web.models import AnalystVerdictRequest, JobRequest, JobResponse, SessionRequest, SessionResponse
@@ -411,13 +411,16 @@ def create_session(
         "launch", session_id, token=token, target=target, secret=session_secret
     )
 
-    client_ip = request.client.host if request.client else "?"
+    # Pas `request.client.host` : depuis le frontal L4 `gateway`, le pair TCP
+    # est TOUJOURS le gateway (mesuré : client_ip=172.28.0.5 sur chaque ligne).
+    # `client_ip()` porte la frontière de confiance (cf. web/identity.py).
+    ip = client_ip(request)
     # Avertissement délibéré : une session interactive expose l'IP du serveur
     # au site cible (URL live) et/ou rend du contenu potentiellement hostile
     # dans le conteneur — jamais le token dans ce log.
     log.warning(
         "session create session_id=%s client_ip=%s kind=%s",
-        session_id, client_ip, "url" if req.url else "html",
+        session_id, ip, "url" if req.url else "html",
     )
 
     deadline = time.monotonic() + session_ready_timeout()

@@ -143,3 +143,72 @@ def test_resolve_groups_opt_in_off_no_header_never_read_proof(monkeypatch):
 
     req = _request({"X-Forwarded-Groups": "admins"})
     assert resolve_groups(req) == []
+
+
+# --- IP cliente d'audit derrière le frontal L4 `gateway` ---------------------
+# Régression mesurée : le gateway détient le port publié 8000 et relaie vers
+# `web`, donc `request.client.host` est TOUJOURS l'IP du gateway (172.28.0.5) —
+# chaque ligne d'audit « session create » portait cette IP au lieu de celle de
+# l'analyste. La correction lit X-Forwarded-For, mais SOUS LA MÊME frontière de
+# confiance que les en-têtes d'identité : sans l'opt-in, un client falsifierait
+# sa propre IP dans le journal d'audit (empoisonnement de la piste d'audit).
+
+from web.identity import client_ip
+
+_GATEWAY_PEER = ("172.28.0.5", 51234)  # le pair TCP est le frontal, pas le client
+
+
+def _request_from(headers: dict[str, str], peer=_GATEWAY_PEER) -> Request:
+    raw_headers = [
+        (k.lower().encode("latin-1"), v.encode("latin-1")) for k, v in headers.items()
+    ]
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/sessions",
+        "headers": raw_headers,
+        "client": peer,
+    }
+    return Request(scope)
+
+
+def test_client_ip_honours_forwarded_header_when_trust_is_on(monkeypatch):
+    """Drapeau ACTIF : l'en-tête posé par le frontal de confiance fait foi —
+    sinon l'audit ne voit que l'IP du gateway."""
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    req = _request_from({"X-Forwarded-For": "203.0.113.7"})
+    assert client_ip(req) == "203.0.113.7"
+
+
+def test_client_ip_ignores_forwarded_header_when_trust_is_off(monkeypatch):
+    """LE test anti-empoisonnement : opt-in OFF (défaut) => l'en-tête est
+    totalement ignoré et on retombe sur le pair TCP. Sans cela, n'importe quel
+    client écrit l'IP qu'il veut dans la piste d'audit."""
+    monkeypatch.delenv("OCULAR_TRUST_FORWARD_AUTH", raising=False)
+    req = _request_from({"X-Forwarded-For": "1.2.3.4"})
+    assert client_ip(req) == "172.28.0.5"  # l'IP du gateway, honnête et connue
+
+
+def test_client_ip_takes_the_leftmost_element_of_the_list(monkeypatch):
+    """XFF est une liste `client, proxy1, proxy2` construite par AJOUT : le
+    client d'origine est le plus À GAUCHE. Prendre le dernier journaliserait un
+    proxy intermédiaire."""
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    req = _request_from({"X-Forwarded-For": " 203.0.113.7 , 198.51.100.1 , 192.0.2.9 "})
+    assert client_ip(req) == "203.0.113.7"
+
+
+def test_client_ip_falls_back_to_peer_when_header_absent_or_empty(monkeypatch):
+    """Opt-in actif mais en-tête absent/vide (appel interne direct au `web`,
+    frontal mal configuré) : on ne renvoie JAMAIS une chaîne vide dans l'audit."""
+    monkeypatch.setenv("OCULAR_TRUST_FORWARD_AUTH", "1")
+    assert client_ip(_request_from({})) == "172.28.0.5"
+    assert client_ip(_request_from({"X-Forwarded-For": "   "})) == "172.28.0.5"
+    assert client_ip(_request_from({"X-Forwarded-For": " , 198.51.100.1"})) == "172.28.0.5"
+
+
+def test_client_ip_without_peer_never_raises(monkeypatch):
+    """Pas de pair TCP dans le scope (transport exotique/test) : repli `?`,
+    jamais d'AttributeError sur un chemin de journalisation d'audit."""
+    monkeypatch.delenv("OCULAR_TRUST_FORWARD_AUTH", raising=False)
+    assert client_ip(_request_from({}, peer=None)) == "?"

@@ -17,6 +17,7 @@ from ocular_settings import (
     admin_group,
     forward_auth_groups_header,
     forward_auth_user_header,
+    forward_for_header,
     trust_forward_auth,
 )
 
@@ -60,6 +61,43 @@ def resolve_groups(request: Request) -> list[str]:
     header_name = forward_auth_groups_header()
     raw = request.headers.get(header_name, "")
     return [g.strip() for g in raw.split(",") if g.strip()]
+
+
+def client_ip(request: Request) -> str:
+    """IP cliente à journaliser dans la piste d'audit.
+
+    Le pair TCP (`request.client.host`) n'est plus l'analyste depuis
+    l'introduction du frontal L4 `gateway` (deploy/) : celui-ci détient le port
+    publié 8000 et relaie vers `web`, donc CHAQUE requête arrive avec l'IP du
+    gateway. La vraie IP ne peut venir que d'un en-tête posé en amont.
+
+    MÊME FRONTIÈRE DE CONFIANCE que `resolve_identity` : l'en-tête n'est lu que
+    si `trust_forward_auth()` est actif — ce drapeau signifie déjà « un frontal
+    de confiance est en amont et strippe les copies clientes des en-têtes
+    transmis ». Sans lui, l'en-tête est TOTALEMENT ignoré : sinon n'importe
+    quel client falsifie son IP dans le journal d'audit (empoisonnement de la
+    piste d'audit), ce qui est pire qu'une IP de frontal, honnête et connue.
+
+    Le gateway est du L4 (stream TCP) : il ne réécrit ni n'ajoute rien, donc un
+    `X-Forwarded-For` posé par le reverse-proxy amont documenté arrive intact.
+
+    CHOIX DE L'ÉLÉMENT — XFF est une liste `client, proxy1, proxy2` construite
+    par AJOUT successif : le plus À GAUCHE est le client d'origine, chaque
+    intermédiaire appendant le pair qu'il a vu. On prend donc le PREMIER.
+    C'est correct ICI précisément à cause du contrat d'opt-in ci-dessus : le
+    frontal de confiance strippe les copies clientes et repose la valeur
+    lui-même, donc l'élément de gauche est celui qu'IL a observé, pas une
+    valeur choisie par le client. (Sans ce contrat de strippage, le premier
+    élément serait au contraire le plus falsifiable, et il faudrait remonter
+    depuis la droite en sautant les proxys connus.)
+    """
+    if trust_forward_auth():
+        raw = request.headers.get(forward_for_header(), "")
+        first = raw.split(",")[0].strip()
+        if first:
+            return first
+    peer = getattr(request, "client", None)
+    return peer.host if peer else "?"
 
 
 def has_admin_group(request: Request) -> bool:
