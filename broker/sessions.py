@@ -11,7 +11,7 @@ from broker.launcher import (
 )
 from bus.queue import RESULT_PREFIX
 from ocular_logging import get_logger
-from ocular_settings import session_screen
+from ocular_settings import session_screen, web_container
 
 log = get_logger("broker.sessions")
 
@@ -67,13 +67,36 @@ def build_session_args(
 
 
 def launch_session(session_id: str, secret: str = "") -> str:
-    """Lance un conteneur de session détaché et retourne son nom
-    (`ocular-sess-{session_id}`). Seul le broker (jamais le web) exécute
-    ceci : le web n'a pas accès à Docker. Le nom est toujours retourné même
-    si `docker run` échoue (returncode != 0) : c'est le poll de santé aval
-    qui décide de l'état réel de la session — on logue juste un warning ici."""
+    """Lance un conteneur de session détaché sur son réseau DÉDIÉ et y attache
+    le conteneur web, puis retourne le nom du conteneur
+    (`ocular-sess-{session_id}`). Seul le broker (jamais le web) exécute ceci.
+
+    Ordre CONTRAIGNANT (garantie anti-race) : réseau créé -> conteneur lancé
+    dessus -> web attaché. `process_session_cmd` n'écrit au registre qu'APRÈS
+    le retour d'ici, donc quand le web commence son poll de santé il est déjà
+    sur le réseau et résout `ocular-sess-{id}` par DNS Docker.
+
+    Tout est best-effort : le nom est toujours retourné, même si une commande
+    échoue — c'est le poll de santé aval qui décide de l'état réel."""
     name = _session_name(session_id)
-    log.info("session launch session_id=%s", session_id)  # jamais le secret ici
+    net = _session_net(session_id)
+    log.info("session launch session_id=%s net=%s", session_id, net)  # jamais le secret
+
+    created = subprocess.run(
+        ["docker", "network", "create", net], capture_output=True, check=False
+    )
+    if created.returncode != 0:
+        stderr = created.stderr.decode(errors="replace")
+        if "already exists" not in stderr:
+            # Warning DISTINCTIF : la cause la plus probable est l'épuisement du
+            # pool d'adresses Docker (cf. docs/DEPLOY-SECURITY.md, élargir
+            # default-address-pools). Sans ce log, l'échec serait opaque.
+            log.warning(
+                "session network create failed session_id=%s net=%s stderr=%s "
+                "(pool d'adresses Docker épuisé ? cf. default-address-pools)",
+                session_id, net, stderr[:200],
+            )
+
     proc = subprocess.run(
         build_session_args(session_id, secret=secret), capture_output=True, check=False
     )
@@ -81,6 +104,16 @@ def launch_session(session_id: str, secret: str = "") -> str:
         log.warning(
             "session launch failed session_id=%s returncode=%s stderr=%s",
             session_id, proc.returncode, proc.stderr.decode(errors="replace")[:200],
+        )
+
+    web = web_container()
+    conn = subprocess.run(
+        ["docker", "network", "connect", net, web], capture_output=True, check=False
+    )
+    if conn.returncode != 0:
+        log.warning(
+            "session network connect failed session_id=%s net=%s web=%s stderr=%s",
+            session_id, net, web, conn.stderr.decode(errors="replace")[:200],
         )
     return name
 
