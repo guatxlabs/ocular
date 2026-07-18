@@ -28,6 +28,11 @@ from ocular_settings import (
 
 log = get_logger("broker")
 
+# Repli d'intervalle utilisé si l'accesseur lui-même explosait (défense en
+# profondeur : les accesseurs de `ocular_settings` ne lèvent plus, cf. la règle
+# en tête de ce module-là). Jamais 0 : `sleep(0)` = boucle folle à 100 % CPU.
+_FALLBACK_INTERVAL = 60
+
 
 def error_result(job_id: str, exc: Exception) -> str:
     """Résultat JSON TOUJOURS valide pour un job échoué (le message d'exception
@@ -122,13 +127,18 @@ def _reaper_loop(registry, stop_event=None) -> None:
     while stop_event is None or not stop_event.is_set():
         try:
             reap(registry, _time.time(), session_ttl(), session_idle(), session_disconnect_grace())
+            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
+            # `except`, une valeur d'env malformée (`OCULAR_REAPER_INTERVAL=60s`) levait
+            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
+            interval = reaper_interval()
         except Exception as exc:  # le reaper survit à une erreur transitoire
             log.error("reaper error err=%s", str(exc)[:200])
+            interval = _FALLBACK_INTERVAL
         if stop_event is not None:
-            if stop_event.wait(reaper_interval()):
+            if stop_event.wait(interval):
                 break
         else:
-            _time.sleep(reaper_interval())
+            _time.sleep(interval)
 
 
 def _start_reaper(client) -> threading.Thread:
@@ -151,13 +161,18 @@ def _gc_loop(client, stop_event=None) -> None:
     while stop_event is None or not stop_event.is_set():
         try:
             collect(artifacts_dir(), client)
+            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
+            # `except`, une valeur d'env malformée (`OCULAR_GC_INTERVAL=60s`) levait
+            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
+            interval = gc_interval()
         except Exception as exc:  # le GC survit à une erreur transitoire
             log.error("gc error err=%s", str(exc)[:200])
+            interval = _FALLBACK_INTERVAL
         if stop_event is not None:
-            if stop_event.wait(gc_interval()):
+            if stop_event.wait(interval):
                 break
         else:
-            _time.sleep(gc_interval())
+            _time.sleep(interval)
 
 
 def _start_gc(client) -> threading.Thread:
@@ -183,13 +198,18 @@ def _sweeper_loop(registry, stop_event=None) -> None:
     while stop_event is None or not stop_event.is_set():
         try:
             sweep_orphans(registry)
+            # La LECTURE D'INTERVALLE est dans le `try` : appelée après le
+            # `except`, une valeur d'env malformée (`OCULAR_SWEEP_INTERVAL=60s`) levait
+            # hors de toute garde et tuait le thread démon SANS UN SEUL LOG.
+            interval = sweep_interval()
         except Exception as exc:  # le sweeper survit à une erreur transitoire
             log.error("orphan sweep error err=%s", str(exc)[:200])
+            interval = _FALLBACK_INTERVAL
         if stop_event is not None:
-            if stop_event.wait(sweep_interval()):
+            if stop_event.wait(interval):
                 break
         else:
-            _time.sleep(sweep_interval())
+            _time.sleep(interval)
 
 
 def _start_sweeper(client) -> threading.Thread:
