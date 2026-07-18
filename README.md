@@ -254,6 +254,14 @@ LDAP fronté par un proxy…), sans verrouillage.
 - Quand activé, une requête proxifiée porteuse de l'en-tête d'identité est autorisée
   automatiquement (l'analyste derrière l'IdP n'a **aucun jeton à coller**) ; l'identité alimente
   `saved_by` et le verdict analyste. `GET /auth/whoami` renvoie l'identité de l'appelant.
+- **IP cliente dans la piste d'audit** (même opt-in) : le frontal `gateway` détient le port
+  publié et relaie en **L4**, donc le pair TCP vu par `web` est toujours le gateway. Quand
+  `OCULAR_TRUST_FORWARD_AUTH=1`, la ligne d'audit `session create` prend l'IP dans
+  `OCULAR_FORWARD_FOR_HEADER` (défaut `X-Forwarded-For`), **élément le plus à gauche** (le client
+  d'origine ; la liste est construite par ajout successif). Sans l'opt-in, l'en-tête est ignoré
+  et l'IP du pair est journalisée : une IP de frontal, honnête et connue, vaut mieux qu'une IP
+  choisie par le client. Le gateway étant du L4, il transmet l'en-tête **inchangé** — c'est bien
+  le reverse-proxy amont qui doit le poser et stripper les copies clientes.
 - **Rôle admin via groupe IdP** (opt-in, nécessite aussi `OCULAR_TRUST_FORWARD_AUTH=1`) :
   définir `OCULAR_ADMIN_GROUP=<nom-de-groupe>` accorde le rôle admin (`DELETE /saved`) à tout
   appelant dont l'en-tête de groupes (`OCULAR_FORWARD_GROUPS_HEADER`, défaut `X-Forwarded-Groups`,
@@ -265,8 +273,9 @@ LDAP fronté par un proxy…), sans verrouillage.
 
 > ⚠️ **IMPÉRATIF de sécurité.** N'activez `OCULAR_TRUST_FORWARD_AUTH` **que** derrière un
 > reverse-proxy qui **authentifie ET supprime (strip) toute copie des en-têtes de confiance
-> venant du client** — au minimum `X-Forwarded-User` **ET `X-Forwarded-Groups`** (et l'en-tête
-> d'email/de groupes que vous configurez). Sinon, un client peut usurper `X-Forwarded-User: x`
+> venant du client** — au minimum `X-Forwarded-User` **ET `X-Forwarded-Groups`** (et les en-têtes
+> d'email/de groupes/d'IP que vous configurez, cf. `X-Forwarded-For` ci-dessus : non strippé, il
+> laisse un client empoisonner l'IP de la piste d'audit). Sinon, un client peut usurper `X-Forwarded-User: x`
 > ou, si `OCULAR_ADMIN_GROUP` est activé, `X-Forwarded-Groups: <groupe-admin>` et **escalader en
 > admin**. Recommandations : (1) gardez `OCULAR_TOKEN`/`OCULAR_ADMIN_TOKEN` définis même en mode
 > forward-auth (filet) ; (2) le conteneur `web` n'est **jamais** joignable en direct, seul le
