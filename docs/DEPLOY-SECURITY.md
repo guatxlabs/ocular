@@ -41,7 +41,7 @@ Le garde egress agit **dans le navigateur**. Il ne contraint **pas** le trafic a
 Un processus qui **échappe au bac à sable Firefox**, ou une dépendance compromise, peut ouvrir des **sockets bruts** (le seccomp autorise `socket`/`connect`, nécessaires au navigateur) et joindre directement metadata/RFC1918 — **sans passer par le garde**. De plus, le conteneur de **capture batch** tourne sur le **bridge Docker par défaut** et les conteneurs de **session** sur un réseau `ocular-sessions` **non `internal`**.
 
 **À faire (choisir au moins un) :**
-- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie des réseaux runner vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `127/8`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast — **sauf** le strict nécessaire.
+- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie des réseaux runner vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `127/8`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast, et — en réseau IPv6/DNS64/NAT64 — le préfixe NAT64 `64:ff9b::/96` (+ `64:ff9b:1::/48`) qui traduit vers l'IPv4 interne — **sauf** le strict nécessaire. *(Le garde applicatif rejette déjà ces formes NAT64/IPv4-embedding depuis 2026-07-18 ; la règle L3 reste la défense en profondeur pour un canal hors-garde.)*
   ```
   iptables -I DOCKER-USER -s <subnet_runners> -d 169.254.0.0/16 -j DROP
   iptables -I DOCKER-USER -s <subnet_runners> -d 10.0.0.0/8      -j DROP

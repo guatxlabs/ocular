@@ -6,6 +6,32 @@ from urllib.parse import urlsplit
 
 _ALLOWED_SCHEMES = {"http", "https"}
 
+# Préfixes NAT64 (RFC 6052 / RFC 8215) : une IPv6 dans ces plages traduit vers
+# une IPv4. Le préfixe « well-known » /96 encode l'IPv4 dans les 32 bits de
+# poids faible (décodable). Le préfixe « à usage local » /48 encode l'IPv4 à un
+# offset dépendant de la longueur de préfixe (non décodé de façon fiable ici).
+_NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
+_NAT64_LOCAL_USE = ipaddress.ip_network("64:ff9b:1::/48")
+
+
+def _embedded_ipv4(
+    addr: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | None:
+    """IPv4 réellement jointe encapsulée dans une IPv6 (IPv4-mapped `::ffff:x`,
+    6to4 `2002::`, ou NAT64 well-known `64:ff9b::/96`), sinon `None`. Défait les
+    contournements SSRF où une IPv6 classée « globale » par `is_global` traduit
+    en fait vers une IPv4 interne (ex. `64:ff9b::a9fe:a9fe` -> `169.254.169.254`,
+    le service de metadata cloud, en réseau DNS64/NAT64)."""
+    if not isinstance(addr, ipaddress.IPv6Address):
+        return None
+    if addr.ipv4_mapped is not None:
+        return addr.ipv4_mapped
+    if addr.sixtofour is not None:
+        return addr.sixtofour
+    if addr in _NAT64_WELL_KNOWN:
+        return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+    return None
+
 
 def is_ip_allowed(ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Source unique de vérité pour la décision IP SSRF.
@@ -34,6 +60,17 @@ def is_ip_allowed(ip: str | ipaddress.IPv4Address | ipaddress.IPv6Address) -> bo
     # découverte internes (SSDP 239.255.255.250, mDNS ff02::fb, ...). On les
     # rejette explicitement (durcissement audit 3g I1) — cohérent avec le
     # docstring ci-dessus qui annonçait déjà le rejet du multicast.
+
+    # Anti-bypass NAT64/IPv4-embedding : une IPv6 « globale » peut traduire vers
+    # une IPv4 interne. On décide alors sur l'IPv4 réellement jointe (récursif).
+    embedded = _embedded_ipv4(addr)
+    if embedded is not None:
+        return is_ip_allowed(embedded)
+    # NAT64 à usage local (/48) : offset d'encodage v4 dépendant du préfixe
+    # (RFC 6052), non décodé ici -> rejet prudent (préfixe de traduction, jamais
+    # une cible de fetch directe légitime).
+    if isinstance(addr, ipaddress.IPv6Address) and addr in _NAT64_LOCAL_USE:
+        return False
     return addr.is_global and not addr.is_multicast
 
 
