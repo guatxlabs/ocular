@@ -40,3 +40,50 @@ def test_get_logger_defaults_to_stderr_never_stdout():
     )
     assert _sys.stderr in streams, "le flux de log par défaut doit être stderr"
     assert logger.name == "ocular.regression-stream-check"
+
+
+# --- Défaut D : un OCULAR_LOG_LEVEL invalide crashait TOUT à l'import --------
+# `root.setLevel(log_level())` sans validation : `OCULAR_LOG_LEVEL=verbose`
+# -> `ValueError: Unknown level: 'VERBOSE'`. Comme `get_logger` est appelé au
+# NIVEAU MODULE partout (broker, web, engine), l'import du système entier
+# échouait -> crashloop sans le moindre indice sur la cause.
+
+import importlib
+
+import pytest
+
+import ocular_settings
+
+
+def _reload_logging(monkeypatch, raw):
+    """Recharge `ocular_logging` (l'état `_CONFIGURED` est global) avec la
+    valeur d'env donnée, et retourne le logger racine 'ocular'."""
+    monkeypatch.setenv("OCULAR_LOG_LEVEL", raw)
+    import ocular_logging
+    mod = importlib.reload(ocular_logging)
+    mod.get_logger("niveau-check")
+    return logging.getLogger("ocular")
+
+
+@pytest.mark.parametrize("raw", ["verbose", "trace", "", "  ", "42x", "DEBUGG"])
+def test_invalid_log_level_falls_back_to_info_instead_of_crashing(monkeypatch, raw):
+    root = _reload_logging(monkeypatch, raw)  # ne doit PAS lever
+    assert root.level == logging.INFO, (
+        f"RÉGRESSION défaut D : OCULAR_LOG_LEVEL={raw!r} doit retomber sur INFO"
+    )
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("DEBUG", logging.DEBUG),
+    ("debug", logging.DEBUG),
+    ("  WARNING  ", logging.WARNING),
+    ("error", logging.ERROR),
+    ("critical", logging.CRITICAL),
+])
+def test_valid_log_levels_are_still_honoured(monkeypatch, raw, expected):
+    assert _reload_logging(monkeypatch, raw).level == expected
+
+
+def test_log_level_accessor_strips_and_never_raises(monkeypatch):
+    monkeypatch.setenv("OCULAR_LOG_LEVEL", "  debug \n")
+    assert ocular_settings.log_level() == "DEBUG"

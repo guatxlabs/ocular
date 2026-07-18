@@ -7,6 +7,40 @@ from ocular_settings import log_level
 
 _CONFIGURED = False
 
+# Repli quand le niveau demandé est inconnu. JAMAIS d'exception ici : `get_logger`
+# est appelé au NIVEAU MODULE dans le broker, le web et l'engine — un
+# `setLevel("VERBOSE")` levait `ValueError: Unknown level` et faisait donc échouer
+# l'import du système ENTIER, soit un crashloop sans le moindre indice sur la cause.
+_DEFAULT_LEVEL = logging.INFO
+
+# Allowlist de repli pour les runtimes sans `logging.getLevelNamesMapping()`
+# (ajouté en 3.11) — la source de vérité reste le mapping du module `logging`.
+_FALLBACK_LEVELS = {
+    "CRITICAL": logging.CRITICAL,
+    "FATAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARN": logging.WARNING,
+    "WARNING": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+    "NOTSET": logging.NOTSET,
+}
+
+
+def resolve_level(name: str) -> int:
+    """Traduit un nom de niveau en entier `logging`, avec repli sur INFO si le
+    nom est inconnu, vide, ou non textuel. Ne lève jamais : une variable
+    d'environnement mal saisie doit dégrader la VERBOSITÉ, jamais empêcher le
+    service de démarrer."""
+    try:
+        known = logging.getLevelNamesMapping()  # type: ignore[attr-defined]
+    except AttributeError:  # < 3.11
+        known = _FALLBACK_LEVELS
+    if not isinstance(name, str):
+        return _DEFAULT_LEVEL
+    level = known.get(name.strip().upper())
+    return level if isinstance(level, int) else _DEFAULT_LEVEL
+
 
 def get_logger(name: str, stream=None) -> logging.Logger:
     """Logger applicatif. Le flux par défaut est **stderr**, JAMAIS stdout.
@@ -30,6 +64,6 @@ def get_logger(name: str, stream=None) -> logging.Logger:
             "%(asctime)s %(levelname)s %(name)s %(message)s"))
         root = logging.getLogger("ocular")
         root.handlers[:] = [handler]
-        root.setLevel(log_level())
+        root.setLevel(resolve_level(log_level()))
         _CONFIGURED = True
     return logging.getLogger("ocular." + name)
