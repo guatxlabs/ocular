@@ -202,9 +202,29 @@ def set_analyst_verdict(
     return cur.rowcount > 0
 
 
-def list_all(conn) -> list[dict]:
+_SORTABLE = {"saved_at", "triage_score"}
+_ORDERS = {"asc", "desc"}
+_BANDS = {"low", "medium", "high"}
+_BAND_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def list_all(conn, *, sort: str = "saved_at", order: str = "desc",
+             min_band: Optional[str] = None) -> list[dict]:
+    if sort not in _SORTABLE or order not in _ORDERS:
+        raise ValueError("tri invalide")
+    if min_band is not None and min_band not in _BANDS:
+        raise ValueError("bande invalide")
+    where, params = "", []
+    if min_band is not None:
+        allowed = [b for b, rank in _BAND_RANK.items() if rank >= _BAND_RANK[min_band]]
+        where = " WHERE triage_band IN (%s)" % ",".join("?" * len(allowed))
+        params = allowed
+    # tri secondaire par id desc pour un ordre stable ; NULLs de triage en fin.
+    direction = "DESC" if order == "desc" else "ASC"
+    order_sql = f"{sort} {direction}, id DESC"
     rows = conn.execute(
-        f"SELECT {_META_COLUMNS} FROM saved_analysis ORDER BY id DESC"
+        f"SELECT {_META_COLUMNS} FROM saved_analysis{where} ORDER BY {order_sql}",
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 
