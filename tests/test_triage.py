@@ -23,3 +23,14 @@ def test_result_with_triage_roundtrips():
     again = OcularResult(**dumped)
     assert again.triage.score == 72
     assert again.triage.signals[0].weight == 35.0
+
+
+from engine.triage_weights import BUILTIN
+
+
+def test_builtin_shape():
+    assert BUILTIN["version"] == "builtin-1"
+    assert 0 <= BUILTIN["bands"]["medium"] < BUILTIN["bands"]["high"] <= 100
+    for key, (weight, label) in BUILTIN["signals"].items():
+        assert isinstance(key, str) and isinstance(weight, (int, float))
+        assert isinstance(label, str) and label
