@@ -1,3 +1,5 @@
+import logging
+
 import fakeredis
 
 from broker.sessions import build_session_args, launch_session, reap, stop_session
@@ -306,3 +308,60 @@ def test_launch_session_survives_network_create_failure(monkeypatch):
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
     assert launch_session("s1") == "ocular-sess-s1"
+
+
+def test_launch_session_survives_docker_run_failure(monkeypatch):
+    # 3e chemin best-effort : un `docker run` en échec ne doit pas lever non
+    # plus — le nom est toujours retourné, le poll de santé côté web décidera.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "run", "-d"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"boom"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
+
+
+def _create_fails_with(stderr: bytes):
+    """fake subprocess.run où SEUL `docker network create` échoue, avec le
+    stderr fourni (les deux autres commandes best-effort réussissent, donc
+    tout warning capturé provient forcément du chemin `network create`)."""
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "create"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": stderr})()
+    return fake_run
+
+
+def test_launch_session_network_create_warning_only_when_not_already_exists(monkeypatch, caplog):
+    """Exigence explicite du plan : PAS de warning quand le réseau existe déjà
+    (relance idempotente d'une session), MAIS un warning distinctif quand
+    l'échec est réel (pool d'adresses Docker épuisé). Cette double face garde
+    la comparaison de sous-chaîne sur un message Docker non contractuel : la
+    supprimer ferait passer chaque relance pour une erreur.
+
+    Capture : le logger est `ocular.broker.sessions` (get_logger préfixe
+    `ocular.`) et `propagate` reste à True, donc caplog le voit dès qu'on
+    abaisse le niveau sur ce logger précis."""
+    logger_name = sessions_mod.log.name
+    assert logger_name == "ocular.broker.sessions"  # préfixe posé par get_logger
+
+    # Face 1 : réseau déjà présent -> silence complet.
+    monkeypatch.setattr(sessions_mod.subprocess, "run",
+                        _create_fails_with(b"Error response from daemon: network with name ocular-sess-net-s1 already exists"))
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        assert launch_session("s1") == "ocular-sess-s1"
+    assert not [r for r in caplog.records if "network create failed" in r.getMessage()]
+
+    caplog.clear()
+
+    # Face 2 : pool d'adresses épuisé -> warning émis ET distinctif.
+    monkeypatch.setattr(sessions_mod.subprocess, "run",
+                        _create_fails_with(b"could not find an available predefined subnet"))
+    with caplog.at_level(logging.WARNING, logger=logger_name):
+        assert launch_session("s1") == "ocular-sess-s1"
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING and "network create failed" in r.getMessage()]
+    assert len(warnings) == 1
+    # message distinctif : il oriente vers le pool d'adresses Docker
+    assert "pool d'adresses" in warnings[0]
+    assert "default-address-pools" in warnings[0]
+    assert "could not find an available predefined subnet" in warnings[0]
