@@ -81,8 +81,18 @@ export function renderSaved(app) {
     el('option', { value: 'saved_at' }, 'date'),
     el('option', { value: 'triage_score' }, 'priorité'),
   ]);
+  // Filtre de priorité (min_band) : « toutes » n'envoie aucun param (inclut les
+  // analyses non triées, band NULL) ; une bande minimale filtre côté serveur
+  // (GET /saved?min_band=…) et EXCLUT donc les analyses sans triage.
+  const bandSelect = el('select.saved-band', {}, [
+    el('option', { value: '' }, 'toutes'),
+    el('option', { value: 'low' }, 'triées (≥ basse)'),
+    el('option', { value: 'medium' }, '≥ moyenne'),
+    el('option', { value: 'high' }, 'haute'),
+  ]);
   app.appendChild(el('div.saved-controls', {}, [
     el('label.saved-sort-label', {}, ['trier : ', sortSelect]),
+    el('label.saved-band-label', {}, ['priorité : ', bandSelect]),
   ]));
 
   const host = el('div');
@@ -91,9 +101,13 @@ export function renderSaved(app) {
 
   async function refresh() {
     const sort = sortSelect.value;
+    const minBand = bandSelect.value;
+    const params = {};
+    if (sort && sort !== 'saved_at') params.sort = sort;
+    if (minBand) params.min_band = minBand;
     let rows;
-    // sort par défaut (date) -> appel sans param pour préserver GET /saved nu.
-    try { rows = await (sort && sort !== 'saved_at' ? listSaved({ sort }) : listSaved()); }
+    // aucun param (tri=date, filtre=toutes) -> appel nu pour préserver GET /saved.
+    try { rows = await (Object.keys(params).length ? listSaved(params) : listSaved()); }
     catch (ex) {
       if (ex instanceof Unauthorized) return;
       host.replaceChildren(el('div.card', {}, [el('div.errbox', {}, String(ex.message || ex))]));
@@ -130,6 +144,7 @@ export function renderSaved(app) {
   }
 
   sortSelect.addEventListener('change', refresh);
+  bandSelect.addEventListener('change', refresh);
   refresh();
 
   return null;
