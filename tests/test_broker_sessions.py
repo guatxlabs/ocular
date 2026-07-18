@@ -237,6 +237,23 @@ def test_purge_session_results_removes_only_that_sessions_sesscap_keys():
     assert _keys(r) == {"ocular:result:sesscap-s2-cccc", "ocular:result:job-normal"}
 
 
+def test_purge_session_results_never_globs_across_sessions():
+    """Défaut E (sécurité) : `scan_iter(match=...)` prend un GLOB Redis. Un
+    session_id contenant `*` (ou `?`, `[...]`) élargissait le motif à
+    `ocular:result:sesscap-*-*` -> purge des captures éphémères de TOUTES les
+    sessions actives, tous analystes confondus. `purge_session_results` ne doit
+    supprimer QUE les clés de la session LITTÉRALEMENT nommée ainsi."""
+    seeded = [
+        "ocular:result:sesscap-s1-aaaa",
+        "ocular:result:sesscap-s2-bbbb",
+        "ocular:result:job-normal",
+    ]
+    for hostile in ("*", "?", "[a-z]1", "s*"):
+        r = _fake_redis(seeded)
+        assert purge_session_results(r, hostile) == 0
+        assert _keys(r) == set(seeded), f"purge élargie par {hostile!r}"
+
+
 def test_purge_session_results_best_effort_on_error(monkeypatch):
     r = _fake_redis(["ocular:result:sesscap-s1-x"])
 

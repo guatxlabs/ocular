@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import secrets
 import time
 import uuid
@@ -327,6 +328,27 @@ def explain_job(job_id: str, queue: RedisJobQueue = Depends(get_queue)) -> dict:
 
 _SESSION_POLL_INTERVAL = 0.5
 
+# Gabarit EXACT des identifiants produits par `create_session`
+# ("sess-" + uuid4().hex[:12]). Toute route prenant un `session_id` le filtre
+# par ici AVANT de le transmettre au broker ou au registre : le broker
+# interpole l'identifiant dans un motif `SCAN MATCH` Redis (un GLOB), donc un
+# `*` accepté ici purgeait les captures éphémères de TOUTES les sessions
+# actives, tous analystes confondus (défaut E).
+_SESSION_ID_RE = re.compile(r"sess-[0-9a-f]{12}")
+
+
+def _is_session_id(session_id: str) -> bool:
+    return bool(_SESSION_ID_RE.fullmatch(session_id))
+
+
+def _checked_session_id(session_id: str) -> str:
+    """404 (jamais 400/422) sur un identifiant hors gabarit : un id impossible
+    à produire dénote une session qui n'existe pas — même réponse qu'un id bien
+    formé mais inconnu, donc rien à distinguer pour un appelant qui sonderait."""
+    if not _is_session_id(session_id):
+        raise HTTPException(status_code=404, detail="session inconnue")
+    return session_id
+
 
 def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
     """Poll d'abord le registre (écrit par le broker une fois le conteneur
@@ -431,6 +453,7 @@ def delete_session(
     registry: SessionRegistry = Depends(get_session_registry),
     cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
 ) -> dict:
+    session_id = _checked_session_id(session_id)
     cmd_queue.enqueue_cmd("stop", session_id)
     registry.delete(session_id)
     log.info("session delete session_id=%s", session_id)
@@ -451,6 +474,7 @@ def capture_session(
     que le broker, factorisée dans `engine.artifacts`) et le résultat léger
     dans Redis comme un job normal (récupérable ensuite via
     `GET /jobs/{job_id}`), puis renvoie ce résultat."""
+    session_id = _checked_session_id(session_id)
     sess = registry.get(session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="session inconnue")
@@ -493,6 +517,7 @@ def session_live(
     réseau + analyse statique en continu, canal données séparé du flux
     pixels VNC. Même schéma d'accès que `capture_session` (secret conteneur
     lu au registre, jamais régénéré ici, jamais renvoyé/loggé)."""
+    session_id = _checked_session_id(session_id)
     sess = registry.get(session_id)
     if sess is None:
         raise HTTPException(status_code=404, detail="session inconnue")
@@ -592,6 +617,13 @@ async def session_ws_proxy(
     sous-protocole (token HORS URL), fail-closed AVANT accept(), et le
     sous-protocole renvoyé au client est TOUJOURS "binary" seul — jamais le
     token. Rien de ceci n'est journalisé (ni token, ni en-tête)."""
+    # Même grille que les routes HTTP de session, appliquée AVANT toute
+    # interrogation du registre (fail-closed en entrée, pas par accident
+    # d'authentification).
+    if not _is_session_id(sid):
+        await websocket.close(code=1008)
+        return
+
     token = _extract_ws_token(websocket)
     if not token or not registry.valid_token(sid, token):
         await websocket.close(code=1008)
