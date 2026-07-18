@@ -55,9 +55,27 @@ Un processus qui **échappe au bac à sable Firefox**, ou une dépendance compro
 Le garde résout **chaque** nom demandé (même ceux qu'il va bloquer) via le resolver du conteneur → une page hostile peut **exfiltrer par requêtes DNS** (`<données>.exfil.attaquant.com`) et sonder des noms internes, **même si le CONNECT TCP est ensuite refusé**.
 **À faire :** restreindre le `:53` sortant à un resolver contrôlé (loguant/allowlistant), ou `--dns <resolver_contrôlé>` sur les runners. Non fermable en Python seul.
 
-### 2.3 Isolation inter-sessions & VNC (HIGH)
-Le serveur VNC (`x11vnc`) n'a **pas de mot de passe** et `websockify` écoute sur `0.0.0.0:6080` **dans le conteneur** ; tous les conteneurs de session partagent `ocular-sessions` **sans isolation mutuelle**. Le proxy `web` valide bien le token — mais un **conteneur de session compromis** pourrait scanner le sous-réseau et se connecter **directement** au `:6080` d'une autre session (vue + **injection clavier/souris** dans le Camoufox d'un autre analyste), en contournant `web`.
-**À faire :** isoler les conteneurs de session entre eux au L3 (un réseau par session, ou pare-feu session↔session). **Suivi code recommandé** : mot de passe VNC par session (dérivé du secret de session).
+### 2.3 Isolation inter-sessions & VNC — ✅ FERMÉ DANS LE CODE (2026-07-18)
+Chaque session interactive vit désormais sur son **propre réseau docker**
+(`ocular-sess-net-{id}`), auquel le broker attache dynamiquement le conteneur
+web. Deux sessions sont sur des réseaux **disjoints** : un conteneur de session
+compromis ne peut plus joindre le `:6080` (websockify, sans auth propre) ni le
+`:8090` d'un pair. Prouvé par `tests/test_session_isolation_integration.py`.
+
+**PRÉREQUIS DE DÉPLOIEMENT — pool d'adresses Docker.** Chaque session consomme
+un sous-réseau du pool d'adresses local. Le pool **par défaut** de Docker
+(`base 172.17.0.0/12, size 16`) ne fournit qu'une poignée de réseaux `/16` —
+avec `OCULAR_MAX_SESSIONS` à 25, une charge soutenue peut **l'épuiser**
+(`docker network create` échoue, la session part en 504 — fail-safe mais
+dégradé, et le broker logue `session network create failed … pool d'adresses
+Docker épuisé ?`). **À faire** : élargir le pool dans `/etc/docker/daemon.json`,
+par ex.
+```json
+{"default-address-pools":[{"base":"172.16.0.0/12","size":24},
+                          {"base":"10.200.0.0/16","size":24}]}
+```
+(des `/24` donnent des centaines de réseaux), **ou** abaisser
+`OCULAR_MAX_SESSIONS`. Redémarrer le démon Docker après modification.
 
 ### 2.4 Redis (MEDIUM)
 Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topologie : Redis n'est pas sur `ocular-sessions`). **À faire :** poser `requirepass`/ACL et mettre le secret dans `REDIS_URL` (défense en profondeur des tokens/secrets au repos).
@@ -78,7 +96,8 @@ Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant 
 - [ ] `OCULAR_REQUIRE_EGRESS_GUARD=1` (refus fail-closed si garde off).
 - [ ] Filtrage **egress L3** (DOCKER-USER DROP metadata+RFC1918, ou réseau `internal` + egress-proxy) — §2.1.
 - [ ] **DNS** sortant restreint à un resolver contrôlé — §2.2.
-- [ ] **Isolation inter-sessions** (réseau par session / pare-feu) — §2.3.
+- ~~**Isolation inter-sessions** (réseau par session / pare-feu)~~ — ✅ fermé dans le code (réseau docker par session), §2.3.
+- [ ] **Pool d'adresses Docker** élargi (`default-address-pools`) ou `OCULAR_MAX_SESSIONS` abaissé — §2.3.
 - [ ] **Redis** avec `requirepass` — §2.4.
 - [ ] `web` **jamais exposé en direct** : derrière un reverse-proxy authentifié qui strippe les en-têtes d'identité clients ; garder `OCULAR_TOKEN` comme filet ; pare-feu session→web — §2.5.
 - [ ] Dépendances **épinglées** + checksum Camoufox — §2.6.
