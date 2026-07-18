@@ -33,6 +33,14 @@ log = get_logger("broker")
 # en tête de ce module-là). Jamais 0 : `sleep(0)` = boucle folle à 100 % CPU.
 _FALLBACK_INTERVAL = 60
 
+# Cadence de la boucle des commandes de session. Le RYTHME réel vient du
+# `blpop(timeout=1)` BLOQUANT de `dequeue_cmd` — pas de ce sleep, qui n'existe
+# que pour respecter l'invariant de `_daemon_loop` (jamais `sleep(0)`, qui
+# ferait une boucle folle à 100 % CPU si `dequeue_cmd` rendait la main
+# instantanément, ce qui est le cas des doubles de test). 50 ms est invisible
+# face aux ~0,6-3 s de `launch_session`.
+_SESSION_CMD_INTERVAL = 0.05
+
 
 def error_result(job_id: str, exc: Exception) -> str:
     """Résultat JSON TOUJOURS valide pour un job échoué (le message d'exception
@@ -241,10 +249,87 @@ def _start_sweeper(client) -> threading.Thread:
     return t
 
 
+def _consume_session_cmd(cmd_queue: SessionCmdQueue, registry: SessionRegistry) -> None:
+    """UN tour de la boucle des commandes de session : dépile (bloquant ~1 s)
+    puis traite. Les deux gardes viennent TELS QUELS de l'ancienne boucle
+    unique de `run_forever` et doivent le rester :
+
+    - le DÉPILAGE est gardé séparément du traitement, parce que `json.loads`
+      a lieu dans `dequeue_cmd` : une commande corrompue levait sinon jusqu'au
+      `while True` et ARRÊTAIT le broker. L'élément fautif est déjà consommé
+      par `blpop` (pas de boucle infinie dessus) et il est journalisé SANS son
+      contenu brut, qui peut porter un token de session ou le secret conteneur ;
+    - le TRAITEMENT est gardé pour que le broker SURVIVE à une commande en
+      échec (Docker qui hoquette sur `launch_session`, Redis en vrac).
+
+    Extrait de `run_forever` pour pouvoir tourner dans son propre thread démon :
+    `process_one` est synchrone et lent (jusqu'à 90 s pour une capture, 180 s
+    pour un job scripté), et tant que les deux files partageaient la même
+    boucle, une commande de session déposée pendant un job attendait la fin de
+    ce job — au-delà du plafond `OCULAR_SESSION_READY_TIMEOUT` (30 s) que
+    `web.create_session` accorde à la disponibilité. Le client recevait alors
+    504 pendant que le broker lançait le conteneur malgré tout : un session_id
+    vivant perdu, donc un conteneur (~4 g) et un sous-réseau du pool Docker
+    retenus jusqu'à ce que le `stop` compensatoire soit lui-même dépilé."""
+    try:
+        cmd = cmd_queue.dequeue_cmd(timeout=1)
+    except Exception as exc:  # noqa: BLE001 - commande illisible : on l'abandonne
+        log.error("commande de session illisible ignorée err=%s", type(exc).__name__)
+        return
+    if cmd is None:
+        return
+    try:
+        process_session_cmd(cmd, registry)
+    except Exception as exc:  # le broker survit à une commande en échec
+        log.error("session cmd failed cmd=%s err=%s", cmd.get("action"), str(exc)[:200])
+
+
+def _session_cmd_loop(cmd_queue, registry, stop_event=None) -> None:
+    """Boucle de consommation des commandes de session (`launch`/`stop`),
+    désormais INDÉPENDANTE de la boucle des jobs. Même corps commun que le
+    reaper/GC/sweeper (`_daemon_loop`) : elle survit à une erreur imprévue,
+    relit son intervalle à chaque tour et ne dort jamais 0."""
+    _daemon_loop(
+        lambda: _consume_session_cmd(cmd_queue, registry),
+        lambda: _SESSION_CMD_INTERVAL,
+        "session cmd loop error",
+        stop_event=stop_event,
+    )
+
+
+def _start_session_cmds(client) -> threading.Thread:
+    """Démarre la consommation des commandes de session dans un thread démon
+    (n'empêche jamais l'arrêt du process broker). Réutilise le client Redis
+    déjà créé par `run_forever` (pas de connexion supplémentaire).
+
+    UN SEUL thread, délibérément : les commandes de session restent donc
+    sérialisées ENTRE ELLES, exactement comme avant, et le broker ne lance
+    jamais deux conteneurs de session à la fois. Le plafond de sessions
+    concurrentes (`OCULAR_MAX_SESSIONS`) reste appliqué côté web, où il a le
+    contexte HTTP pour répondre 429 ; un sémaphore ici ne bornerait rien de
+    plus (le parallélisme introduit est de 1) et ne ferait que réintroduire de
+    l'attente dans le chemin qu'on vient de libérer."""
+    cmd_queue = SessionCmdQueue(client)
+    registry = SessionRegistry(client)
+    t = threading.Thread(
+        target=_session_cmd_loop,
+        args=(cmd_queue, registry),
+        daemon=True,
+        name="ocular-session-cmds",
+    )
+    t.start()
+    return t
+
+
 def run_forever() -> None:
+    # Client Redis PARTAGÉ par la boucle de jobs et les 4 threads démon. C'est
+    # sûr : `redis.Redis` sert chaque commande via un `ConnectionPool` verrouillé
+    # (une connexion est prise puis rendue par appel) et n'est déclaré non
+    # thread-safe QUE construit avec `single_connection_client=True`, ce qui
+    # n'est pas le cas ici. Les pipelines WATCH de `SessionRegistry`
+    # (`_hset_if_alive`) prennent eux aussi leur propre connexion, par appel.
     client = redis.Redis.from_url(redis_url())
     queue = RedisJobQueue(client)
-    cmd_queue = SessionCmdQueue(client)
     registry = SessionRegistry(client)
     # Balayage des conteneurs de session orphelins AVANT de servir : nettoie les
     # résidus d'un crash précédent ou d'un `compose down` (conteneurs lancés
@@ -259,12 +344,18 @@ def run_forever() -> None:
     # partiel), et il retiendrait un sous-réseau du pool Docker jusqu'au prochain
     # redémarrage si le balayage restait cantonné au démarrage.
     _start_sweeper(client)
+    # …et les commandes de session dans LEUR PROPRE thread. Elles partageaient
+    # cette boucle-ci, dont chaque tour traite un job de façon SYNCHRONE et
+    # LENTE (`process_one` : docker run du runner + chargement + capture,
+    # jusqu'à 90 s en capture et 180 s en scripté). Des timeouts de dépilage
+    # courts n'y changeaient rien — ce n'est pas le dépilage qui bloquait, mais
+    # le traitement entre deux dépilages — et `web.create_session` abandonnait
+    # au bout d'`OCULAR_SESSION_READY_TIMEOUT` (30 s) en renvoyant 504, alors
+    # que le broker finissait par lancer le conteneur : session_id vivant perdu
+    # côté client, conteneur ~4 g + sous-réseau Docker retenus entre-temps.
+    _start_session_cmds(client)
     while True:
-        # Timeouts courts (au lieu d'un unique blpop bloquant longtemps sur
-        # `ocular:jobs`) pour que la file de commandes de session ne soit
-        # jamais affamée par un flux de jobs (et inversement) : chaque tour
-        # attend au plus ~2s au total avant de reboucler.
-        # Le DÉPILAGE lui-même est gardé : la désérialisation (pydantic `Job`)
+        # Le DÉPILAGE est gardé : la désérialisation (pydantic `Job`)
         # a lieu dans `dequeue`, hors du `try` de traitement ci-dessous. Un seul
         # élément corrompu en file (champ requis manquant, contenu non-JSON)
         # remontait donc jusqu'au `while True` et ARRÊTAIT le process broker —
@@ -290,18 +381,6 @@ def run_forever() -> None:
                     queue.set_result(job.job_id, error_result(job.job_id, exc))
                 except Exception:  # noqa: BLE001 - Redis encore en vrac : on abandonne ce job proprement
                     pass
-        # Même garde côté commandes de session : `json.loads` a lieu dans
-        # `dequeue_cmd`, hors du `try` de traitement (cf. commentaire ci-dessus).
-        try:
-            cmd = cmd_queue.dequeue_cmd(timeout=1)
-        except Exception as exc:  # noqa: BLE001 - commande illisible : on l'abandonne
-            log.error("commande de session illisible ignorée err=%s", type(exc).__name__)
-            continue
-        if cmd is not None:
-            try:
-                process_session_cmd(cmd, registry)
-            except Exception as exc:  # le broker survit à une commande en échec
-                log.error("session cmd failed cmd=%s err=%s", cmd.get("action"), str(exc)[:200])
 
 
 if __name__ == "__main__":
