@@ -677,3 +677,97 @@ def test_submit_400_distinguishes_dns_failure_from_ssrf_block():
         # api.js expose bien le détail serveur pour les deux flux
     api = open("web/ui/api.js").read()
     assert api.count("e.detail = detail") >= 2  # submitJob ET createSession
+
+
+# =============================================================================
+# Création de session ASYNCHRONE : 202 + sondage + nettoyage obligatoire
+# =============================================================================
+
+def test_api_exposes_the_readiness_probe_and_its_poll_helper():
+    # `POST /sessions` répond 202 « accepté », pas « prête » : le client DOIT
+    # disposer d'un moyen de sonder `GET /sessions/{id}`.
+    js = open("web/ui/api.js").read()
+    assert "export async function getSession(" in js
+    assert "authFetch('/sessions/' + encodeURIComponent(id))" in js
+    assert "export async function pollSessionReady(" in js
+
+
+def test_poll_helper_signals_timeout_distinctly_from_http_errors():
+    # L'appelant doit pouvoir distinguer « jamais prête » (plafond client) d'un
+    # 404 (le serveur a renoncé et détruit la session) et d'une panne réseau :
+    # les trois mènent au nettoyage, mais pas au même message.
+    js = open("web/ui/api.js").read()
+    assert "e.timedOut = true" in js
+
+
+def test_interactive_polls_readiness_before_opening_the_vnc_stage():
+    js = open("web/ui/views/interactive.js").read()
+    assert "pollSessionReady(" in js
+    # la scène noVNC n'est ouverte qu'APRÈS le sondage
+    assert js.index("pollSessionReady(") < js.index("openStage();\n    },")
+
+
+def test_interactive_deletes_the_session_when_readiness_never_comes():
+    """LE point qui justifie tout le changement de contrat : le client détient
+    le `session_id` dès le 202, donc il PEUT — et DOIT — supprimer une session
+    qui ne devient jamais prête. Sans cela elle immobilise un conteneur (~4 Go)
+    et un sous-réseau du pool docker jusqu'à son TTL.
+
+    C'était impossible avec l'ancien contrat synchrone : la réponse n'arrivait
+    qu'une fois la session prête, donc un client qui renonçait entre-temps
+    n'apprenait jamais l'identifiant à supprimer."""
+    js = open("web/ui/views/interactive.js").read()
+    # un chemin d'abandon unique, qui supprime la session côté serveur
+    assert "const abandon = (msg) =>" in js
+    assert "deleteSession(out.session_id)" in js
+    # ... emprunté par l'échec de sondage (plafond / 404 / réseau) ...
+    assert "abandon(pollErrMsg(ex));" in js
+    # ... comme par la fermeture de la vue pendant l'attente.
+    assert js.count("abandon(null); return;") >= 2
+
+
+def test_interactive_shows_progress_during_the_startup_wait():
+    # ~7-9 s d'attente NORMALE : elle ne doit pas ressembler à un blocage.
+    js = open("web/ui/views/interactive.js").read()
+    assert "onState:" in js
+    assert "function openWaitLabel(" in js
+    assert "elapsedMs / 1000" in js       # compteur de secondes visible
+
+
+def test_interactive_no_longer_advertises_the_removed_504():
+    # `POST /sessions` ne rend plus 504 « session non prête » : il rend 202.
+    # Un message d'erreur sur un statut mort induirait en erreur.
+    js = open("web/ui/views/interactive.js").read()
+    assert "504" not in js
+
+
+def test_i18n_translates_the_dynamic_session_startup_strings():
+    """Les libellés de progression et d'échec sont posés APRÈS le rendu :
+    `i18nWalk` ne repasse pas, donc ils passent par `t()`. Toutes les langues
+    portées par le mécanisme (FR source + EN) doivent être renseignées."""
+    i18n = open("web/ui/i18n.js").read()
+    assert "export function t(" in i18n
+    for fr, en in (
+        ("Démarrage du conteneur…", "Starting the container…"),
+        ("Préparation du navigateur…", "Preparing the browser…"),
+    ):
+        assert f"'{fr}': '{en}'" in i18n, fr
+    # les trois messages d'échec de sondage sont traduits eux aussi
+    for en in (
+        "The session did not start in time",
+        "The session was interrupted before it was ready",
+        "Could not track the session start-up",
+    ):
+        assert en in i18n, en
+    view = open("web/ui/views/interactive.js").read()
+    assert "import { t } from '../i18n.js';" in view
+
+
+def test_ws_auth_still_goes_through_the_subprotocol_not_the_url():
+    """Garde-fou : le changement de contrat ne touche PAS l'authentification du
+    WebSocket noVNC, qui passe par le sous-protocole (anti-fuite logs/referrer)."""
+    js = open("web/ui/views/interactive.js").read()
+    assert "'ocular.session.' + token" in js
+    assert "wsProtocols" in js
+    # le token ne doit JAMAIS être interpolé dans l'URL du WS
+    assert "token" not in js[js.index("function wsUrlFor("):js.index("function wsUrlFor(") + 300]

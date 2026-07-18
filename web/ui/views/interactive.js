@@ -11,8 +11,10 @@
 //   • Anti-XSS : tout le contenu variable passe par des textNodes (el()/textContent),
 //     jamais innerHTML (seules les icônes statiques via iconNode le sont, dans core.js).
 import { el, iconNode, esc } from '../core.js';
+import { t } from '../i18n.js';
 import {
-  createSession, deleteSession, captureSession, liveSession, saveAnalysis, Unauthorized,
+  createSession, pollSessionReady, deleteSession, captureSession, liveSession,
+  saveAnalysis, Unauthorized,
 } from '../api.js';
 import { getToken } from '../state.js';
 import {
@@ -393,17 +395,52 @@ export function renderInteractive(app) {
       const spin = document.createElement('span');
       spin.className = 'spin';
       openBtn.replaceChildren(spin, document.createTextNode('Ouverture de la session…'));
+
+      // Contrat ASYNCHRONE : `POST /sessions` répond 202 en quelques
+      // millisecondes avec l'identifiant, PAS « prête ». On sonde ensuite la
+      // disponibilité (~7-9 s, c'est normal) en montrant une progression, puis
+      // on ouvre la scène noVNC.
+      let out;
       try {
-        const out = await createSession(body);
-        if (closed) { deleteSession(out.session_id).catch(() => {}); return; }
-        sessionId = out.session_id;
-        token = out.token;            // reste en mémoire — jamais persisté
-        openStage();
+        out = await createSession(body);
       } catch (ex) {
         if (ex instanceof Unauthorized) return;
         resetOpenBtn();
         showErr(openErrMsg(ex));
+        return;
       }
+
+      // À partir d'ICI la session EXISTE côté serveur : tout chemin de sortie
+      // qui n'ouvre pas la scène DOIT la supprimer, sinon elle immobilise un
+      // conteneur (~4 Go) et un sous-réseau jusqu'à son TTL. C'est précisément
+      // ce que l'ancien contrat synchrone rendait impossible : le client
+      // n'apprenait l'identifiant qu'APRÈS l'attente.
+      const abandon = (msg) => {
+        deleteSession(out.session_id).catch(() => {});   // best-effort, jamais bloquant
+        resetOpenBtn();
+        if (msg) showErr(msg);
+      };
+      if (closed) { abandon(null); return; }
+
+      try {
+        await pollSessionReady(out.session_id, {
+          isCancelled: () => closed,
+          onState: (state, elapsedMs) => {
+            openBtn.replaceChildren(spin, document.createTextNode(openWaitLabel(state, elapsedMs)));
+          },
+        });
+      } catch (ex) {
+        if (ex instanceof Unauthorized) return;
+        // Le sondage a échoué : plafond atteint, session détruite par le
+        // serveur (404), ou panne réseau. Dans TOUS ces cas on nettoie.
+        abandon(pollErrMsg(ex));
+        return;
+      }
+      if (closed) { abandon(null); return; }
+
+      sessionId = out.session_id;
+      token = out.token;            // reste en mémoire — jamais persisté
+      openStage();
     },
   }, [toggle, urlField, htmlField, el('div.formactions', {}, [openBtn])]);
 
@@ -421,9 +458,33 @@ export function renderInteractive(app) {
       if (ex.detail) return 'URL refusée : ' + ex.detail;
       return 'URL interdite : cible non publique (IP exposée / SSRF). Utilise une URL publique.';
     }
-    if (ex && ex.status === 504) return 'Session non prête — le conteneur n\'a pas démarré à temps.';
     if (ex && ex.status === 422) return 'Requête invalide (URL/HTML manquant ou trop volumineux).';
     return String((ex && ex.message) || ex);
+  }
+
+  // Libellé de progression pendant le sondage de disponibilité. Le démarrage
+  // dure ~7-9 s : sans retour visible, l'utilisateur croit à un blocage. Le
+  // libellé est traduit par `t()` AVANT concaténation du compteur — `i18nWalk`
+  // ne repasse pas après le rendu, et une chaîne déjà concaténée ne serait plus
+  // une clé exacte du dictionnaire.
+  function openWaitLabel(state, elapsedMs) {
+    const label = state === 'pending'
+      ? t('Démarrage du conteneur…')
+      : t('Préparation du navigateur…');
+    return label + ' (' + Math.round(elapsedMs / 1000) + ' s)';
+  }
+
+  // Échec du sondage. Dans tous les cas la session vient d'être SUPPRIMÉE par
+  // `abandon()` — le message le dit, pour que l'utilisateur sache qu'il ne
+  // laisse rien derrière lui.
+  function pollErrMsg(ex) {
+    if (ex && ex.timedOut) {
+      return t('La session n\'a pas démarré à temps — elle a été supprimée. Réessaie.');
+    }
+    if (ex && ex.status === 404) {
+      return t('La session a été interrompue avant d\'être prête — elle a été supprimée. Réessaie.');
+    }
+    return t('Impossible de suivre le démarrage de la session (réseau) — elle a été supprimée. Réessaie.');
   }
 
   // ---- scène live : canvas noVNC + barre d'action (Capturer / Fermer) ----
