@@ -38,18 +38,32 @@ Ce document distingue **ce qu'Ocular garantit dans son code** de **ce qui reste 
 Le garde egress agit **dans le navigateur**. Il ne contraint **pas** le trafic au niveau réseau. Les points suivants **ne peuvent pas** être fermés par le seul code d'Ocular — ils exigent des contrôles L3 au déploiement. **En réseau entreprise/prod, ils sont obligatoires.**
 
 ### 2.1 Filtrage egress L3 (CRITIQUE)
-Un processus qui **échappe au bac à sable Firefox**, ou une dépendance compromise, peut ouvrir des **sockets bruts** (le seccomp autorise `socket`/`connect`, nécessaires au navigateur) et joindre directement metadata/RFC1918 — **sans passer par le garde**. De plus, le conteneur de **capture batch** tourne sur le **bridge Docker par défaut** et les conteneurs de **session** sur un réseau `ocular-sessions` **non `internal`**.
+Un processus qui **échappe au bac à sable Firefox**, ou une dépendance compromise, peut ouvrir des **sockets bruts** (le seccomp autorise `socket`/`connect`, nécessaires au navigateur) et joindre directement metadata/RFC1918 — **sans passer par le garde**. De plus, le conteneur de **capture batch** tourne sur le **bridge Docker par défaut**, et chaque conteneur de **session** tourne sur un réseau docker **dédié, éphémère et non `internal`** (`ocular-sess-net-{id}`, créé au lancement de la session et détruit à son teardown).
+
+**⚠️ Conséquence directe sur l'écriture des règles.** Le sous-réseau d'un réseau de session est **alloué dynamiquement** par le pool d'adresses de Docker et le bridge hôte porte un nom volatil (`br-<hash>`) : **il n'existe aucun sous-réseau ni aucune interface stable à épingler pour le tier interactif**. Une règle écrite contre le sous-réseau d'un réseau nommé (l'ancien `ocular-sessions`) ou contre un `br-…` observé un jour donné **cesse silencieusement de couvrir les sessions** — le contrôle CRITIQUE dégénère alors en no-op, précisément sur la surface qui rend des pages hostiles.
+
+Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que vous fixez en §2.3 : tout réseau de session est, par construction, alloué **à l'intérieur** de ces bases. **Écrivez les règles contre les bases du pool, jamais contre un sous-réseau de réseau nommé.**
 
 **À faire (choisir au moins un) :**
-- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie des réseaux runner vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `127/8`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast, et — en réseau IPv6/DNS64/NAT64 — le préfixe NAT64 `64:ff9b::/96` (+ `64:ff9b:1::/48`) qui traduit vers l'IPv4 interne — **sauf** le strict nécessaire. *(Le garde applicatif rejette déjà ces formes NAT64/IPv4-embedding depuis 2026-07-18 ; la règle L3 reste la défense en profondeur pour un canal hors-garde.)*
+- Règles `DOCKER-USER` (iptables/nftables) **DROP** en sortie **des bases du pool d'adresses Docker** (`default-address-pools`, cf. §2.3) vers `169.254.0.0/16`, `10/8`, `172.16/12`, `192.168/16`, `127/8`, `100.64/10`, `fc00::/7`, `fe80::/10`, multicast, et — en réseau IPv6/DNS64/NAT64 — le préfixe NAT64 `64:ff9b::/96` (+ `64:ff9b:1::/48`) qui traduit vers l'IPv4 interne — **sauf** le strict nécessaire. *(Le garde applicatif rejette déjà ces formes NAT64/IPv4-embedding depuis 2026-07-18 ; la règle L3 reste la défense en profondeur pour un canal hors-garde.)*
+
+  Avec le pool d'exemple de §2.3 (`172.16.0.0/12` et `10.200.0.0/16`), une base par ligne `-s` :
   ```
-  iptables -I DOCKER-USER -s <subnet_runners> -d 169.254.0.0/16 -j DROP
-  iptables -I DOCKER-USER -s <subnet_runners> -d 10.0.0.0/8      -j DROP
-  iptables -I DOCKER-USER -s <subnet_runners> -d 172.16.0.0/12   -j DROP
-  iptables -I DOCKER-USER -s <subnet_runners> -d 192.168.0.0/16  -j DROP
+  # Base 1 du pool : 172.16.0.0/12  (couvre TOUT réseau de session qui y sera alloué)
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 169.254.0.0/16 -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 10.0.0.0/8      -j DROP
+  iptables -I DOCKER-USER -s 172.16.0.0/12 -d 192.168.0.0/16  -j DROP
+  # Base 2 du pool : 10.200.0.0/16
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 169.254.0.0/16 -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 10.0.0.0/8      -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 172.16.0.0/12   -j DROP
+  iptables -I DOCKER-USER -s 10.200.0.0/16 -d 192.168.0.0/16  -j DROP
   ```
+  *(Une base qui chevauche une destination bloquée — ici `10.200.0.0/16` dans `10/8`, ou `172.16.0.0/12` en `-d` de lui-même — se couvre elle-même : les sessions ne se joignent pas entre elles, ce qui est déjà la propriété garantie par le code en §2.3. Si votre plan d'adressage exige que les conteneurs se parlent, restreignez la destination plutôt que d'omettre la ligne.)*
 - **ou** réseau `internal: true` + un unique **conteneur egress-proxy** (le garde en sidecar) détenant la seule interface externe → chokepoint L3.
 - **ou** exécuter les runners dans un namespace réseau sans route vers l'interne.
+
+**Lien §2.1 ↔ §2.3 : le pool que vous fixez en §2.3 EST le périmètre des règles ci-dessus.** Les deux réglages ne sont pas indépendants — modifier `default-address-pools` sans réécrire les `-s` de `DOCKER-USER` remet le tier interactif hors périmètre.
 
 ### 2.2 Egress DNS (HIGH)
 Le garde résout **chaque** nom demandé (même ceux qu'il va bloquer) via le resolver du conteneur → une page hostile peut **exfiltrer par requêtes DNS** (`<données>.exfil.attaquant.com`) et sonder des noms internes, **même si le CONNECT TCP est ensuite refusé**.
@@ -77,11 +91,23 @@ par ex.
 (des `/24` donnent des centaines de réseaux), **ou** abaisser
 `OCULAR_MAX_SESSIONS`. Redémarrer le démon Docker après modification.
 
+**⚠️ Ce pool est aussi le périmètre du filtrage L3 de §2.1.** Les réseaux de
+session étant éphémères et alloués dynamiquement, il n'y a **pas** de
+sous-réseau stable à épingler : les bases que vous déclarez ici sont ce contre
+quoi les règles `DOCKER-USER` doivent être écrites (`-s <base du pool>`). **À
+faire :** après toute modification de `default-address-pools`, réécrire les
+règles de §2.1 — sinon les sessions sortent silencieusement du périmètre du
+contrôle CRITIQUE.
+
 ### 2.4 Redis (MEDIUM)
-Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topologie : Redis n'est pas sur `ocular-sessions`). **À faire :** poser `requirepass`/ACL et mettre le secret dans `REDIS_URL` (défense en profondeur des tokens/secrets au repos).
+Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topologie : Redis n'est sur **aucun réseau de session** — il vit sur le réseau `default` du compose, et les sessions vivent chacune sur leur propre réseau dédié). **À faire :** poser `requirepass`/ACL et mettre le secret dans `REDIS_URL` (défense en profondeur des tokens/secrets au repos).
 
 ### 2.5 Co-tenance plan de contrôle (MEDIUM)
-`web` (et actuellement le `broker`) sont joignables depuis `ocular-sessions`. `web` est protégé par l'auth Bearer, mais toute future faille pré-auth deviendrait un pivot. **À faire :** pare-feu session→`web:8000` ; ne pas exposer d'API du plan de contrôle au réseau de session au-delà du strict proxy.
+Depuis l'isolation réseau par session (2026-07-18), le résiduel se réduit au **seul `web`** :
+- le **`broker`** n'est attaché à **aucun** réseau de session — il se contente de créer le réseau, d'y lancer le conteneur et d'y attacher le `web` via le socket Docker. Un conteneur de session compromis **ne peut donc plus le joindre du tout** : il sort du périmètre de risque de cette section.
+- le **`web`** reste attaché à chaque réseau de session — c'est **nécessaire** au proxy interactif (relais RFB/noVNC vers `:6080`, pilotage `:8090`). Il est donc joignable depuis une session, protégé par l'auth Bearer ; toute future faille pré-auth deviendrait un pivot.
+
+**À faire :** pare-feu session→`web:8000` ; ne pas exposer d'API du plan de contrôle au réseau de session au-delà du strict proxy.
 
 ### 2.6 Chaîne d'approvisionnement (MEDIUM)
 Binaire Camoufox téléchargé au **build** sans vérification de checksum ; dépendances pip majoritairement non épinglées. **À faire :** épingler les versions + hashes, vérifier un checksum du binaire Camoufox. (Aucun téléchargement au **runtime** — vérifié.)

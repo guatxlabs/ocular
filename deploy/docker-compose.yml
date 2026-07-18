@@ -36,6 +36,12 @@ services:
       # Plafond de sessions interactives CONCURRENTES (anti-épuisement de
       # ressources : chaque session = un conteneur ~4g). Le web refuse (429)
       # au-delà. 0 = illimité. Lu par create_session.
+      # ⚠️ Chaque session consomme AUSSI un réseau docker dédié, donc un
+      # sous-réseau du pool d'adresses local. Le pool PAR DÉFAUT de Docker n'en
+      # fournit qu'une trentaine au total : à cette valeur de 25, l'épuisement
+      # n'est pas un cas extrême mais le nominal. Élargir `default-address-pools`
+      # dans /etc/docker/daemon.json (prérequis de déploiement, cf.
+      # `docs/DEPLOY-SECURITY.md` §2.3) ou abaisser cette valeur.
       OCULAR_MAX_SESSIONS: "${OCULAR_MAX_SESSIONS:-25}"
     read_only: true
     tmpfs: ["/tmp"]
