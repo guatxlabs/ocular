@@ -73,3 +73,8 @@ gc:
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null; true
 	rm -rf .coverage *.egg-info artifacts *.db *.db-* 2>/dev/null; true
+	# Caches d'outils : ils s'accumulent silencieusement (mypy à lui seul
+	# atteignait 12 Mo, soit plus que tout le source du dépôt). PAS .venv :
+	# c'est un environnement de dev délibéré, pas un cache — le supprimer
+	# depuis `clean` serait une surprise destructrice.
+	rm -rf .pytest_cache .mypy_cache .ruff_cache 2>/dev/null; true
