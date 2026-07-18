@@ -166,7 +166,9 @@ cible :
 - **Rendu pixels uniquement**, via la gateway web : le navigateur de l'analyste ouvre un
   WebSocket vers `web` (`/sessions/{id}/ws`, auth par sous-protocole — le jeton capability ne
   transite jamais dans l'URL ni les logs), qui relaie le flux RFB/noVNC depuis le conteneur de
-  session sur le réseau Docker interne `ocular-sessions`. Aucun DOM, aucun cookie, aucun
+  session, sur le réseau Docker **dédié à cette session** (`ocular-sess-net-{id}`, créé au
+  lancement et détruit au teardown ; le `web` y est attaché dynamiquement pour le seul besoin
+  du proxy). Aucun DOM, aucun cookie, aucun
   fichier téléchargé côté cible n'atteint jamais la machine de l'analyste — seulement une image.
 - **Presse-papiers coupé à la source** : le serveur VNC du conteneur tourne avec
   `x11vnc -noclipboard -nosetclipboard` (`runner_recon_vnc/entrypoint_vnc.sh`) — aucun texte ne
@@ -176,8 +178,15 @@ cible :
   le broker sans `-p`/`--publish` (`broker/sessions.py::build_session_args`) ; `session_server`
   (8090) et websockify/noVNC (6080) écoutent sur `0.0.0.0` uniquement parce qu'il n'y a rien à
   publier vers l'hôte — l'isolation vient de l'absence de mapping combinée au réseau interne
-  `ocular-sessions`, jamais d'un bind localhost. Le serveur VNC brut (5900) n'écoute lui QUE sur
+  **dédié à la session**, jamais d'un bind localhost. Le serveur VNC brut (5900) n'écoute lui QUE sur
   `localhost` à l'intérieur du conteneur ; seul websockify (même conteneur) y accède.
+- **Isolation inter-sessions** : chaque session obtient son **propre** réseau docker
+  (`ocular-sess-net-{id}`), créé par le broker au lancement et supprimé au teardown. Deux
+  sessions sont donc sur des réseaux **disjoints** : une session compromise ne peut pas joindre
+  le `:6080` (websockify, sans auth propre) ni le `:8090` d'un pair — elle ne le voit tout
+  simplement pas. Seul le `web` est attaché à chaque réseau de session (nécessaire au proxy) ;
+  le broker, lui, n'y est attaché à aucun. Prouvé par
+  `tests/test_session_isolation_integration.py`.
 - **Conteneur éphémère + reaper** : chaque session a une durée de vie bornée — TTL absolu
   (`OCULAR_SESSION_TTL`, 1800 s par défaut) et timeout d'inactivité (`OCULAR_SESSION_IDLE`,
   600 s), contrôlés par un reaper qui tourne dans le broker (thread démon, intervalle
