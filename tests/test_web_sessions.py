@@ -527,3 +527,29 @@ def test_create_session_allowed_under_max_sessions(monkeypatch):
                     token="tok0", now_iso="2026-07-18T10:00:00+00:00")
     r = client.post("/sessions", json={"url": "https://example.com"})
     assert r.status_code != 429
+
+
+def test_create_session_dns_failure_is_distinguishable(monkeypatch):
+    # Même distinction que sur /jobs : la création de session interactive valide
+    # l'URL par le même garde, et aplatissait donc la même panne DNS en un
+    # « url interdite » trompeur.
+    import socket as _socket
+
+    import engine.ssrf as ssrf_mod
+
+    c = _client(monkeypatch)[0]
+
+    def _boom(*_a, **_kw):
+        raise _socket.gaierror(-3, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(ssrf_mod.socket, "getaddrinfo", _boom)
+    r = c.post("/sessions", json={"url": "https://example.com"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "résolution DNS impossible"
+
+
+def test_create_session_policy_refusal_keeps_its_own_message(monkeypatch):
+    c = _client(monkeypatch)[0]
+    r = c.post("/sessions", json={"url": "http://127.0.0.1"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "url interdite"

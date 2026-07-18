@@ -333,3 +333,47 @@ def test_pinned_https_connection_keeps_cert_verification():
     ctx = _PinnedHTTPSConnection("llm.example.com", "93.184.216.34")._context
     assert ctx.verify_mode == ssl.CERT_REQUIRED
     assert ctx.check_hostname is True
+
+
+# --- Panne DNS vs refus de politique : deux causes, deux messages ---
+#
+# L'API aplatissait les deux en « url interdite ». Quand le DNS des conteneurs
+# est tombé (résolveur amont figé par Docker, injoignable après activation d'un
+# VPN sur l'hôte), CHAQUE capture répondait « url interdite » : le message
+# envoie chercher une règle SSRF inexistante au lieu d'une panne DNS.
+
+
+def _break_dns(monkeypatch):
+    import socket as _socket
+
+    import engine.ssrf as ssrf_mod
+
+    def _boom(*_a, **_kw):
+        raise _socket.gaierror(-3, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(ssrf_mod.socket, "getaddrinfo", _boom)
+
+
+def test_capture_dns_failure_is_distinguishable_from_policy_refusal(monkeypatch):
+    c = _client(monkeypatch)[0]
+    _break_dns(monkeypatch)
+    r = c.post("/jobs", json={"profile": "capture", "url": "https://example.com"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "résolution DNS impossible"
+
+
+def test_capture_policy_refusal_keeps_its_own_message(monkeypatch):
+    # Le pendant du test ci-dessus : une IP interne reste un refus de POLITIQUE,
+    # et ne doit surtout pas être maquillée en panne DNS.
+    c = _client(monkeypatch)[0]
+    r = c.post("/jobs", json={"profile": "capture", "url": "http://127.0.0.1"})
+    assert r.status_code == 400
+    assert r.json()["detail"] == "url interdite"
+
+
+def test_dns_failure_never_reflects_the_hostname(monkeypatch):
+    # Le nom d'hôte fourni par le client ne doit pas revenir dans la réponse.
+    c = _client(monkeypatch)[0]
+    _break_dns(monkeypatch)
+    r = c.post("/jobs", json={"profile": "capture", "url": "https://sentinelle-xyz.example"})
+    assert "sentinelle-xyz" not in r.text

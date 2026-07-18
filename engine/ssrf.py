@@ -6,6 +6,23 @@ from urllib.parse import urlsplit
 
 _ALLOWED_SCHEMES = {"http", "https"}
 
+
+class DnsResolutionError(ValueError):
+    """Le nom n'a PAS PU être résolu — panne d'infrastructure, pas décision de
+    sécurité. Distinct des refus de politique (scheme non autorisé, IP interne),
+    qui restent de simples `ValueError`.
+
+    Sous-classe de `ValueError` À DESSEIN : tous les appelants existants qui
+    attrapent `ValueError` continuent de fail-closed exactement comme avant.
+    Seuls ceux qui veulent distinguer les deux causes ont besoin de ce type.
+
+    Raison d'être : l'API aplatissait les deux cas en un unique « url interdite ».
+    Quand le DNS des conteneurs est tombé (résolveur amont figé par Docker au
+    démarrage, devenu injoignable après activation d'un VPN sur l'hôte), CHAQUE
+    capture échouait sur « url interdite » — message qui envoie l'opérateur
+    chercher une règle SSRF inexistante au lieu d'une panne DNS. Vécu pendant
+    l'audit du 2026-07-18, d'où ce type."""
+
 # Préfixes NAT64 (RFC 6052 / RFC 8215) : une IPv6 dans ces plages traduit vers
 # une IPv4. Le préfixe « well-known » /96 encode l'IPv4 dans les 32 bits de
 # poids faible (décodable). Le préfixe « à usage local » /48 encode l'IPv4 à un
@@ -153,12 +170,12 @@ def _resolve_ips(host: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Addres
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror as exc:
-        raise ValueError(f"résolution DNS impossible: {host!r}") from exc
+        raise DnsResolutionError(f"résolution DNS impossible: {host!r}") from exc
 
     ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     for family, _type, _proto, _canon, sockaddr in infos:
         addr = sockaddr[0]
         ips.append(ipaddress.ip_address(addr))
     if not ips:
-        raise ValueError(f"résolution DNS vide: {host!r}")
+        raise DnsResolutionError(f"résolution DNS vide: {host!r}")
     return ips

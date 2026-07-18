@@ -22,7 +22,7 @@ import saved_store
 from bus.queue import Job, RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
 from engine.artifacts import ref_to_filename, store_blobs
-from engine.ssrf import validate_capture_url
+from engine.ssrf import DnsResolutionError, validate_capture_url
 from engine.steps import StepValidationError, validate_steps
 from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
@@ -49,6 +49,13 @@ app = FastAPI(title="Ocular")
 log = get_logger("web")
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# Distinct d'« url interdite » (refus de POLITIQUE : scheme, IP interne). Ici
+# le nom n'a pas pu être RÉSOLU : panne d'infrastructure, rien à corriger dans
+# les règles de sécurité. Confondre les deux fait perdre un temps considérable
+# — quand le DNS des conteneurs est tombé, toutes les captures répondaient
+# « url interdite » et envoyaient chercher une règle SSRF inexistante.
+# Le nom d'hôte n'est PAS renvoyé (pas de réflexion de l'entrée client).
+_DNS_DETAIL = "résolution DNS impossible"
 _PROTECTED = ("/jobs", "/saved", "/sessions", "/auth")
 
 
@@ -239,6 +246,8 @@ def submit_job(req: JobRequest, queue: RedisJobQueue = Depends(get_queue)) -> Jo
         try:
             req.url = normalize_url(req.url)
             validate_capture_url(req.url)
+        except DnsResolutionError:
+            raise HTTPException(status_code=400, detail=_DNS_DETAIL)
         except ValueError:
             raise HTTPException(status_code=400, detail="url interdite")
     if req.profile == "analysis" and not req.html:
@@ -485,6 +494,8 @@ def create_session(
         try:
             req.url = normalize_url(req.url)
             validate_capture_url(req.url)
+        except DnsResolutionError:
+            raise HTTPException(status_code=400, detail=_DNS_DETAIL)
         except ValueError:
             raise HTTPException(status_code=400, detail="url interdite")
 
