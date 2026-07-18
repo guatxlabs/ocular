@@ -8,7 +8,7 @@ import redis
 
 from bus.queue import RESULT_PREFIX
 from engine.artifacts import filename_to_ref
-from ocular_settings import artifacts_dir
+from ocular_settings import artifacts_dir, redis_url
 
 
 def collect(artifacts_dir: str, client, min_age_seconds: int = 300) -> int:
@@ -45,6 +45,11 @@ def _refs_in(result_json: str) -> set[str]:
 
 
 if __name__ == "__main__":
-    c = redis.Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:6379"))
+    # Passe par l'accesseur commun, comme tout le reste du système : lire
+    # REDIS_URL en direct IGNORAIT OCULAR_REDIS_URL, donc un déploiement
+    # utilisant ce nom (prioritaire partout ailleurs) faisait pointer le GC
+    # vers un AUTRE Redis que celui du broker et du web — il n'y aurait vu
+    # aucun résultat, et aurait donc supprimé des artefacts encore référencés.
+    c = redis.Redis.from_url(redis_url())
     n = collect(artifacts_dir(), c)
     print(f"gc: {n} artefacts supprimés")
