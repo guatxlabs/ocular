@@ -166,15 +166,42 @@ Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que 
   pas** d'atteindre l'hôte sur son IP de passerelle. Ne la lisez pas comme une
   couverture complète de l'hôte.
 
-  **À faire — fermer `INPUT` depuis les bridges de session :**
+  Le mécanisme ci-dessus est **validé empiriquement** (2026-07-18, netns jetable) :
+  un `ctr → 10.200.5.1:9999` incrémente le compteur `INPUT` (4 paquets) et laisse
+  `FORWARD` **et** `DOCKER-USER` à **0**. La prémisse de tout ce paragraphe est donc exacte.
+
+  **À faire — fermer `INPUT` depuis les bridges de conteneurs :**
   ```sh
-  # Exception DNS D'ABORD si les conteneurs résolvent via la passerelle (voir ci-dessous).
-  # -I insère en tête : tapez le DROP d'abord, l'exception ensuite.
-  iptables -I INPUT -i br+ -j DROP
-  iptables -I INPUT -i br+ -p udp --dport 53 -j ACCEPT   # seulement si nécessaire
-  iptables -I INPUT -i br+ -p tcp --dport 53 -j ACCEPT   # (TCP : réponses tronquées)
+  # -I insère en TÊTE : on tape les DROP d'abord, les exceptions ENSUITE.
+  # docker0 est OBLIGATOIRE, pas optionnel : `br+` ne le matche pas (voir ci-dessous).
+  iptables -I INPUT -i br+     -j DROP
+  iptables -I INPUT -i docker0 -j DROP
+
+  # Exception conntrack — REQUISE, sinon vous cassez l'UI web d'Ocular (voir ci-dessous).
+  iptables -I INPUT -i br+     -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  iptables -I INPUT -i docker0 -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   ```
-  Quatre précisions **indispensables** avant de coller ça :
+  Vérifiez l'ordre obtenu avec `iptables -vnL INPUT --line-numbers` : les deux `ACCEPT`
+  conntrack doivent apparaître **avant** les deux `DROP`.
+
+  > **🔴 L'exception conntrack n'est PAS facultative — sans elle la règle casse Ocular.**
+  > Mesuré en netns jetable (2026-07-18). `-I INPUT` insère en **position 1**, donc
+  > **avant** le `-m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT` que la plupart
+  > des distributions posent en tête d'`INPUT` : le DROP prend la main sur ce filet et
+  > jette **tout le trafic retour** des connexions initiées par l'**hôte** vers un
+  > conteneur. Ce trafic retour est délivré localement, donc il traverse `INPUT` en
+  > entrant par le bridge — exactement comme le flux qu'on veut bloquer.
+  >
+  > Concrètement, avec le seul `-i br+ -j DROP` : `hôte → conteneur:8080` **casse**, et
+  > surtout **`web` publie `8000:8000`** (cf. `deploy/docker-compose.yml`) — un
+  > `curl http://127.0.0.1:8000` depuis l'hôte part en `OUTPUT`, est DNATé vers le
+  > conteneur, et la **réponse** rentre par le bridge → `INPUT` → **DROP**. Reproduit :
+  > l'UI web d'Ocular devient injoignable pour l'opérateur (timeout, pas d'erreur claire).
+  > Avec l'exception conntrack : UI **OK**, et `conteneur → service hôte` reste **BLOQUÉ**
+  > (il est en état `NEW`, donc non couvert par l'exception). **La garantie est intacte,
+  > seul le faux positif disparaît.**
+
+  Précisions **indispensables** avant de coller ça :
   - **Ici `ACCEPT` est correct — et ce n'est pas une entorse à la règle n°1.**
     L'interdiction du `-j ACCEPT` porte sur **`DOCKER-USER`**, où un `ACCEPT` termine la
     traversée de `FORWARD` et court-circuite `DOCKER-ISOLATION-STAGE-1/2`. La chaîne
@@ -182,29 +209,64 @@ Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que 
     la politique par défaut d'`INPUT`, ce qui n'est pas ce qu'on veut pour une exception.
     **`RETURN` dans `DOCKER-USER`, `ACCEPT` dans `INPUT`** — les deux chaînes ne se
     raisonnent pas pareil.
-  - **`br+` ne matche PAS `docker0`.** Les réseaux de session portent des noms
-    `br-<hash>`, mais le **bridge par défaut** — celui du tier **capture batch** (§2.1)
-    — s'appelle `docker0`. Ajoutez `-i docker0` si vous voulez couvrir aussi ce tier.
+  - **`br+` ne matche PAS `docker0` — c'est un trou, pas un détail de confort.** Vérifié
+    en netns : avec le seul `-i br+ -j DROP`, un conteneur attaché à `docker0` **joint
+    toujours** le service hôte sur l'IP de passerelle. Or le tier **capture batch**
+    d'Ocular tourne précisément sur le **bridge par défaut** `docker0` (§2.1, 1er §).
+    Omettre `-i docker0`, c'est laisser hors couverture le tier qui rend des pages
+    hostiles. Les deux lignes `docker0` ci-dessus sont **obligatoires**.
   - **`br+` matche *tout* bridge nommé `br…`**, y compris des bridges non-Docker de
     l'hôte (libvirt `br0`, ponts de VM…). Sur un hôte qui en héberge, visez les
-    interfaces réellement concernées plutôt que le joker.
-  - **Cette règle ne casse ni le proxy noVNC ni le pilotage de session.**
-    `web`→`session:6080`/`:8090` est du trafic **conteneur↔conteneur**, qui passe par
-    `FORWARD`, pas par `INPUT`.
+    interfaces réellement concernées plutôt que le joker — le DROP y couperait aussi le
+    **DHCP** (`udp/67`) et le DNS que ces VM prennent sur l'hôte.
+  - **Cette règle ne casse ni le proxy noVNC ni le pilotage de session — vérifié.**
+    `web`→`session:6080`/`:8090` est du trafic **conteneur↔conteneur** : la destination
+    n'est pas une adresse locale de l'hôte, donc le paquet n'est **jamais** délivré
+    localement et ne traverse **pas** `INPUT`. Mesuré en netns : `web`→`session:6080`
+    reste **OK** avec le DROP seul comme avec l'exception conntrack. Idem `web`↔`redis`.
+  - **L'ICMP echo conteneur→passerelle est bloqué** par la règle (c'est voulu). Les
+    erreurs ICMP utiles au **PMTU** restent acceptées : elles sont en état `RELATED`,
+    donc couvertes par l'exception conntrack.
 
-  > **⚠️ Risque DNS — lisez ceci avant de poser le DROP.** Beaucoup de setups font
-  > résoudre les conteneurs **via la passerelle du bridge** (`--dns <ip_passerelle>`,
-  > `dnsmasq`/`systemd-resolved` de l'hôte, resolver contrôlé de §2.2 hébergé sur
-  > l'hôte). Dans ces cas, la requête DNS part vers l'IP de passerelle → **`INPUT`** →
-  > le DROP ci-dessus **casse toute la résolution DNS des conteneurs**, donc les
-  > captures (échecs opaques : timeouts de résolution, pas d'erreur réseau claire).
-  > Sur un réseau de session (réseau *user-defined*), les conteneurs interrogent
-  > d'abord le **DNS embarqué de Docker `127.0.0.11`**, qui reste **dans le namespace
-  > du conteneur** et n'est donc **pas** concerné par `INPUT` — mais ce resolver
-  > embarqué **relaie ensuite vers les resolvers amont** ; si l'amont est la passerelle
-  > ou l'hôte, on retombe sur `INPUT`. **Vérifiez votre chemin DNS réel avant de
-  > poser la règle**, et gardez l'exception `:53` si l'amont est l'hôte. Une exception
-  > `:53` limitée au port DNS reste bien plus étroite que l'exposition totale de l'hôte.
+  > **⚠️ Exception DNS `:53` — nécessaire BEAUCOUP moins souvent qu'on ne le croit.**
+  > **Mesuré (2026-07-18) : en configuration Docker par défaut, elle n'est PAS
+  > nécessaire, et l'ajouter par précaution élargit la surface pour rien.**
+  >
+  > Sur un réseau *user-defined* (donc tout réseau de session), le conteneur interroge le
+  > resolver embarqué **`127.0.0.11`**, qui vit dans **son propre** namespace : ce trafic
+  > ne traverse aucun bridge et n'est pas concerné par `INPUT`. La question est donc
+  > uniquement : **d'où part la requête amont ?** Vérifié expérimentalement en
+  > blackholant l'IP de passerelle **depuis le netns du conteneur lui-même**
+  > (`ip route add blackhole <gw>/32`) : la résolution externe **continue de fonctionner**.
+  > La requête amont ne part donc **pas** du conteneur — c'est `dockerd` qui la relaie
+  > **depuis le namespace de l'hôte**. Le `/etc/resolv.conf` du conteneur l'annonce
+  > explicitement : `# ExtServers: [host(192.168.1.1)]` — le marqueur **`host(...)`**
+  > signifie « interrogé depuis l'hôte ».
+  >
+  > **Le critère exact, à lire dans le conteneur :**
+  > ```sh
+  > docker run --rm --network <votre_reseau> debian:bookworm-slim grep ExtServers /etc/resolv.conf
+  > ```
+  > - `ExtServers: [host(...)]` → relais **depuis l'hôte**, hors `INPUT` → **ne posez PAS
+  >   l'exception `:53`**. (Contrôlé : c'est le cas en configuration Docker par défaut.)
+  > - `ExtServers: [<ip nue>]` où l'IP est la **passerelle du bridge** ou une **IP de
+  >   l'hôte** → la requête part **du conteneur** vers `INPUT` → **l'exception `:53` est
+  >   requise**, sinon toute la résolution casse (échecs opaques : timeouts, pas d'erreur
+  >   réseau claire). C'est le cas typique de `--dns <ip_passerelle>`, ou d'un resolver
+  >   contrôlé de §2.2 hébergé sur l'hôte. Vérifié : forcer `--dns <passerelle>` produit
+  >   bien une entrée **sans** marqueur `host(...)`.
+  >
+  > Si et seulement si vous êtes dans le second cas, ajoutez (après les DROP, donc
+  > tapées en dernier pour atterrir en tête) :
+  > ```sh
+  > iptables -I INPUT -i br+ -p udp --dport 53 -j ACCEPT
+  > iptables -I INPUT -i br+ -p tcp --dport 53 -j ACCEPT   # TCP : réponses tronquées
+  > ```
+  > Vérifié en netns : sans exception, `udp/53` vers la passerelle est bloqué ; avec,
+  > `udp/53` et `tcp/53` passent tandis que `tcp/9999` reste bloqué. Une exception `:53`
+  > reste bien plus étroite que l'exposition totale de l'hôte — mais **ne la posez pas
+  > "au cas où"** : en configuration par défaut elle n'ouvre du port 53 vers l'hôte que
+  > pour rien.
 
   **Si vous ne posez PAS cette règle, actez-le comme RÉSIDUEL CONNU :** *« une session
   compromise peut joindre tout service de l'hôte bindé sur `0.0.0.0` via l'IP de
@@ -237,8 +299,16 @@ Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que 
     en IPv6).
 
   La surface **`INPUT`** décrite juste au-dessus vaut elle aussi en IPv6 : l'équivalent
-  `ip6tables -I INPUT -i br+ -j DROP` (+ exception `:53`) est nécessaire pour fermer
-  l'accès à l'hôte via l'**IP de passerelle IPv6** du bridge.
+  `ip6tables -I INPUT -i br+ -j DROP` **et `-i docker0`**, **avec la même exception
+  conntrack `ESTABLISHED,RELATED` en tête**, est nécessaire pour fermer l'accès à l'hôte
+  via l'**IP de passerelle IPv6** du bridge. ⚠️ **Non validé empiriquement** : la
+  campagne de tests du 2026-07-18 a porté sur **IPv4 uniquement**. Le raisonnement est le
+  même (l'IP de passerelle IPv6 est une adresse locale de l'hôte, donc livraison locale
+  → `INPUT`), mais **traitez-le comme non vérifié** et mesurez-le sur votre hôte avant de
+  vous appuyer dessus. En IPv6 il faut en outre **conserver `ipv6-icmp`** (NDP :
+  sollicitations/annonces de voisin sont en état `NEW` et ne sont **pas** couvertes par
+  l'exception conntrack — un DROP nu casserait la résolution d'adresse L2, ce qu'IPv4
+  n'a pas comme problème puisque l'ARP ne traverse pas `iptables`).
 
   Si vous n'avez **pas** besoin d'IPv6 pour les conteneurs, le plus simple et le plus sûr
   reste de **le laisser désactivé** côté démon Docker — il n'y a alors pas de second jeu
