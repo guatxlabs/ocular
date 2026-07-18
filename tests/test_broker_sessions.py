@@ -78,17 +78,20 @@ def test_build_session_args_passes_session_secret_env():
 
 
 def test_launch_session_threads_secret_to_docker_run(monkeypatch):
-    calls = {}
+    # launch_session émet 3 commandes (network create / run / network connect) :
+    # on isole celle du `docker run` pour asserter sur le secret.
+    calls = []
 
     def fake_run(args, capture_output=None, check=None):
-        calls["args"] = args
+        calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
 
     launch_session("s1", secret="threaded-secret")
 
-    assert "OCULAR_SESSION_SECRET=threaded-secret" in calls["args"]
+    run_args = next(a for a in calls if a[:3] == ["docker", "run", "-d"])
+    assert "OCULAR_SESSION_SECRET=threaded-secret" in run_args
 
 
 def test_build_session_args_never_touches_docker_socket_or_host_net_or_privileged():
@@ -100,10 +103,10 @@ def test_build_session_args_never_touches_docker_socket_or_host_net_or_privilege
 
 
 def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
-    calls = {}
+    calls = []
 
     def fake_run(args, capture_output=None, check=None):
-        calls["args"] = args
+        calls.append(args)
         return type("P", (), {"returncode": 0, "stdout": b"deadbeef\n", "stderr": b""})()
 
     monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
@@ -111,7 +114,7 @@ def test_launch_session_runs_docker_and_returns_container_name(monkeypatch):
     container = launch_session("s1")
 
     assert container == "ocular-sess-s1"
-    assert calls["args"][:3] == ["docker", "run", "-d"]
+    assert any(a[:3] == ["docker", "run", "-d"] for a in calls)
 
 
 def test_stop_session_kills_then_removes(monkeypatch):
@@ -260,3 +263,46 @@ def test_session_screen_default_and_validation(monkeypatch):
     assert session_screen() == "2560x1440"                 # valeur valide
     monkeypatch.setenv("OCULAR_SESSION_SCREEN", "; rm -rf /")  # injection -> défaut
     assert session_screen() == "1920x1080"
+
+
+# --- Isolation réseau par session : orchestration du lancement ---------------
+
+def test_launch_session_creates_net_runs_then_connects_web(monkeypatch):
+    # L'ORDRE est la garantie anti-race : le web est attaché AVANT que
+    # process_session_cmd n'expose la session au registre.
+    calls = []
+
+    def fake_run(args, capture_output=None, check=None):
+        calls.append(args)
+        return type("P", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "ocular-web")
+
+    name = launch_session("s1", secret="sec")
+
+    assert name == "ocular-sess-s1"
+    assert calls[0] == ["docker", "network", "create", "ocular-sess-net-s1"]
+    assert calls[1][:3] == ["docker", "run", "-d"]
+    assert calls[2] == ["docker", "network", "connect", "ocular-sess-net-s1", "ocular-web"]
+
+
+def test_launch_session_survives_network_connect_failure(monkeypatch):
+    # Si le web n'est pas joignable, on logue mais on ne lève pas : le poll
+    # de santé côté web décidera (504 -> teardown), pas d'exception ici.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "connect"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"no such container"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
+
+
+def test_launch_session_survives_network_create_failure(monkeypatch):
+    # Pool d'adresses Docker épuisé : on logue un warning distinctif, on ne lève pas.
+    def fake_run(args, capture_output=None, check=None):
+        rc = 1 if args[:3] == ["docker", "network", "create"] else 0
+        return type("P", (), {"returncode": rc, "stdout": b"", "stderr": b"could not find an available predefined subnet"})()
+
+    monkeypatch.setattr(sessions_mod.subprocess, "run", fake_run)
+    assert launch_session("s1") == "ocular-sess-s1"
