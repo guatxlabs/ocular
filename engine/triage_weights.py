@@ -9,7 +9,7 @@ BUILTIN = {
     "bands": {"medium": 40, "high": 70},  # score < medium -> low ; >= high -> high
     "signals": {
         # clé -> (poids, libellé FR)
-        "obfuscation_cluster":   (35.0, "Cluster d'obfuscation/exécution"),
+        "obfuscation_cluster":   (50.0, "Cluster d'obfuscation/exécution"),
         "obfuscation_single":    (18.0, "Obfuscation isolée"),
         "cred_and_urgency":      (25.0, "Identifiants + langage d'urgence"),
         "cred_external_form":    (22.0, "Identifiants postés vers un domaine externe"),
