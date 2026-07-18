@@ -72,9 +72,18 @@ def test_two_sessions_cannot_reach_each_other(monkeypatch):
     # à chaque réseau de session via OCULAR_WEB_CONTAINER.
     monkeypatch.setenv("OCULAR_WEB_CONTAINER", probe)
 
+    # Durcissement IDENTIQUE au service `web` du compose (read_only, cap_drop
+    # ALL, no-new-privileges, user 10002:10002) : sans ça, le contrôle POSITIF
+    # ne prouverait pas que `docker network connect` fonctionne contre un
+    # conteneur durci comme le web réellement déployé — seulement contre un
+    # conteneur permissif. Le tmpfs /tmp est le pendant du `tmpfs: ["/tmp"]`
+    # du compose, requis pour démarrer avec un rootfs read-only.
     subprocess.run(
-        [docker, "run", "-d", "--name", probe, "--entrypoint", "sleep",
-         _SESSION_IMAGE, "3600"],
+        [docker, "run", "-d", "--name", probe,
+         "--read-only", "--tmpfs", "/tmp",
+         "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+         "--user", "10002:10002",
+         "--entrypoint", "sleep", _SESSION_IMAGE, "3600"],
         capture_output=True, check=False,
     )
     try:
