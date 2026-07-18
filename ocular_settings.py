@@ -93,7 +93,11 @@ def max_html_bytes() -> int:
 
 
 def log_level() -> str:
-    return os.environ.get("OCULAR_LOG_LEVEL", "INFO").upper()
+    """Nom BRUT du niveau demandé (normalisé casse/espaces). La VALIDATION est
+    faite par `ocular_logging.resolve_level`, qui retombe sur INFO si le nom est
+    inconnu — un `setLevel` sur un niveau inconnu levait et faisait échouer
+    l'import de tout le système (cf. règle en tête de module)."""
+    return os.environ.get("OCULAR_LOG_LEVEL", "INFO").strip().upper()
 
 
 def saved_db_path() -> str:
