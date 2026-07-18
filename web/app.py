@@ -81,6 +81,23 @@ async def _auth(request, call_next):
     return await call_next(request)
 
 
+def _admin_granted(conn) -> bool:
+    """Cœur BOOLÉEN du mécanisme admin : `X-Admin-Token` (comparaison en temps
+    constant) OU appartenance au groupe admin IdP. Extrait de `_check_admin`
+    pour être réutilisé PAR LE CONTRÔLE D'APPARTENANCE DES SESSIONS (l'admin
+    passe outre le propriétaire) sans dupliquer un second mécanisme admin.
+
+    `conn` est une `Request` OU un `WebSocket` : seuls `.headers` sont lus (via
+    `has_admin_group` -> `resolve_groups`), tous deux étant des
+    `starlette.requests.HTTPConnection`. Aucun token/groupe n'est journalisé."""
+    adm = os.environ.get("OCULAR_ADMIN_TOKEN")
+    provided_adm = conn.headers.get("x-admin-token", "")
+    token_ok = bool(adm) and secrets.compare_digest(
+        provided_adm.encode("utf-8", "ignore"), adm.encode()
+    )
+    return token_ok or has_admin_group(conn)
+
+
 def _check_admin(request) -> JSONResponse | None:
     """Garde admin de `DELETE /saved*` (extraite de `_auth`, audit 3m) : autorise
     via `X-Admin-Token` (temps-constant) OU appartenance au groupe admin IdP.
@@ -88,10 +105,6 @@ def _check_admin(request) -> JSONResponse | None:
     configuré mais non accordé), ou `None` si l'accès admin est accordé. Jamais
     de token/groupe dans les logs — seulement path + status."""
     adm = os.environ.get("OCULAR_ADMIN_TOKEN")
-    provided_adm = request.headers.get("x-admin-token", "")
-    token_ok = bool(adm) and secrets.compare_digest(
-        provided_adm.encode("utf-8", "ignore"), adm.encode()
-    )
     # Le mécanisme groupe n'est "configuré" que si un groupe admin est défini ET
     # que le forward-auth est de confiance (opt-in) — sinon has_admin_group()
     # renvoie déjà False (anti-spoofing), mais on veut distinguer "non configuré"
@@ -100,7 +113,7 @@ def _check_admin(request) -> JSONResponse | None:
     if not adm and not group_mechanism_configured:
         log.warning("admin rejected path=%s status=%d", request.url.path, 503)
         return JSONResponse({"detail": "aucun mécanisme admin configuré"}, status_code=503)
-    if not (token_ok or has_admin_group(request)):
+    if not _admin_granted(request):
         log.warning("admin rejected path=%s status=%d", request.url.path, 403)
         return JSONResponse({"detail": "admin requis"}, status_code=403)
     return None
@@ -350,6 +363,81 @@ def _checked_session_id(session_id: str) -> str:
     return session_id
 
 
+# --- Appartenance des sessions -----------------------------------------------
+# Une session interactive est un CONTENEUR PILOTABLE : le proxy WS `/ws` donne
+# le clavier et la souris de la session (noVNC complet), `/capture` et `/live`
+# en exfiltrent l'état, `DELETE` la détruit. Sans propriétaire, tout analyste
+# authentifié agissait sur la session de n'importe quel autre — sans effet en
+# mode bearer (identité partagée "token") mais critique dès que le forward-auth
+# est actif, où chaque requête porte une identité DISTINCTE.
+#
+# RÉPONSE SUR SESSION D'AUTRUI : 404, jamais 403. Un 403 confirmerait
+# l'existence de l'identifiant ; le 404 est déjà la réponse aux identifiants
+# inconnus (et hors gabarit, cf. `_checked_session_id`), donc les deux cas sont
+# indistinguables pour qui sonderait.
+
+
+def _session_identity(conn) -> str | None:
+    """Identité à comparer au propriétaire d'une session.
+
+    Sur une requête HTTP, `_auth` a déjà posé `request.state.identity` (bearer
+    -> "token", forward-auth -> l'identité IdP) : on la relit telle quelle.
+
+    Sur un WEBSOCKET, il n'y a PAS de middleware HTTP (`@app.middleware("http")`
+    ne voit pas les connexions WS) et un navigateur ne peut pas poser d'en-tête
+    `Authorization` sur un WS : l'identité doit être résolue ici.
+    - forward-auth actif et en-tête présent -> l'identité IdP (le proxy la pose
+      sur le handshake WS comme sur toute requête, et strippe les copies
+      clientes : c'est le contrat d'opt-in de `web/identity.py`) ;
+    - forward-auth actif mais AUCUNE identité -> None => refus (fail-closed :
+      en mode IdP, une connexion sans identité n'est pas identifiable) ;
+    - forward-auth INACTIF (mode bearer, défaut) -> "token", l'identité unique
+      et partagée de tous les porteurs du jeton. C'est exactement ce que
+      `resolve_identity` renvoie à un bearer valide, et c'est le propriétaire
+      inscrit par `create_session` dans ce mode : le mode par défaut n'est donc
+      pas régressé, alors que le WS reste par ailleurs gardé par son token
+      capability propre à la session.
+    """
+    state_identity = getattr(getattr(conn, "state", None), "identity", None)
+    if state_identity:
+        return state_identity
+    authorized, identity, _ = resolve_identity(conn, bearer_ok=False)
+    if authorized:
+        return identity
+    return None if trust_forward_auth() else "token"
+
+
+def _owns_session(conn, sess: dict | None) -> bool:
+    """True si `conn` a le droit d'agir sur cette session. L'admin (même
+    mécanisme que `DELETE /saved` : `X-Admin-Token` ou groupe admin IdP) passe
+    outre — il doit pouvoir tout voir et tout arrêter."""
+    if _admin_granted(conn):
+        return True
+    if not sess:
+        return False
+    owner = sess.get("owner") or ""
+    if not owner:
+        # Session SANS propriétaire -> refusée aux non-admins (fail-closed).
+        # Sûr en pratique : redis tourne désormais sur un tmpfs (cf. la pile de
+        # `deploy/`, `tmpfs: ["/data:mode=1777"]`), donc AUCUNE session ne
+        # survit à un redémarrage — il n'existe pas de session « héritée »
+        # d'avant ce déploiement qui deviendrait subitement inaccessible.
+        return False
+    identity = _session_identity(conn)
+    if not identity:
+        return False
+    return secrets.compare_digest(owner.encode(), identity.encode())
+
+
+def _owned_session_or_404(conn, registry: SessionRegistry, session_id: str) -> dict:
+    """Charge une session et vérifie l'appartenance, ou lève 404 — MÊME réponse
+    pour « inconnue » et « appartient à autrui » (cf. note ci-dessus)."""
+    sess = registry.get(session_id)
+    if not _owns_session(conn, sess):
+        raise HTTPException(status_code=404, detail="session inconnue")
+    return sess
+
+
 def _wait_session_ready(registry: SessionRegistry, session_id: str, deadline: float) -> bool:
     """Poll d'abord le registre (écrit par le broker une fois le conteneur
     lancé) puis le `/health` du session_server via le réseau interne, jusqu'à
@@ -407,8 +495,14 @@ def create_session(
     # SEUL le web le connaît — jamais renvoyé dans les réponses, jamais loggé.
     session_secret = secrets.token_urlsafe(24)
     target = req.url if req.url else "inline-html"
+    # Propriétaire de la session = identité de l'appelant, posée par `_auth`
+    # (bearer -> "token", identité partagée par tous les porteurs du jeton ;
+    # forward-auth -> l'identité IdP). C'est le broker qui écrit l'entrée
+    # registre, donc le propriétaire transite par la commande de lancement.
+    owner = _session_identity(request) or ""
     cmd_queue.enqueue_cmd(
-        "launch", session_id, token=token, target=target, secret=session_secret
+        "launch", session_id, token=token, target=target, secret=session_secret,
+        owner=owner,
     )
 
     # Pas `request.client.host` : depuis le frontal L4 `gateway`, le pair TCP
@@ -441,22 +535,43 @@ def create_session(
 
 
 @app.get("/sessions")
-def list_sessions(registry: SessionRegistry = Depends(get_session_registry)) -> list:
+def list_sessions(
+    request: Request,
+    registry: SessionRegistry = Depends(get_session_registry),
+) -> list:
     # Anti-fuite (note sécu T2) : le token capability WS n'est JAMAIS renvoyé
     # dans une liste — seul un GET/DELETE ciblé côté serveur y a accès.
+    #
+    # FILTRAGE PAR PROPRIÉTAIRE : on ne liste que SES sessions (l'admin voit
+    # tout). Sans ce filtre, la liste divulguait à chaque analyste les
+    # identifiants — et donc la surface d'attaque — des sessions de tous les
+    # autres, en plus de leurs URL cibles.
+    is_admin = _admin_granted(request)
+    # `owner` ne sort JAMAIS vers un non-admin (même précaution que `token` et
+    # `secret`) : il porte l'identité IdP d'un tiers. L'admin le conserve, sans
+    # quoi « tout voir » ne lui dirait pas de QUI est la session qu'il arrête.
+    hidden = {"token"} if is_admin else {"token", "owner"}
     return [
-        {k: v for k, v in sess.items() if k != "token"}
+        {k: v for k, v in sess.items() if k not in hidden}
         for sess in registry.list_active()
+        if is_admin or _owns_session(request, sess)
     ]
 
 
 @app.delete("/sessions/{session_id}")
 def delete_session(
     session_id: str,
+    request: Request,
     registry: SessionRegistry = Depends(get_session_registry),
     cmd_queue: SessionCmdQueue = Depends(get_cmd_queue),
 ) -> dict:
     session_id = _checked_session_id(session_id)
+    # 404 sur session inconnue COMME sur session d'autrui. La suppression n'est
+    # donc plus idempotente sur un id bien formé mais inconnu (elle renvoyait
+    # 200 « deleted ») : c'est le prix de l'indistinguabilité — un 200 sur
+    # l'inconnu et un 404 sur celle d'autrui auraient fait de DELETE un oracle
+    # d'existence de session.
+    _owned_session_or_404(request, registry, session_id)
     cmd_queue.enqueue_cmd("stop", session_id)
     registry.delete(session_id)
     log.info("session delete session_id=%s", session_id)
@@ -466,6 +581,7 @@ def delete_session(
 @app.post("/sessions/{session_id}/capture")
 def capture_session(
     session_id: str,
+    request: Request,
     body: dict | None = None,
     registry: SessionRegistry = Depends(get_session_registry),
     queue: RedisJobQueue = Depends(get_queue),
@@ -478,9 +594,8 @@ def capture_session(
     dans Redis comme un job normal (récupérable ensuite via
     `GET /jobs/{job_id}`), puis renvoie ce résultat."""
     session_id = _checked_session_id(session_id)
-    sess = registry.get(session_id)
-    if sess is None:
-        raise HTTPException(status_code=404, detail="session inconnue")
+    # 404 indistinguable : session inconnue OU appartenant à un autre analyste.
+    _owned_session_or_404(request, registry, session_id)
 
     url = f"http://{_session_host(session_id)}:8090/capture"
     # secret conteneur lu au registre pour signer l'appel /capture (le web ne
@@ -514,6 +629,7 @@ def capture_session(
 @app.get("/sessions/{session_id}/live")
 def session_live(
     session_id: str,
+    request: Request,
     registry: SessionRegistry = Depends(get_session_registry),
 ) -> dict:
     """Proxy vers `GET /live` du `session_server` (panneau live, C4) : appels
@@ -521,9 +637,8 @@ def session_live(
     pixels VNC. Même schéma d'accès que `capture_session` (secret conteneur
     lu au registre, jamais régénéré ici, jamais renvoyé/loggé)."""
     session_id = _checked_session_id(session_id)
-    sess = registry.get(session_id)
-    if sess is None:
-        raise HTTPException(status_code=404, detail="session inconnue")
+    # 404 indistinguable : session inconnue OU appartenant à un autre analyste.
+    _owned_session_or_404(request, registry, session_id)
 
     url = f"http://{_session_host(session_id)}:8090/live"
     secret = registry.get_secret(session_id) or ""
@@ -634,6 +749,16 @@ async def session_ws_proxy(
 
     sess = registry.get(sid)
     if not sess or not sess.get("container"):
+        await websocket.close(code=1008)
+        return
+
+    # APPARTENANCE — la garde la plus critique du service : ce proxy relaie le
+    # RFB, donc le CLAVIER ET LA SOURIS de la session, potentiellement connectée
+    # aux comptes de son propriétaire. Le token capability seul ne suffit pas
+    # comme preuve d'identité (il peut fuiter, être partagé, ou survivre à un
+    # changement de titulaire). Fermeture 1008 comme pour une session inconnue
+    # ou un token invalide : indistinguable, l'équivalent WS du 404 HTTP.
+    if not _owns_session(websocket, sess):
         await websocket.close(code=1008)
         return
 

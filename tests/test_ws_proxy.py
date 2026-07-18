@@ -90,10 +90,14 @@ def _client(monkeypatch):
     return client, registry
 
 
-def _seed_session(registry: SessionRegistry, sid: str = _SID, token: str = _TOKEN) -> None:
+def _seed_session(
+    registry: SessionRegistry, sid: str = _SID, token: str = _TOKEN, owner: str = "token",
+) -> None:
+    # `owner="token"` = mode bearer (défaut), où tous les porteurs du jeton
+    # partagé ont cette même identité — c'est ce que `create_session` inscrit.
     registry.create(
         sid, container="ocular-sess-" + sid, kind="recon-vnc", target="https://example.com",
-        token=token, now_iso="2026-07-13T10:00:00+00:00",
+        token=token, owner=owner, now_iso="2026-07-13T10:00:00+00:00",
     )
 
 
