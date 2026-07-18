@@ -35,16 +35,52 @@ def _require_image(docker: str) -> None:
         pytest.skip(f"image {_SESSION_IMAGE} absente (make build-runner)")
 
 
+class ReachToolingError(RuntimeError):
+    """L'outillage (`docker exec` ou `curl`) a échoué : la sonde n'a RIEN
+    prouvé sur la joignabilité. Levée plutôt que retourner `False`, car un
+    `False` ici serait interprété par les assertions négatives comme une preuve
+    d'isolation — le test conclurait « isolé » sur un outillage cassé."""
+
+
+# Seuls codes de sortie de curl qui prouvent l'injoignabilité :
+#   6 = hôte/DNS introuvable, 7 = connexion refusée, 28 = timeout.
+# Liste BLANCHE volontaire (et non liste noire {125,126,127}) pour deux raisons
+# constatées empiriquement :
+#   - `docker exec` sur un conteneur ARRÊTÉ ou ABSENT renvoie 1, pas 125 — une
+#     liste noire laisserait donc passer ce cas en « isolé » ;
+#   - un code inattendu signifiant que le TCP a ABOUTI (ex. curl 52, « empty
+#     reply from server ») fabriquerait une fausse preuve d'isolation.
+# Tout ce qui n'est ni 0 ni un code réseau fait donc HURLER le test.
+_CURL_UNREACHABLE_CODES = frozenset({6, 7, 28})
+
+
+def _classify_reach(returncode: int, stderr: str) -> bool:
+    """Traduit le code de sortie de `docker exec … curl` en verdict de
+    joignabilité. `True` = joignable, `False` = injoignable (preuve valide),
+    `ReachToolingError` = on ne sait pas, l'outillage est cassé."""
+    if returncode == 0:
+        return True
+    if returncode in _CURL_UNREACHABLE_CODES:
+        return False
+    raise ReachToolingError(
+        f"outillage cassé, la joignabilité n'est PAS prouvée : "
+        f"`docker exec … curl` a renvoyé rc={returncode} "
+        f"(attendu 0=joignable ou {sorted(_CURL_UNREACHABLE_CODES)}=injoignable) ; "
+        f"stderr={stderr.strip()!r}"
+    )
+
+
 def _can_reach(docker: str, from_container: str, host: str, port: int) -> bool:
     """curl depuis `from_container` vers host:port. True si la connexion TCP
-    aboutit (peu importe le code HTTP), False si DNS/connexion échoue."""
+    aboutit (peu importe le code HTTP), False si DNS/connexion échoue. Lève
+    `ReachToolingError` si l'échec vient de l'outillage (curl absent de
+    l'image, conteneur arrêté, démon Docker en vrac) — cf. `_classify_reach`."""
     proc = subprocess.run(
         [docker, "exec", from_container, "curl", "-s", "-m", "3", "-o", "/dev/null",
          f"http://{host}:{port}/"],
-        capture_output=True, check=False,
+        capture_output=True, check=False, text=True,
     )
-    # curl: 6=DNS introuvable, 7=connexion refusée, 28=timeout -> injoignable.
-    return proc.returncode == 0
+    return _classify_reach(proc.returncode, proc.stderr or "")
 
 
 def _wait_reachable(docker: str, from_container: str, host: str, port: int,
