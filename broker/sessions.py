@@ -213,6 +213,19 @@ def sweep_orphans(registry) -> int:
     return removed
 
 
+_GLOB_META = "\\*?[]"
+
+
+def _escape_glob(value: str) -> str:
+    """Neutralise les métacaractères de glob Redis (`\\ * ? [ ]`) pour qu'une
+    valeur interpolée dans un motif `SCAN MATCH` ne matche QU'elle-même.
+    L'antislash passe en premier : l'échapper après aurait ré-échappé les
+    antislashs posés par les autres remplacements."""
+    for ch in _GLOB_META:
+        value = value.replace(ch, "\\" + ch)
+    return value
+
+
 def purge_session_results(client, session_id: str) -> int:
     """Supprime de Redis les captures interactives ÉPHÉMÈRES d'une session
     (`ocular:result:sesscap-{sid}-*`). Une capture non nommée n'est jamais
@@ -221,7 +234,12 @@ def purge_session_results(client, session_id: str) -> int:
     captures SAUVEGARDÉES sont déjà copiées en SQLite par POST /saved, donc
     purger le résultat Redis reste sûr. Best-effort (aucune exception propagée).
     Retourne le nombre de clés supprimées."""
-    pattern = f"{RESULT_PREFIX}sesscap-{session_id}-*"
+    # `scan_iter(match=...)` prend un GLOB Redis : `*`, `?`, `[...]` et `\` y
+    # sont des MÉTACARACTÈRES. Interpolé brut, un session_id hostile élargissait
+    # le motif (`sesscap-*-*`) et purgeait les captures éphémères de TOUTES les
+    # sessions actives. Le web filtre déjà le format en amont ; ce verrou-ci est
+    # INDÉPENDANT (le broker ne doit jamais dépendre de l'hygiène de l'appelant).
+    pattern = f"{RESULT_PREFIX}sesscap-{_escape_glob(session_id)}-*"
     removed = 0
     try:
         for key in client.scan_iter(match=pattern, count=100):

@@ -21,6 +21,9 @@ from web.app import app, get_session_registry
 from bus.sessions import SessionRegistry
 
 _TOKEN = "super-secret-vnc-token"
+# Identifiant au format RÉEL (cf. create_session : "sess-" + uuid4().hex[:12]) :
+# le proxy WS refuse (1008) tout id hors gabarit avant même de lire le registre.
+_SID = "sess-0123456789ab"
 
 
 class _FakeUpstreamConn:
@@ -87,7 +90,7 @@ def _client(monkeypatch):
     return client, registry
 
 
-def _seed_session(registry: SessionRegistry, sid: str = "s1", token: str = _TOKEN) -> None:
+def _seed_session(registry: SessionRegistry, sid: str = _SID, token: str = _TOKEN) -> None:
     registry.create(
         sid, container="ocular-sess-" + sid, kind="recon-vnc", target="https://example.com",
         token=token, now_iso="2026-07-13T10:00:00+00:00",
@@ -99,7 +102,7 @@ def test_ws_rejects_missing_subprotocol(monkeypatch):
     _seed_session(registry)
 
     with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("/sessions/s1/ws"):
+        with client.websocket_connect(f"/sessions/{_SID}/ws"):
             pass
     assert exc.value.code == 1008
 
@@ -110,7 +113,7 @@ def test_ws_rejects_invalid_token(monkeypatch):
 
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
-            "/sessions/s1/ws", subprotocols=["binary", "ocular.session.wrong-token"]
+            f"/sessions/{_SID}/ws", subprotocols=["binary", "ocular.session.wrong-token"]
         ):
             pass
     assert exc.value.code == 1008
@@ -118,10 +121,10 @@ def test_ws_rejects_invalid_token(monkeypatch):
 
 def test_ws_rejects_unknown_session(monkeypatch):
     client, registry = _client(monkeypatch)
-    # aucune session créée pour "s1" : valid_token() -> False sans conteneur
+    # aucune session créée pour cet id : valid_token() -> False sans conteneur
     with pytest.raises(WebSocketDisconnect) as exc:
         with client.websocket_connect(
-            "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+            f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
         ):
             pass
     assert exc.value.code == 1008
@@ -133,7 +136,7 @@ def test_ws_valid_token_accepted_binary_only_and_pumps_bytes(monkeypatch):
     calls, conns = _install_fake_upstream(monkeypatch)
 
     with client.websocket_connect(
-        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+        f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
     ) as ws:
         # le serveur n'accepte (et ne renvoie) QUE "binary", jamais le token
         assert ws.accepted_subprotocol == "binary"
@@ -146,7 +149,7 @@ def test_ws_valid_token_accepted_binary_only_and_pumps_bytes(monkeypatch):
     # l'upstream a bien été contacté sur le conteneur de session, réseau interne
     assert len(calls) == 1
     url, subprotocols = calls[0]
-    assert url == "ws://ocular-sess-s1:6080/websockify"
+    assert url == f"ws://ocular-sess-{_SID}:6080/websockify"
     assert subprotocols == ["binary"]
     assert conns[0].sent == [b"\x00RFB client hello"]
 
@@ -166,12 +169,12 @@ def test_ws_registry_touch_called_on_activity(monkeypatch):
     monkeypatch.setattr(registry, "touch", spy_touch)
 
     with client.websocket_connect(
-        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+        f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
     ) as ws:
         ws.send_bytes(b"ping")
         ws.receive_bytes()
 
-    assert touched == ["s1"]
+    assert touched == [_SID]
 
 
 def test_ws_connect_marks_session_connected(monkeypatch):
@@ -189,15 +192,15 @@ def test_ws_connect_marks_session_connected(monkeypatch):
     monkeypatch.setattr(registry, "mark_connected", spy_mark_connected)
 
     with client.websocket_connect(
-        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+        f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
     ) as ws:
         ws.send_bytes(b"ping")
         ws.receive_bytes()
 
     # marqué à l'accept, puis RÉARMÉ pendant le pump (_maybe_touch) pour que le
     # reaper ne détruise pas une session dont le WS flappe (corrige M2). Donc
-    # >=1 appel, tous pour s1.
-    assert marked and all(m == "s1" for m in marked)
+    # >=1 appel, tous pour la session testée.
+    assert marked and all(m == _SID for m in marked)
 
 
 def test_ws_disconnect_marks_session_disconnected(monkeypatch):
@@ -215,18 +218,18 @@ def test_ws_disconnect_marks_session_disconnected(monkeypatch):
     monkeypatch.setattr(registry, "mark_disconnected", spy_mark_disconnected)
 
     with client.websocket_connect(
-        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+        f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
     ) as ws:
         ws.send_bytes(b"ping")
         ws.receive_bytes()
     # sortie du bloc `with` -> déconnexion (finally du proxy) déjà traitée
 
     assert len(marked) == 1
-    assert marked[0][0] == "s1"
+    assert marked[0][0] == _SID
     assert isinstance(marked[0][1], float)
 
     # la marque de déconnexion doit être visible côté registre (grâce reaper)
-    sess = registry.get("s1")
+    sess = registry.get(_SID)
     assert sess is not None
     assert float(sess["disconnected_at"]) > 0
 
@@ -249,7 +252,7 @@ def test_ws_rejected_before_accept_does_not_mark_disconnected(monkeypatch):
 
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(
-            "/sessions/s1/ws", subprotocols=["binary", "ocular.session.wrong-token"]
+            f"/sessions/{_SID}/ws", subprotocols=["binary", "ocular.session.wrong-token"]
         ):
             pass
 
@@ -266,14 +269,14 @@ def test_ws_token_never_logged(monkeypatch, caplog):
     # une tentative valide et une invalide : dans les deux cas, aucune trace du
     # token ni du header Sec-WebSocket-Protocol dans les logs applicatifs.
     with client.websocket_connect(
-        "/sessions/s1/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
+        f"/sessions/{_SID}/ws", subprotocols=["binary", f"ocular.session.{_TOKEN}"]
     ) as ws:
         ws.send_bytes(b"x")
         ws.receive_bytes()
 
     with pytest.raises(WebSocketDisconnect):
         with client.websocket_connect(
-            "/sessions/s1/ws", subprotocols=["binary", "ocular.session.WRONG"]
+            f"/sessions/{_SID}/ws", subprotocols=["binary", "ocular.session.WRONG"]
         ):
             pass
 

@@ -3,12 +3,17 @@ import hashlib
 import json
 
 import fakeredis
+import pytest
 from fastapi.testclient import TestClient
 
 import web.app as app_mod
 from web.app import app, get_cmd_queue, get_queue, get_session_registry
 from bus.queue import RedisJobQueue
 from bus.sessions import SessionCmdQueue, SessionRegistry
+
+# Format RÉEL des identifiants de session (cf. create_session : "sess-" +
+# uuid4().hex[:12]) — les routes de session ne valident QUE celui-ci.
+_SID = "sess-0123456789ab"
 
 
 def _client(monkeypatch):
@@ -155,7 +160,7 @@ def test_create_session_timeout_returns_504_and_enqueues_stop(monkeypatch):
 def test_list_sessions_excludes_token(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="super-secret-token", secret="super-secret-container",
         now_iso="2026-07-13T10:00:00+00:00",
     )
@@ -167,24 +172,113 @@ def test_list_sessions_excludes_token(monkeypatch):
     assert "secret" not in body[0]
     assert "super-secret-token" not in r.text
     assert "super-secret-container" not in r.text
-    assert body[0]["session_id"] == "s1"
-    assert body[0]["container"] == "ocular-sess-s1"
+    assert body[0]["session_id"] == _SID
+    assert body[0]["container"] == "ocular-sess-" + _SID
 
 
 def test_delete_session_enqueues_stop_and_removes_registry_entry(monkeypatch):
     client, registry, cmd_queue = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="t",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
         token="tok", now_iso="2026-07-13T10:00:00+00:00",
     )
 
-    r = client.delete("/sessions/s1")
+    r = client.delete(f"/sessions/{_SID}")
     assert r.status_code == 200
-    assert r.json() == {"deleted": "s1"}
-    assert registry.get("s1") is None
+    assert r.json() == {"deleted": _SID}
+    assert registry.get(_SID) is None
 
     cmd = cmd_queue.dequeue_cmd(timeout=1)
-    assert cmd == {"action": "stop", "session_id": "s1"}
+    assert cmd == {"action": "stop", "session_id": _SID}
+
+
+# --- Défaut E : un session_id hors format ne doit atteindre NI le broker,
+# --- NI le registre. `DELETE /sessions/*` était enqueue tel quel vers le
+# --- broker, dont `purge_session_results` l'interpole dans un GLOB Redis :
+# --- une seule requête purgeait les captures éphémères de TOUTES les sessions.
+
+# Métacaractères de glob Redis + formats simplement hors-contrat. `?` est
+# passé PERCENT-ENCODÉ : envoyé brut il ouvrirait une query string côté client
+# HTTP et n'atteindrait jamais la route (il arrive bien décodé côté serveur).
+_HOSTILE_SESSION_IDS = ["*", "%3F", "s*", "[a-z]1", "sess-XYZ", "sess-0123456789abc", "sess-0123456789ab "]
+
+
+@pytest.mark.parametrize("hostile", _HOSTILE_SESSION_IDS)
+def test_delete_session_rejects_malformed_session_id(monkeypatch, hostile):
+    client, registry, cmd_queue = _client(monkeypatch)
+    registry.create(
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
+        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+    )
+
+    r = client.delete("/sessions/" + hostile)
+
+    assert r.status_code == 404, hostile
+    # AUCUNE commande n'atteint le broker (donc aucune purge Redis élargie)...
+    assert cmd_queue.dequeue_cmd(timeout=1) is None, hostile
+    # ...et la session légitime est intacte.
+    assert registry.get(_SID) is not None, hostile
+
+
+@pytest.mark.parametrize("hostile", _HOSTILE_SESSION_IDS)
+def test_capture_and_live_reject_malformed_session_id(monkeypatch, hostile):
+    client, *_ = _client(monkeypatch)
+    assert client.post(f"/sessions/{hostile}/capture").status_code == 404, hostile
+    assert client.get(f"/sessions/{hostile}/live").status_code == 404, hostile
+
+
+def test_ws_proxy_rejects_malformed_session_id_before_any_registry_lookup(monkeypatch):
+    """Le proxy WS applique la MÊME grille : fermeture 1008 sur un id hors
+    format, et ce AVANT toute interrogation du registre (le gabarit est un
+    filtre d'entrée, pas un effet de bord de l'échec d'authentification)."""
+    from starlette.websockets import WebSocketDisconnect
+
+    client, registry, _ = _client(monkeypatch)
+    looked_up = []
+    monkeypatch.setattr(
+        type(registry), "valid_token",
+        lambda self, sid, token: looked_up.append(sid) or True,
+    )
+
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(
+            "/sessions/*/ws", subprotocols=["binary", "ocular.session.tok"]
+        ):
+            pass
+
+    assert exc.value.code == 1008
+    assert looked_up == []
+
+
+def test_delete_session_still_works_for_a_wellformed_id(monkeypatch):
+    """Contre-épreuve : la validation ne casse pas le chemin nominal, au format
+    RÉELLEMENT produit par create_session (`sess-` + 12 hexs)."""
+    client, registry, cmd_queue = _client(monkeypatch)
+    registry.create(
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
+        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+    )
+
+    r = client.delete("/sessions/" + _SID)
+
+    assert r.status_code == 200
+    assert r.json() == {"deleted": _SID}
+    assert registry.get(_SID) is None
+    assert cmd_queue.dequeue_cmd(timeout=1) == {"action": "stop", "session_id": _SID}
+
+
+def test_created_session_id_matches_the_validated_format(monkeypatch):
+    """Verrou anti-dérive : le format accepté par les routes est exactement
+    celui que `create_session` génère (si l'un bouge sans l'autre, toute session
+    neuve deviendrait immédiatement introuvable)."""
+    import re
+    client, _, _ = _client(monkeypatch)
+    monkeypatch.setattr(app_mod, "_wait_session_ready", lambda *a, **k: True)
+    monkeypatch.setattr(app_mod, "_internal_post_json", lambda *a, **k: True)
+
+    r = client.post("/sessions", json={"url": "https://example.com"})
+    assert r.status_code == 200
+    assert re.fullmatch(r"sess-[0-9a-f]{12}", r.json()["session_id"])
 
 
 def test_capture_unknown_session_returns_404(monkeypatch):
@@ -200,7 +294,7 @@ def test_capture_requires_auth(monkeypatch):
     app.dependency_overrides[get_cmd_queue] = lambda: SessionCmdQueue(redis_client)
     app.dependency_overrides[get_queue] = lambda: RedisJobQueue(redis_client)
     client = TestClient(app)
-    r = client.post("/sessions/s1/capture")
+    r = client.post(f"/sessions/{_SID}/capture")
     assert r.status_code == 401
 
 
@@ -208,7 +302,7 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     monkeypatch.setenv("OCULAR_ARTIFACTS_DIR", str(tmp_path))
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
     data = b"PNGDATA"
@@ -227,10 +321,10 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app_mod, "_internal_capture", fake_capture)
 
-    r = client.post("/sessions/s1/capture")
+    r = client.post(f"/sessions/{_SID}/capture")
     assert r.status_code == 200
     # le web signe /capture avec le secret conteneur lu dans le registre
-    assert calls == [("http://ocular-sess-s1:8090/capture", "cap-secret", {"turnstile_passed": False})]
+    assert calls == [(f"http://ocular-sess-{_SID}:8090/capture", "cap-secret", {"turnstile_passed": False})]
 
     body = r.json()
     assert "blobs" not in body
@@ -249,7 +343,7 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
 
     # touch : last_activity rafraîchi vers l'heure réelle de la requête,
     # donc différent de l'horodatage figé posé à la création de la session
-    sess = registry.get("s1")
+    sess = registry.get(_SID)
     assert sess["last_activity"] != sess["created_at"]
 
 
@@ -266,7 +360,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
     monkeypatch.setenv("OCULAR_SAVED_DB", str(tmp_path / "saved.db"))
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
 
@@ -288,7 +382,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
     }
     monkeypatch.setattr(app_mod, "_internal_capture", lambda url, secret, timeout=30.0, payload=None: wrapper)
 
-    cap = client.post("/sessions/s1/capture")
+    cap = client.post(f"/sessions/{_SID}/capture")
     assert cap.status_code == 200
     job_id = cap.json()["job_id"]
     assert job_id
@@ -313,7 +407,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
 def test_capture_session_server_error_returns_502(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="tok", now_iso="2026-07-13T10:00:00+00:00",
     )
 
@@ -322,7 +416,7 @@ def test_capture_session_server_error_returns_502(monkeypatch):
 
     monkeypatch.setattr(app_mod, "_internal_capture", boom)
 
-    r = client.post("/sessions/s1/capture")
+    r = client.post(f"/sessions/{_SID}/capture")
     assert r.status_code == 502
 
 
@@ -339,14 +433,14 @@ def test_live_requires_auth(monkeypatch):
     app.dependency_overrides[get_cmd_queue] = lambda: SessionCmdQueue(redis_client)
     app.dependency_overrides[get_queue] = lambda: RedisJobQueue(redis_client)
     client = TestClient(app)
-    r = client.get("/sessions/s1/live")
+    r = client.get(f"/sessions/{_SID}/live")
     assert r.status_code == 401
 
 
 def test_live_happy_path_proxies_and_touches(monkeypatch, caplog):
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
     live_payload = {
@@ -363,13 +457,13 @@ def test_live_happy_path_proxies_and_touches(monkeypatch, caplog):
 
     monkeypatch.setattr(app_mod, "_internal_get_json", fake_get_json)
 
-    r = client.get("/sessions/s1/live")
+    r = client.get(f"/sessions/{_SID}/live")
     assert r.status_code == 200
     assert r.json() == live_payload
     # le web signe /live avec le secret conteneur lu dans le registre
-    assert calls == [("http://ocular-sess-s1:8090/live", "live-secret")]
+    assert calls == [(f"http://ocular-sess-{_SID}:8090/live", "live-secret")]
     # touch : last_activity rafraîchi vers l'heure réelle de la requête
-    sess = registry.get("s1")
+    sess = registry.get(_SID)
     assert sess["last_activity"] != sess["created_at"]
     # secret jamais dans les logs
     assert "live-secret" not in caplog.text
@@ -378,7 +472,7 @@ def test_live_happy_path_proxies_and_touches(monkeypatch, caplog):
 def test_live_server_error_returns_502(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
-        "s1", container="ocular-sess-s1", kind="recon-vnc", target="https://example.com",
+        _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
     )
 
@@ -387,7 +481,7 @@ def test_live_server_error_returns_502(monkeypatch):
 
     monkeypatch.setattr(app_mod, "_internal_get_json", boom)
 
-    r = client.get("/sessions/s1/live")
+    r = client.get(f"/sessions/{_SID}/live")
     assert r.status_code == 502
 
 
