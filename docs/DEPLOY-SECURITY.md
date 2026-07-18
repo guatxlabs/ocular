@@ -193,7 +193,7 @@ Le périmètre stable, c'est **la ou les bases de `default-address-pools`** que 
   > entrant par le bridge — exactement comme le flux qu'on veut bloquer.
   >
   > Concrètement, avec le seul `-i br+ -j DROP` : `hôte → conteneur:8080` **casse**, et
-  > surtout **`web` publie `8000:8000`** (cf. `deploy/docker-compose.yml`) — un
+  > surtout **le frontal `gateway` publie `8000:8000`** (cf. `deploy/docker-compose.yml`) — un
   > `curl http://127.0.0.1:8000` depuis l'hôte part en `OUTPUT`, est DNATé vers le
   > conteneur, et la **réponse** rentre par le bridge → `INPUT` → **DROP**. Reproduit :
   > l'UI web d'Ocular devient injoignable pour l'opérateur (timeout, pas d'erreur claire).
@@ -446,6 +446,10 @@ OCULAR_BIND=0.0.0.0   # dans deploy/.env — UNIQUEMENT derrière un reverse-pro
 ```
 
 **Résiduel inchangé :** le Bearer statique reste sans rotation ni rate-limit. La loopback ne remplace pas le reverse-proxy du §2.5 — elle évite juste que l'omission de celui-ci expose l'API à tout le LAN.
+
+**Où vit ce port (2026-07-18, correctif `rc=52`).** La publication a été **déplacée du `web` vers un frontal TCP dédié `gateway`** (nginx `stream`, `deploy/gateway.conf`) ; le `web` ne publie plus **aucun** port. Ce n'est pas cosmétique : le broker attache/détache le `web` d'un réseau **par session** (`docker network connect`), et Docker **reprogramme la publication de ports d'un conteneur à chaque changement de ses réseaux** — il tue et respawn le `docker-proxy`, **coupant toute connexion en vol** (`curl rc=52`, zéro octet de réponse). `POST /sessions` tenant sa connexion ~8-10 s pendant `_wait_session_ready`, il se faisait décapiter par son **propre** lancement de session (~4 échecs sur 6 mesurés), alors que la session **était créée** → `session_id` perdu et fuite jusqu'au TTL (un conteneur ~4 g et un sous-réseau du pool immobilisés). Le frontal n'étant **jamais** re-câblé, son `docker-proxy` n'est jamais reprogrammé. La propriété de bind loopback ci-dessus est **inchangée**, simplement portée par `gateway`. Gardé par `tests/test_deploy_images.py::test_compose_web_publishes_no_port` et `::test_compose_gateway_never_joins_a_dynamic_network`.
+
+**Conséquence à connaître :** l'API voit désormais l'IP du frontal comme IP cliente (le log `session create ... client_ip=`). En déploiement nominal — derrière le reverse-proxy authentifiant du §2.5 — cette IP était **déjà** celle du proxy amont ; la perte d'information ne concerne donc que l'accès direct en loopback.
 
 ---
 
