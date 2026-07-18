@@ -184,8 +184,11 @@ export async function lookupSavedByUrl(url) {
 // GET /saved -> liste des métas (id desc). Chaque entrée porte, depuis Phase 3e,
 // saved_by/turnstile_solved/analyst_verdict/analyst/analyst_at (pas analyst_note :
 // non exposé par cette route côté serveur, voir setAnalystVerdict).
-export async function listSaved() {
-  const res = await authFetch('/saved');
+export async function listSaved(params) {
+  // `params` (ex. {sort:'triage_score'}) -> query-string ; sans param, GET /saved
+  // nu (compat des appelants existants : getSavedMeta, renderSaved par défaut).
+  const qs = params ? '?' + new URLSearchParams(params).toString() : '';
+  const res = await authFetch('/saved' + qs);
   if (!res.ok) throw new Error(await errText(res));
   return res.json();
 }

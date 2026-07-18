@@ -3,6 +3,7 @@
 // (verdict, label, hash, date) posées en textNode/attribut — jamais innerHTML.
 import { el, iconNode } from '../core.js';
 import { listSaved, Unauthorized } from '../api.js';
+import { triageBadgeText } from '../triage.js';
 
 const VERDICT_TONE = { benign: 'ok', suspicious: 'warn', malicious: 'bad' };
 // verdict ANALYSTE (Phase 3e) : vocabulaire distinct du verdict auto (legitimate,
@@ -18,6 +19,17 @@ const TONE_STYLE = {
 export function verdictPill(v) {
   const tone = VERDICT_TONE[v] || 'mut';
   return el('span.pending-pill', { style: TONE_STYLE[tone] }, v || 'unknown');
+}
+
+// Pastille TRIAGE compacte pour une ligne de liste — `null` si aucun score de
+// triage (analyse antérieure au calcul). La bande (low/medium/high) porte le ton
+// via une classe (cf. .triage-pill dans style.css). Valeur issue de NOTRE moteur,
+// mais posée en textNode via el() par cohérence (jamais innerHTML).
+export function triagePill(m) {
+  if (m == null || m.triage_score == null) return null;
+  const band = m.triage_band || 'low';
+  return el('span.pending-pill.triage-pill.triage-band-' + band, {},
+    triageBadgeText({ score: m.triage_score, band }));
 }
 
 // Pastille verdict ANALYSTE — `null` si aucun verdict analyste posé (pas de pastille
@@ -62,13 +74,26 @@ export function renderSaved(app) {
     el('span.sub', {}, 'Analyses conservées côté serveur, indépendantes du navigateur.'),
   ]));
 
+  // Contrôle de tri (date | priorité) : au changement, re-fetch listSaved({sort})
+  // et re-rend la liste (pas de rechargement de vue). `saved_at` reste le défaut
+  // (comportement historique : listSaved() sans param -> GET /saved inchangé).
+  const sortSelect = el('select.saved-sort', {}, [
+    el('option', { value: 'saved_at' }, 'date'),
+    el('option', { value: 'triage_score' }, 'priorité'),
+  ]);
+  app.appendChild(el('div.saved-controls', {}, [
+    el('label.saved-sort-label', {}, ['trier : ', sortSelect]),
+  ]));
+
   const host = el('div');
   app.appendChild(host);
   host.appendChild(el('div.card', {}, [el('div.emptyview', {}, [el('p', {}, 'chargement…')])]));
 
-  (async () => {
+  async function refresh() {
+    const sort = sortSelect.value;
     let rows;
-    try { rows = await listSaved(); }
+    // sort par défaut (date) -> appel sans param pour préserver GET /saved nu.
+    try { rows = await (sort && sort !== 'saved_at' ? listSaved({ sort }) : listSaved()); }
     catch (ex) {
       if (ex instanceof Unauthorized) return;
       host.replaceChildren(el('div.card', {}, [el('div.errbox', {}, String(ex.message || ex))]));
@@ -93,6 +118,7 @@ export function renderSaved(app) {
       }, [
         verdictPill(m.verdict),
         analystPill(m.analyst_verdict),
+        triagePill(m),
         el('span.jobtarget', { title: m.label || '' }, m.label || '(sans étiquette)'),
         provenanceLine(m),
         el('span.savedhash', { title: m.input_hash || '' }, shortHash(m.input_hash)),
@@ -101,7 +127,10 @@ export function renderSaved(app) {
       ]));
     });
     host.replaceChildren(list);
-  })();
+  }
+
+  sortSelect.addEventListener('change', refresh);
+  refresh();
 
   return null;
 }

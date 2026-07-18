@@ -16,6 +16,7 @@ import {
   networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
 } from '../filter.js';
 import { fmtIso } from './saved.js';
+import { triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL } from '../triage.js';
 
 // seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau
 // réseau (petit résultat -> pas de bruit inutile).
@@ -145,6 +146,11 @@ function mount(app, id, src) {
       ]),
       el('div.finding-count', {}, [el('b', {}, String(findings.length)), 'détections']),
     ]));
+
+    // ---- panneau TRIAGE (2e avis IA/ML) : priorité/100 + bande + divergence +
+    // décomposition des signaux. Absent gracieusement sur une analyse antérieure
+    // (r.triage null) -> ligne discrète « triage non calculé ». Tout en textNode.
+    frag.appendChild(buildTriage(r.triage, verdict));
 
     // ---- furtivité (profil capture) : moteur + statut Turnstile ----
     if (r.stealth) frag.appendChild(buildStealth(r.stealth));
@@ -322,6 +328,48 @@ function mount(app, id, src) {
     post_turnstile: 'Après Turnstile',
     final: 'Capture finale',
   };
+
+  // Panneau TRIAGE (2e avis IA/ML). Helpers PURS (triage.js) -> assemblage el()
+  // ici. `triage` provient de NOTRE moteur (non hostile) mais on reste sur
+  // textNode par cohérence (jamais innerHTML). `null` -> ligne discrète.
+  function buildTriage(triage, rulesVerdict) {
+    if (!triage) {
+      return el('div.triage-none.muted', {}, 'triage non calculé (analyse antérieure)');
+    }
+    const band = triage.band || 'low';
+    const sec = el('div', { class: 'card triage-panel triage-band-' + band });
+
+    // en-tête : priorité + bande
+    sec.appendChild(el('div.triage-head', {}, [
+      el('span.triage-score', {}, ['Priorité ', el('b', {}, String(triage.score)), ' / 100']),
+      el('span.triage-band-pill', {}, TRIAGE_BAND_LABEL[band] || band),
+    ]));
+
+    // 2e avis + badge de divergence éventuel
+    const opinion = [el('span.triage-2label', {}, '2e avis : '),
+      el('b', {}, String(triage.second_opinion || 'inconnu'))];
+    if (triageDiverges(triage, rulesVerdict)) {
+      opinion.push(el('span.triage-diverge', {
+        title: 'verdict règles : ' + String(rulesVerdict || 'inconnu'),
+      }, 'diverge du verdict règles'));
+    }
+    sec.appendChild(el('div.triage-opinion', {}, opinion));
+
+    // décomposition des signaux (label + poids signé + détail)
+    const rows = triageSignalRows(triage);
+    if (rows.length) {
+      sec.appendChild(el('ul.triage-signals', {}, rows.map((s) => el('li.triage-sig', {}, [
+        el('span.sig-weight', {}, s.weightText),
+        el('span.sig-label', {}, s.label),
+        s.detail ? el('span.sig-detail', {}, s.detail) : null,
+      ]))));
+    }
+
+    // traçabilité des poids
+    sec.appendChild(el('div.triage-foot.muted', {},
+      'poids : ' + String(triage.weights_version || '?')));
+    return sec;
+  }
 
   function buildStealth(st) {
     const sec = el('div.stealth-bar');
