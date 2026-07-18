@@ -15,6 +15,12 @@ from bus.sessions import SessionCmdQueue, SessionRegistry
 # uuid4().hex[:12]) — les routes de session ne valident QUE celui-ci.
 _SID = "sess-0123456789ab"
 
+# Propriétaire inscrit par `create_session` en mode bearer (défaut) : TOUS les
+# porteurs du jeton partagé ont l'identité "token" (cf. `resolve_identity`), donc
+# une session semée pour ces tests doit porter ce propriétaire — sans quoi elle
+# est « sans propriétaire » et refusée aux non-admins (fail-closed).
+_BEARER_OWNER = "token"
+
 
 def _client(monkeypatch):
     monkeypatch.setenv("OCULAR_TOKEN", "t")
@@ -162,7 +168,7 @@ def test_list_sessions_excludes_token(monkeypatch):
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
         token="super-secret-token", secret="super-secret-container",
-        now_iso="2026-07-13T10:00:00+00:00",
+        owner=_BEARER_OWNER, now_iso="2026-07-13T10:00:00+00:00",
     )
     r = client.get("/sessions")
     assert r.status_code == 200
@@ -180,7 +186,7 @@ def test_delete_session_enqueues_stop_and_removes_registry_entry(monkeypatch):
     client, registry, cmd_queue = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
-        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", owner=_BEARER_OWNER, now_iso="2026-07-13T10:00:00+00:00",
     )
 
     r = client.delete(f"/sessions/{_SID}")
@@ -208,7 +214,7 @@ def test_delete_session_rejects_malformed_session_id(monkeypatch, hostile):
     client, registry, cmd_queue = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
-        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", owner=_BEARER_OWNER, now_iso="2026-07-13T10:00:00+00:00",
     )
 
     r = client.delete("/sessions/" + hostile)
@@ -256,7 +262,7 @@ def test_delete_session_still_works_for_a_wellformed_id(monkeypatch):
     client, registry, cmd_queue = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="t",
-        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", owner=_BEARER_OWNER, now_iso="2026-07-13T10:00:00+00:00",
     )
 
     r = client.delete("/sessions/" + _SID)
@@ -303,7 +309,8 @@ def test_capture_stores_blobs_and_returns_lean_result(monkeypatch, tmp_path):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
-        token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", secret="cap-secret", owner=_BEARER_OWNER,
+        now_iso="2026-07-13T10:00:00+00:00",
     )
     data = b"PNGDATA"
     ref = "sha256:" + hashlib.sha256(data).hexdigest()  # ref cohérent : store_blobs vérifie l'intégrité
@@ -361,7 +368,8 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
     client, registry, _ = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
-        token="tok", secret="cap-secret", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", secret="cap-secret", owner=_BEARER_OWNER,
+        now_iso="2026-07-13T10:00:00+00:00",
     )
 
     from runner_recon_vnc.session_server import build_capture_result
@@ -408,7 +416,7 @@ def test_capture_session_server_error_returns_502(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
-        token="tok", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", owner=_BEARER_OWNER, now_iso="2026-07-13T10:00:00+00:00",
     )
 
     def boom(url, secret, timeout=30.0, payload=None):
@@ -441,7 +449,8 @@ def test_live_happy_path_proxies_and_touches(monkeypatch, caplog):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
-        token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", secret="live-secret", owner=_BEARER_OWNER,
+        now_iso="2026-07-13T10:00:00+00:00",
     )
     live_payload = {
         "network": [{"url": "https://example.com/x", "method": "GET", "status": 200}],
@@ -473,7 +482,8 @@ def test_live_server_error_returns_502(monkeypatch):
     client, registry, _ = _client(monkeypatch)
     registry.create(
         _SID, container="ocular-sess-" + _SID, kind="recon-vnc", target="https://example.com",
-        token="tok", secret="live-secret", now_iso="2026-07-13T10:00:00+00:00",
+        token="tok", secret="live-secret", owner=_BEARER_OWNER,
+        now_iso="2026-07-13T10:00:00+00:00",
     )
 
     def boom(url, secret, timeout=5.0):
