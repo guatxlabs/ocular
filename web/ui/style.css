@@ -1256,10 +1256,10 @@ main#app{display:block;max-width:940px;margin:0 auto;padding:26px 20px 60px}
 .llm-badge{display:inline-block;font-family:var(--font-mono);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:2px 9px;border-radius:var(--pill);color:var(--acc);background:color-mix(in srgb,var(--acc) 12%,transparent);border:1px solid color-mix(in srgb,var(--acc) 40%,transparent)}
 .llm-note p{margin:8px 0 0;font-size:13px;color:var(--fg);white-space:pre-wrap}
 .llm-muted{margin:12px 0 0;font-size:12px;color:var(--mut)}
-.saved-controls{display:flex;justify-content:flex-end;margin-bottom:12px}
-.saved-sort-label{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
-.saved-sort{background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:6px 10px;font-size:12px;cursor:pointer}
-.saved-sort:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
+.saved-controls{display:flex;justify-content:flex-end;gap:14px;margin-bottom:12px}
+.saved-sort-label,.saved-band-label{font-size:12px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
+.saved-sort,.saved-band{background:var(--card2);border:1px solid var(--bd);border-radius:9px;color:var(--fg);padding:6px 10px;font-size:12px;cursor:pointer}
+.saved-sort:focus,.saved-band:focus{outline:none;border-color:var(--acc);box-shadow:0 0 0 3px var(--acc-soft)}
 .jobrow .triage-pill{flex:0 0 auto}
 /* Admin : registre « privilégié / destructif » signalé par l'accent danger */
 .admtoken{border-left:3px solid var(--bad);margin-bottom:16px}

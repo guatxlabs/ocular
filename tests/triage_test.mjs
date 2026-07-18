@@ -3,7 +3,7 @@
 // directement les fonctions pures et on asserte sur leurs valeurs de retour.
 import assert from 'node:assert';
 import {
-  triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL,
+  triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL, roundHalfEven,
 } from '../web/ui/triage.js';
 
 // --- libellés de bande ---
@@ -55,5 +55,20 @@ assert.strictEqual(rows[0].detail, '');
 // arrondi d'un poids fractionnaire
 assert.strictEqual(
   triageSignalRows({ signals: [{ label: 'x', weight: 4.6, detail: '' }] })[0].weightText, '+5');
+
+// --- roundHalfEven : cohérence avec round() de Python (half-to-even) ---
+// (Math.round divergerait : 2.5->3, 22.5->23 ; Python round : 2.5->2, 22.5->22.)
+assert.strictEqual(roundHalfEven(2.5), 2, '2.5 -> 2 (pair)');
+assert.strictEqual(roundHalfEven(3.5), 4, '3.5 -> 4 (pair)');
+assert.strictEqual(roundHalfEven(22.5), 22, '22.5 -> 22 (pair)');
+assert.strictEqual(roundHalfEven(-2.5), -2, '-2.5 -> -2 (pair)');
+assert.strictEqual(roundHalfEven(-3.5), -4, '-3.5 -> -4 (pair)');
+assert.strictEqual(roundHalfEven(4.6), 5, 'non-demi : arrondi normal');
+assert.strictEqual(roundHalfEven(4.4), 4, 'non-demi : arrondi normal');
+assert.strictEqual(roundHalfEven(0), 0);
+assert.strictEqual(roundHalfEven(undefined), 0, 'défensif');
+// un poids calibré à .5 s'affiche donc au pair (cohérent avec le score serveur)
+assert.strictEqual(
+  triageSignalRows({ signals: [{ label: 'x', weight: 22.5, detail: '' }] })[0].weightText, '+22');
 
 console.log('triage_test OK');
