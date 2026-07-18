@@ -31,3 +31,25 @@ def test_require_egress_guard_on(monkeypatch):
     for v in ("0", "false", "", "off"):
         monkeypatch.setenv("OCULAR_REQUIRE_EGRESS_GUARD", v)
         assert s.require_egress_guard() is False
+
+
+# --- Isolation réseau par session : conteneur web attaché/détaché ------------
+
+def test_web_container_default(monkeypatch):
+    monkeypatch.delenv("OCULAR_WEB_CONTAINER", raising=False)
+    from ocular_settings import web_container
+    assert web_container() == "ocular-web"
+
+
+def test_web_container_env_override(monkeypatch):
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "mon-web")
+    from ocular_settings import web_container
+    assert web_container() == "mon-web"
+
+
+def test_web_container_blank_falls_back_to_default(monkeypatch):
+    # une valeur vide/espaces ne doit pas produire un nom de conteneur vide
+    # (docker network connect échouerait de façon opaque).
+    monkeypatch.setenv("OCULAR_WEB_CONTAINER", "   ")
+    from ocular_settings import web_container
+    assert web_container() == "ocular-web"

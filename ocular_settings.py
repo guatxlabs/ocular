@@ -163,6 +163,16 @@ def artifacts_dir() -> str:
     return os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
 
 
+def web_container() -> str:
+    """Nom du conteneur web, que le broker attache/détache aux réseaux
+    per-session (`docker network connect`). Le compose fixe
+    `container_name: ocular-web` pour que ce nom soit DÉTERMINISTE (sinon
+    Docker génère `<projet>-web-1`, non devinable par le broker).
+    Surchargeable par `OCULAR_WEB_CONTAINER` ; une valeur vide retombe sur
+    le défaut (un nom vide ferait échouer `network connect` de façon opaque)."""
+    return os.environ.get("OCULAR_WEB_CONTAINER", "").strip() or "ocular-web"
+
+
 def max_sessions() -> int:
     """Plafond de sessions interactives CONCURRENTES (anti-épuisement de
     ressources : chaque session = un conteneur ~4g). Le web refuse (429)

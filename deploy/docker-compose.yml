@@ -5,6 +5,10 @@ services:
 
   web:
     build: { context: .., dockerfile: deploy/Dockerfile.web }
+    # Nom DÉTERMINISTE : le broker attache ce conteneur aux réseaux per-session
+    # (docker network connect). Sans container_name, Docker générerait
+    # `<projet>-web-1`, que le broker ne peut pas deviner.
+    container_name: ocular-web
     restart: unless-stopped
     environment:
       REDIS_URL: "redis://redis:6379"
@@ -68,6 +72,8 @@ services:
       # ajuste-le à la taille d'écran cible (défaut 1920x1080). Le broker le
       # transmet au conteneur de session (validé par regex).
       OCULAR_SESSION_SCREEN: "${OCULAR_SESSION_SCREEN:-1920x1080}"
+      # Conteneur web que le broker attache/détache aux réseaux per-session.
+      OCULAR_WEB_CONTAINER: "${OCULAR_WEB_CONTAINER:-ocular-web}"
     mem_limit: 1g
     cpus: "1.0"
     volumes:
