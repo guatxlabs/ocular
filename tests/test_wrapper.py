@@ -167,3 +167,28 @@ def test_build_populates_triage():
     assert result.triage is not None
     assert result.triage.band == "high"
     assert result.triage.weights_version == "builtin-1"
+
+
+def test_add_screenshot_skips_oversized(monkeypatch):
+    from engine.wrapper import ResultBuilder
+    monkeypatch.setenv("OCULAR_MAX_ARTIFACT_BYTES", "100")
+    b = ResultBuilder()
+    ref = b.add_screenshot(0, "initial", b"\x89PNG" + b"x" * 200)
+    assert ref is None            # hors-cap -> ignoré
+    assert b.screenshots == []
+    assert b.blobs == {}
+    # sous le cap : stocké normalement
+    ref2 = b.add_screenshot(0, "initial", b"tiny")
+    assert ref2 is not None and ref2 in b.blobs
+
+
+def test_set_dom_truncates_oversized(monkeypatch):
+    from engine.wrapper import ResultBuilder
+    monkeypatch.setenv("OCULAR_MAX_ARTIFACT_BYTES", "50")
+    b = ResultBuilder()
+    ref = b.set_dom(b"<html>" + b"x" * 500 + b"</html>")
+    assert ref is not None
+    stored = b.blobs[ref]
+    assert len(stored) == 50                       # tronqué au cap
+    from engine.wrapper import sha256_ref
+    assert ref == sha256_ref(stored)               # hash cohérent avec les octets stockés

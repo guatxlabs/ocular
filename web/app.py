@@ -27,6 +27,7 @@ from engine.urlnorm import normalize_url
 from ocular_logging import get_logger
 from ocular_settings import (
     admin_group,
+    artifacts_dir,
     job_ttl,
     llm_base_url,
     llm_enabled,
@@ -284,8 +285,7 @@ def get_artifact(job_id: str, ref: str) -> Response:
         fname = ref_to_filename(ref)  # valide ^sha256:[0-9a-f]{64}$ (anti-traversal)
     except ValueError:
         raise HTTPException(status_code=400, detail="ref invalide")
-    artifacts_dir = os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
-    path = os.path.join(artifacts_dir, fname)
+    path = os.path.join(artifacts_dir(), fname)
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="artefact absent")
     with open(path, "rb") as fh:
@@ -469,7 +469,7 @@ def capture_session(
         log.warning("session capture failed session_id=%s", session_id)
         raise HTTPException(status_code=502, detail="capture échouée")
 
-    store_blobs(wrapper.get("blobs", {}), os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts"))
+    store_blobs(wrapper.get("blobs", {}), artifacts_dir())
 
     result = wrapper.get("result", {})
     result_id = "sesscap-" + session_id + "-" + uuid.uuid4().hex[:8]
@@ -653,7 +653,7 @@ def _read_artifact_bytes(ref: str) -> bytes | None:
         fname = ref_to_filename(ref)
     except ValueError:
         return None
-    path = os.path.join(os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts"), fname)
+    path = os.path.join(artifacts_dir(), fname)
     if not os.path.isfile(path):
         return None
     with open(path, "rb") as fh:

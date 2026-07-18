@@ -2,9 +2,8 @@
 // l'en-tête X-Admin-Token EN PLUS du Bearer. Le token admin est gardé en variable
 // de MÉMOIRE (module ES singleton), JAMAIS en localStorage — il disparaît au reload.
 // Toutes les données affichées passent en textNode/attribut (jamais innerHTML).
-import { el, iconNode, openModal, isAdmin, getGroups } from '../core.js';
+import { el, iconNode, openModal, isAdmin, getGroups, verdictPill, fmtIso, shortHash } from '../core.js';
 import { listSaved, deleteSaved, flushSaved, Unauthorized } from '../api.js';
-import { verdictPill, fmtIso, shortHash } from './saved.js';
 
 // Session en mémoire : survit aux changements de route (module importé une fois),
 // perdu au rechargement de la page. NON persisté -> pas de fuite dans le stockage.

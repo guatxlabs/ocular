@@ -1,25 +1,15 @@
 // saved.js — liste des analyses sauvegardées (source serveur : GET /saved).
 // Chaque ligne ouvre le détail figé (#/saved/{id}). Toutes les données affichées
 // (verdict, label, hash, date) posées en textNode/attribut — jamais innerHTML.
-import { el, iconNode } from '../core.js';
+import { el, iconNode, TONE_STYLE, verdictPill, fmtIso, shortHash } from '../core.js';
 import { listSaved, Unauthorized } from '../api.js';
 import { triageBadgeText } from '../triage.js';
 
-const VERDICT_TONE = { benign: 'ok', suspicious: 'warn', malicious: 'bad' };
 // verdict ANALYSTE (Phase 3e) : vocabulaire distinct du verdict auto (legitimate,
-// pas benign — cf. AnalystVerdictRequest côté serveur) ; même palette de tons.
+// pas benign — cf. AnalystVerdictRequest côté serveur) ; même palette de tons
+// (TONE_STYLE partagé depuis core.js). verdictPill/fmtIso/shortHash vivent
+// désormais dans core.js (helpers génériques) et sont importés ci-dessus.
 const ANALYST_TONE = { legitimate: 'ok', suspicious: 'warn', malicious: 'bad' };
-const TONE_STYLE = {
-  ok: 'color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:color-mix(in srgb,var(--ok) 40%,transparent)',
-  warn: 'color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)',
-  bad: 'color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 42%,transparent)',
-  mut: 'color:var(--mut);background:var(--card2)',
-};
-
-export function verdictPill(v) {
-  const tone = VERDICT_TONE[v] || 'mut';
-  return el('span.pending-pill', { style: TONE_STYLE[tone] }, v || 'unknown');
-}
 
 // Pastille TRIAGE compacte pour une ligne de liste — `null` si aucun score de
 // triage (analyse antérieure au calcul). La bande (low/medium/high) porte le ton
@@ -53,19 +43,6 @@ export function provenanceLine(m) {
   else if (m.turnstile_solved === 0) kids.push(el('span.prov-ts.bad', { title: 'Turnstile non passé' }, 'Turnstile ✗'));
   if (!kids.length) return null;
   return el('span.provenance-mini', {}, kids);
-}
-
-// ISO -> horodatage local lisible (fallback : la chaîne brute si non parsable).
-export function fmtIso(iso) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleString();
-}
-
-// "sha256:abcd…" -> "abcd…1234" (12 hex de tête, jamais rendu en HTML).
-export function shortHash(h) {
-  const hex = String(h || '').replace(/^sha256:/, '');
-  return hex.length > 14 ? hex.slice(0, 12) + '…' : hex;
 }
 
 export function renderSaved(app) {
