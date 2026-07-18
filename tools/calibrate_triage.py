@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 from typing import Optional
 
 import numpy as np
@@ -31,9 +32,15 @@ def _signal_vector(result: dict) -> list[int]:
 
 
 def collect_dataset(conn) -> tuple[list[list[int]], list[str]]:
-    rows = conn.execute(
-        "SELECT id, analyst_verdict FROM saved_analysis WHERE analyst_verdict IS NOT NULL"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT id, analyst_verdict FROM saved_analysis WHERE analyst_verdict IS NOT NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # base à l'ancien schéma (colonne analyst_verdict absente) ouverte en
+        # lecture seule -> pas de migration possible ; aucun label -> le refus
+        # de calibration (données insuffisantes) s'appliquera proprement.
+        return [], []
     X, y = [], []
     for row in rows:
         result = saved_store.get_result(conn, row["id"])
@@ -119,7 +126,9 @@ def main() -> None:
     ap.add_argument("--min-total", type=int, default=30)
     ap.add_argument("--min-per-class", type=int, default=5)
     args = ap.parse_args()
-    conn = saved_store.connect(args.db)
+    # LECTURE SEULE : la calibration ne doit jamais muter la base des
+    # sauvegardes (pas même le _migrate idempotent de connect()).
+    conn = saved_store.connect_readonly(args.db)
     try:
         weights, report = calibrate(conn, min_total=args.min_total,
                                     min_per_class=args.min_per_class)

@@ -1,3 +1,5 @@
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -13,6 +15,40 @@ def _save_labeled(conn, hash_, findings_rules, analyst_verdict):
               "dom": {"mailtos": [], "redirect_chain": []}}
     sid = saved_store.save(conn, result, {}, None, "2026-01-01T00:00:00Z")
     saved_store.set_analyst_verdict(conn, sid, analyst_verdict, "a", "2026-01-01T00:00:00Z")
+
+
+def test_connect_readonly_rejects_writes(tmp_path):
+    # La calibration ouvre la base en lecture seule : toute écriture est rejetée.
+    p = str(tmp_path / "s.db")
+    saved_store.connect(p).close()  # crée le schéma
+    ro = saved_store.connect_readonly(p)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            ro.execute(
+                "INSERT INTO saved_analysis (input_hash, input_kind, result_json, saved_at)"
+                " VALUES ('sha256:z','html','{}','t')"
+            )
+    finally:
+        ro.close()
+
+
+def test_calibrate_over_readonly_connection(tmp_path):
+    # Calibration au-dessus d'une connexion LECTURE SEULE : fonctionne et ne
+    # mute pas la base (le connect_readonly ne lance pas _migrate).
+    p = str(tmp_path / "s.db")
+    conn = saved_store.connect(p)
+    for i in range(20):
+        _save_labeled(conn, f"sha256:m{i}", ["External form action"], "malicious")
+        _save_labeled(conn, f"sha256:l{i}", [], "legitimate")
+    conn.close()
+
+    ro = saved_store.connect_readonly(p)
+    try:
+        weights, report = calibrate(ro, min_total=10, min_per_class=3)
+    finally:
+        ro.close()
+    assert weights is not None
+    assert weights["signals"]["external_form"][0] > 0
 
 
 def test_calibrate_refuses_below_threshold(tmp_path):
