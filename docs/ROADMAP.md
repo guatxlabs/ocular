@@ -52,6 +52,20 @@ Deux passes d'audit adversarial multi-agents (Opus) : (A) **sécu réseau/pivot*
 
 **Qualité (gains sûrs) :** dé-dup des constantes JS (`engine/browser_js` : CF indicator + scroll-to-load) ; code mort retiré (`sha256_ref`, UI `removeJob`/`VERDICT_LABEL`) ; `conftest.py` autouse `dependency_overrides.clear()` (bug latent d'ordre des tests). **Différés (proposés, non faits)** : split `web/app.py` (middleware/internal_http), extraction helpers UI (rangée réseau/console/exfil), consolidation des 8 factories `_client` de test, `_FakeRedis`→`fakeredis`. **Confirmé solide** (à ne pas régresser) : SQLi paramétré, injection commande, path traversal, auth/authz, secrets/logs, désérialisation, XSS UI, pinning SSRF, seccomp/cap-drop.
 
+## ✅ Audit holistique (sécu + correctness + qualité) post-3o — REMÉDIÉ (2026-07-18, 655 tests / 0 échec)
+
+3 auditeurs Opus indépendants (read-only) sur tout le dépôt, modèle de menace prod/entreprise. **0 Critical permettant exécution de code / évasion conteneur / accès non-auth.** Corrigés :
+- **SSRF NAT64 (Critique)** : `is_ip_allowed` décidait sur `is_global`, qui classe « globale » une IPv6 NAT64/6to4/IPv4-mapped traduisant vers une IPv4 interne (`64:ff9b::a9fe:a9fe` → metadata cloud en réseau DNS64/NAT64). Décide désormais sur l'IPv4 encapsulée. Doc L3 complétée.
+- **Reaper figé (Critique)** : une TOCTOU `touch`/`delete` créait un hash Redis partiel qui faisait planter le reaper à vie (fuite de TOUS les conteneurs de session). `expired()` auto-guérissant (ignore+supprime les hash partiels) + `hset` atomique conditionné (anti-résurrection).
+- **Calibration (Important)** : une seule sauvegarde malformée avortait toute la calibration → tolérance par-ligne.
+- **Monolith (Important, Q1)** : bloc LLM (~210 l, 5 classes) extrait `web/app.py` → `web/llm.py` (1020 → 807 l).
+- **Duplication (Important, Q2)** : `_saved_conn()` → context manager `saved_conn()` (supprime 9× `try/finally close`).
+- **Divers durcissements** : `_validate_weights` impose `medium<high` ; `agrees_with_rules` Optional (plus de badge « diverge » sur verdict unknown) ; cap réponse LLM 512 KiB (anti-OOM) ; note anti-injection-de-prompt ; `set_result` ttl>0 ; `create_saved` json.loads gardé ; **plafond de sessions concurrentes (429)** ; **compose `OCULAR_REQUIRE_EGRESS_GUARD=1` par défaut**.
+
+**Confirmé solide (auditeurs)** : séparation de privilèges (web sans docker.sock), sandbox conteneurs (seccomp deny-défaut, cap-drop ALL, non-root, `--network none` analyse), egress pin anti-rebinding + no-redirect, injections SQL/commande/traversal/XSS systématiquement fermées, ReDoS borné, secrets jamais loggés/committés, numpy test-only.
+
+**⏳ Backlog post-audit (Minors, non bloquants)** : cap de taille du DOM/screenshot rendu côté runner (OOM depuis une page hostile bloatée — conteneur-borné) ; helpers UI `verdictPill`/`fmtIso`/`shortHash` à sortir de `views/saved.js` vers `core.js` ; accessor `artifacts_dir()` ; `httpError()` factorisé dans `api.js` ; VNC-passwd par session (déjà documenté résiduel opérateur).
+
 ## ✅ Phase 3n — refactors qualité (dette de l'audit 3m) — LIVRÉE (2026-07-16, 594 tests / 0 échec)
 
 Refactors **comportement-préservant** (tests verts + redéployé), aucun rewrite.
