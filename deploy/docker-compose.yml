@@ -24,6 +24,10 @@ services:
       # Vide -> admin uniquement via X-Admin-Token.
       OCULAR_ADMIN_GROUP: "${OCULAR_ADMIN_GROUP:-}"
       OCULAR_FORWARD_GROUPS_HEADER: "${OCULAR_FORWARD_GROUPS_HEADER:-X-Forwarded-Groups}"
+      # Plafond de sessions interactives CONCURRENTES (anti-épuisement de
+      # ressources : chaque session = un conteneur ~4g). Le web refuse (429)
+      # au-delà. 0 = illimité. Lu par create_session.
+      OCULAR_MAX_SESSIONS: "${OCULAR_MAX_SESSIONS:-25}"
     read_only: true
     tmpfs: ["/tmp"]
     cap_drop: ["ALL"]
@@ -54,6 +58,12 @@ services:
     environment:
       REDIS_URL: "redis://redis:6379"
       OCULAR_ARTIFACTS_DIR: "/artifacts"
+      # Mode STRICT egress fail-closed, ON par défaut : le broker le transmet
+      # aux runners réseau-ON (egress_policy_env). Le garde egress est déjà ON
+      # par défaut ; ce flag REFUSE de démarrer un runner si le garde a été
+      # désactivé (OCULAR_EGRESS_GUARD=0) plutôt que de basculer en egress
+      # DIRECT silencieux. Mettre "0" seulement en labo réseau non sensible.
+      OCULAR_REQUIRE_EGRESS_GUARD: "${OCULAR_REQUIRE_EGRESS_GUARD:-1}"
       # Résolution Xvfb des sessions interactives (LARGEURxHAUTEUR). Non hardcodé :
       # ajuste-le à la taille d'écran cible (défaut 1920x1080). Le broker le
       # transmet au conteneur de session (validé par regex).

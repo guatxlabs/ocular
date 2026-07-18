@@ -157,6 +157,16 @@ def session_ready_timeout() -> float:
     return float(os.environ.get("OCULAR_SESSION_READY_TIMEOUT", "30"))
 
 
+def max_sessions() -> int:
+    """Plafond de sessions interactives CONCURRENTES (anti-épuisement de
+    ressources : chaque session = un conteneur ~4g). Le web refuse (429)
+    au-delà. `0` = illimité (comportement historique). Défaut 25."""
+    try:
+        return max(0, int(os.environ.get("OCULAR_MAX_SESSIONS", "25")))
+    except ValueError:
+        return 25
+
+
 def llm_enabled() -> bool:
     """Option d'explication LLM (triage 3o). OFF par défaut : l'explication est
     strictement opt-in et n'entre JAMAIS dans le chemin de scoring. Ne s'arme
