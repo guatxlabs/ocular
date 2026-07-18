@@ -217,9 +217,10 @@ def test_llm_summary_excludes_raw_html_and_artifacts(monkeypatch):
 
 def test_explain_internal_host_refused_without_optin(monkeypatch):
     # Garde egress : base_url loopback SANS OCULAR_LLM_ALLOW_INTERNAL doit être
-    # refusée (502) AVANT tout appel sortant. On piège urlopen pour prouver
-    # qu'aucune connexion n'est ouverte.
-    import urllib.request
+    # refusée (502) AVANT toute connexion sortante. On piège
+    # socket.create_connection (le VRAI point d'egress depuis le pinning) pour
+    # prouver qu'aucune socket n'est ouverte.
+    import socket
 
     monkeypatch.setenv("OCULAR_LLM_ENABLED", "1")
     monkeypatch.setenv("OCULAR_LLM_BASE_URL", "http://127.0.0.1:11434/v1")
@@ -227,12 +228,108 @@ def test_explain_internal_host_refused_without_optin(monkeypatch):
     monkeypatch.delenv("OCULAR_LLM_ALLOW_INTERNAL", raising=False)
 
     def _boom(*a, **k):  # pragma: no cover - ne doit jamais être appelé
-        raise AssertionError("aucun appel urlopen ne doit être émis pour un hôte interne")
+        raise AssertionError("aucune connexion ne doit être ouverte pour un hôte interne")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(socket, "create_connection", _boom)
 
     client, q = _client(monkeypatch)
     q.set_result("job-x", json.dumps({"verdict": "suspicious", "triage": None,
                                        "static_findings": [], "dom": {"forms": [], "mailtos": []}}))
     r = client.post("/jobs/job-x/explain")
     assert r.status_code == 502
+
+
+def test_resolve_llm_pin_rejects_internal_without_optin():
+    # _resolve_llm_pin applique la garde egress : un hôte loopback sans opt-in
+    # -> _CaptureError, aucune IP épinglée retournée.
+    import pytest
+    from web.app import _resolve_llm_pin
+    from web.internal_http import CaptureError
+
+    with pytest.raises(CaptureError):
+        _resolve_llm_pin("http://127.0.0.1:11434/v1", allow_internal=False)
+
+
+def test_resolve_llm_pin_allows_internal_with_optin():
+    # Avec opt-in, un hôte interne est autorisé ET épinglé sur son IP littérale.
+    from web.app import _resolve_llm_pin
+
+    endpoint, pinned_ip, is_https = _resolve_llm_pin(
+        "http://127.0.0.1:11434/v1", allow_internal=True)
+    assert pinned_ip == "127.0.0.1"
+    assert is_https is False
+    assert endpoint == "http://127.0.0.1:11434/v1/chat/completions"
+
+
+def test_resolve_llm_pin_rejects_bad_scheme():
+    import pytest
+    from web.app import _resolve_llm_pin
+    from web.internal_http import CaptureError
+
+    with pytest.raises(CaptureError):
+        _resolve_llm_pin("ftp://example.com/x", allow_internal=True)
+
+
+def test_resolve_llm_pin_public_host_returns_resolved_ip(monkeypatch):
+    # Hors opt-in, on épingle l'IP renvoyée par resolve_allowed_ip (publique).
+    import web.app as appmod
+
+    monkeypatch.setattr(appmod, "resolve_allowed_ip", lambda host, port=0: "93.184.216.34")
+    endpoint, pinned_ip, is_https = appmod._resolve_llm_pin(
+        "https://llm.example.com/v1", allow_internal=False)
+    assert pinned_ip == "93.184.216.34"
+    assert is_https is True
+    assert endpoint.endswith("/chat/completions")
+
+
+def test_pinned_http_connection_targets_pinned_ip(monkeypatch):
+    # La connexion épinglée ouvre la socket sur l'IP épinglée, PAS sur le
+    # hostname (défait le rebinding : http.client ne re-résout pas).
+    import socket
+    from web.app import _PinnedHTTPConnection
+
+    captured = {}
+
+    class _FakeSock:
+        def close(self):
+            pass
+
+    def _fake_create_connection(address, *a, **k):
+        captured["address"] = address
+        return _FakeSock()
+
+    monkeypatch.setattr(socket, "create_connection", _fake_create_connection)
+    conn = _PinnedHTTPConnection("llm.example.com", "93.184.216.34", timeout=5)
+    conn.connect()
+    assert captured["address"] == ("93.184.216.34", 80)
+
+
+def test_llm_opener_does_not_follow_redirects():
+    # Anti-SSRF : l'opener LLM ne suit AUCUNE redirection (un 3xx cross-scheme
+    # d'un endpoint hostile rouvrirait la SSRF via un handler non épinglé).
+    from web.app import _NoRedirect, _pinned_opener
+
+    # redirect_request renvoie None -> urllib ne suit pas.
+    assert _NoRedirect().redirect_request(
+        None, None, 302, "Found", {}, "http://169.254.169.254/") is None
+
+    # l'opener épinglé installe notre _NoRedirect ET aucun HTTPRedirectHandler
+    # par défaut ne subsiste (sinon un 3xx serait suivi non épinglé).
+    import urllib.request
+    opener = _pinned_opener("93.184.216.34", is_https=False)
+    assert any(isinstance(h, _NoRedirect) for h in opener.handlers)
+    assert not any(type(h) is urllib.request.HTTPRedirectHandler for h in opener.handlers)
+
+
+def test_pinned_https_connection_keeps_cert_verification():
+    # Le pinning HTTPS ne désactive JAMAIS la vérification TLS : sans contexte
+    # explicite, http.client.HTTPSConnection crée le contexte vérifiant par
+    # défaut (cert + hostname). On l'assied sur la connexion (comportement
+    # http.client stable inter-versions), pas sur le handler (dont le _context
+    # reste None en 3.11).
+    import ssl
+    from web.app import _PinnedHTTPSConnection
+
+    ctx = _PinnedHTTPSConnection("llm.example.com", "93.184.216.34")._context
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True

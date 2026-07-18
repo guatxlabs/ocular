@@ -68,6 +68,9 @@ Redis n'a **pas d'authentification** (aujourd'hui protégé par la seule topolog
 ### 2.6 Chaîne d'approvisionnement (MEDIUM)
 Binaire Camoufox téléchargé au **build** sans vérification de checksum ; dépendances pip majoritairement non épinglées. **À faire :** épingler les versions + hashes, vérifier un checksum du binaire Camoufox. (Aucun téléchargement au **runtime** — vérifié.)
 
+### 2.7 Option LLM d'explication (`POST /jobs/{id}/explain`) — OFF par défaut
+Désarmée sauf `OCULAR_LLM_ENABLED=1` + `OCULAR_LLM_BASE_URL`. L'appel sortant (depuis `web`) passe par la garde egress (`validate_capture_url`/`resolve_allowed_ip`) et est **épinglé sur l'IP résolue** (anti DNS-rebinding, vérif TLS préservée) ; le résumé envoyé au LLM est une **whitelist** (verdict/triage/findings — jamais le HTML brut/artefacts). **Contraintes opérateur du pinning :** l'appel LLM **ne suit aucune redirection** et **ignore les proxies d'environnement** (`http_proxy`/`https_proxy`) — nécessaire pour que le pin tienne. Donc : un endpoint LLM qui répond par un 3xx, ou qui n'est joignable qu'à travers un proxy sortant, **ne fonctionnera pas** ; pointer `OCULAR_LLM_BASE_URL` directement sur l'hôte final. Un hôte interne (Ollama LAN) exige `OCULAR_LLM_ALLOW_INTERNAL=1` (lève le blocage RFC1918 **pour cet hôte seulement**).
+
 ---
 
 ## 3. Checklist de déploiement en réseau sensible
