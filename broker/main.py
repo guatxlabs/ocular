@@ -76,16 +76,33 @@ def process_session_cmd(cmd: dict, registry: SessionRegistry) -> None:
         # jusqu'à `docker run -e OCULAR_SESSION_SECRET=…` ET stocké au registre
         # pour que le web signe ses appels internes. Jamais loggé.
         secret = cmd.get("secret", "")
-        container = launch_session(session_id, secret=secret)
+        # RÉSERVATION AVANT LANCEMENT (anti-race avec `_sweeper_loop`) : l'entrée
+        # registre est écrite d'ABORD, avec un `container` vide. Sans elle, la
+        # fenêtre de `launch_session` (~0,6-3 s : network create + docker run +
+        # network connect) laissait un conteneur visible de `docker ps -a` mais
+        # ABSENT du registre — le sweeper concurrent appliquait « pas au registre
+        # => résidu » et DÉTRUISAIT une session saine qui venait de démarrer
+        # (variante pire : un sweep entre `network create` et `docker run`
+        # supprimait le réseau et le run échouait en « network not found »).
+        # Le `container` vide est significatif : `web._wait_session_ready` exige
+        # un container non vide, donc il continue d'attendre le remplissage.
         registry.create(
             session_id,
-            container=container,
+            container="",
             kind="recon-vnc",
             target=cmd.get("target", ""),
             token=cmd.get("token", ""),
             secret=secret,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
+        try:
+            container = launch_session(session_id, secret=secret)
+        except Exception:
+            # pas de fantôme pending au registre : il protégerait indéfiniment
+            # du balayage un réseau/conteneur qui n'aboutira jamais.
+            registry.delete(session_id)
+            raise
+        registry.set_container(session_id, container)
         log.info("session cmd launch session_id=%s container=%s", session_id, container)
     elif action == "stop":
         stop_session(f"ocular-sess-{session_id}")

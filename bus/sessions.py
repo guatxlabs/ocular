@@ -60,6 +60,13 @@ class SessionRegistry:
         now_iso: str,
         secret: str = "",
     ) -> None:
+        """Crée (ou écrase) l'entrée d'une session. `container` peut être VIDE :
+        c'est la réservation *pending* que le broker pose AVANT `launch_session`
+        (cf. `set_container`), pour que le balayage des orphelins ne voie jamais
+        de trou entre la naissance du conteneur et son inscription au registre.
+        Une entrée pending est complète du point de vue de `expired()`
+        (created_at/last_activity posés), et `web._wait_session_ready` continue
+        d'attendre puisqu'il exige un `container` non vide."""
         epoch = _iso_to_epoch(now_iso)
         self._r.hset(
             self._key(session_id),
@@ -110,6 +117,15 @@ class SessionRegistry:
         # hset conditionné (anti-résurrection) : ne réécrit que si la session
         # a encore son created_at, sinon no-op (session déjà supprimée).
         self._hset_if_alive(self._key(session_id), "last_activity", _iso_to_epoch(now_iso))
+
+    def set_container(self, session_id: str, container: str) -> None:
+        """Complète une réservation *pending* avec le nom du conteneur réellement
+        lancé. Conditionné à ce que la session soit encore vivante
+        (`_hset_if_alive`) : si le reaper a supprimé la session pendant le
+        lancement, on ne la RESSUSCITE pas sous forme de hash partiel — c'est le
+        balayage des orphelins qui récupérera le conteneur, comportement correct
+        puisqu'il n'a alors plus de session."""
+        self._hset_if_alive(self._key(session_id), "container", container)
 
     def mark_connected(self, session_id: str) -> None:
         """Efface `disconnected_at` : la session est (de nouveau) activement
