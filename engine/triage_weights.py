@@ -9,7 +9,13 @@ BUILTIN = {
     "bands": {"medium": 40, "high": 70},  # score < medium -> low ; >= high -> high
     "signals": {
         # clé -> (poids, libellé FR)
-        "obfuscation_cluster":   (50.0, "Cluster d'obfuscation/exécution"),
+        # 65 = base(5)+65 >= high(70) : un cluster d'obfuscation SEUL (>=2 règles
+        # _OBF, même medium) atteint la bande `high` -> 2e avis `malicious`, aligné
+        # sur compute_verdict (`len(obf)>=2 -> malicious`). Évite une fausse
+        # divergence sur le signal malveillant le plus fort ; le 2e avis garde sa
+        # liberté de diverger sur les signaux plus faibles. Poids provisoire (la
+        # calibration l'ajustera avec les données).
+        "obfuscation_cluster":   (65.0, "Cluster d'obfuscation/exécution"),
         "obfuscation_single":    (18.0, "Obfuscation isolée"),
         "cred_and_urgency":      (25.0, "Identifiants + langage d'urgence"),
         "cred_external_form":    (22.0, "Identifiants postés vers un domaine externe"),

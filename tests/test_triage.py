@@ -75,6 +75,18 @@ def test_obfuscation_cluster_high_band():
     assert tri.second_opinion == "malicious"
 
 
+def test_medium_only_obfuscation_cluster_aligns_with_rules():
+    # 2 règles _OBF MEDIUM (aucun high-severity) : compute_verdict renvoie
+    # malicious (len(obf)>=2). Le 2e avis doit atteindre malicious lui aussi
+    # (band high via obfuscation_cluster=65) -> PAS de fausse divergence sur le
+    # signal malveillant le plus fort.
+    findings = [_rf("Base64 decode", "medium"), _rf("URL decode", "medium")]
+    tri = compute_triage(findings, verdict="malicious")
+    assert tri.band == "high"
+    assert tri.second_opinion == "malicious"
+    assert tri.agrees_with_rules is True
+
+
 def test_diverges_when_rules_benign_but_score_high():
     # Règles=benign mais faisceau fort -> 2e avis diverge (badge « à revoir »).
     findings = [_rf("Dynamic code evaluation", "high"), _rf("Base64 decode", "medium")]
