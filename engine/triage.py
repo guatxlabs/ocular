@@ -64,14 +64,38 @@ def load_weights() -> tuple[dict, Optional[str]]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        # validation minimale de forme
-        assert isinstance(data["version"], str)
-        assert isinstance(data["base"], (int, float))
-        assert {"medium", "high"} <= set(data["bands"])
-        assert isinstance(data["signals"], dict)
+        _validate_weights(data)  # lève ValueError si la forme est invalide
         return data, None
     except Exception as exc:  # noqa: BLE001 — fail-safe volontaire
         return BUILTIN, f"{type(exc).__name__}: {exc}"
+
+
+def _is_number(x: Any) -> bool:
+    # bool est sous-classe de int : on l'exclut pour rester strict sur les poids.
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def _validate_weights(data: Any) -> None:
+    """Validation EXPLICITE de forme (pas d'assert : robuste sous `python -O`).
+    Lève ValueError sur toute anomalie ; l'appelant retombe alors sur BUILTIN."""
+    if not isinstance(data, dict):
+        raise ValueError("racine des poids non-dict")
+    if not isinstance(data.get("version"), str):
+        raise ValueError("champ 'version' absent ou non-str")
+    if not _is_number(data.get("base")):
+        raise ValueError("champ 'base' absent ou non-numérique")
+    bands = data.get("bands")
+    if not isinstance(bands, dict) or not _is_number(bands.get("medium")) \
+            or not _is_number(bands.get("high")):
+        raise ValueError("champ 'bands' invalide (medium/high numériques requis)")
+    signals = data.get("signals")
+    if not isinstance(signals, dict):
+        raise ValueError("champ 'signals' absent ou non-dict")
+    for key, entry in signals.items():
+        if isinstance(entry, str) or not isinstance(entry, (list, tuple)) \
+                or len(entry) != 2 or not _is_number(entry[0]) \
+                or not isinstance(entry[1], str):
+            raise ValueError(f"signal '{key}' invalide (attendu [poids, libellé])")
 
 
 def _band(score: int, bands: dict) -> str:
@@ -116,11 +140,15 @@ def compute_triage(
             key="weights_load_error", label="poids par défaut (fichier illisible)",
             weight=0.0, detail=load_err[:200]))
 
-    raw = sum(round(c.weight) for c in contributions)
+    # Décomposition en espace ENTIER : on arrondit chaque contribution une seule
+    # fois, on somme les entiers pour `raw`, puis on clampe. L'ajustement de clamp
+    # s'applique à la valeur *déjà arrondie* de base, de sorte que les entiers
+    # stockés/affichés somment toujours exactement à `score` — même si `base` est
+    # demi-entière (l'arrondi bancaire de round(base+delta) ne casse plus rien).
+    rounded = [round(c.weight) for c in contributions]
+    raw = sum(rounded)
     score = max(0, min(100, raw))
-    # garde l'invariant Σ==score après clamp : ajuste la contribution base.
-    if raw != score:
-        contributions[0].weight += (score - raw)
+    contributions[0].weight = rounded[0] + (score - raw)
 
     band = _band(score, weights["bands"])
     second = _second_opinion(band)

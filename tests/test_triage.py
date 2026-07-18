@@ -135,3 +135,71 @@ def test_calibrated_weights_override(tmp_path, monkeypatch):
     tri = compute_triage([_rf("External form action", "medium")], verdict="suspicious")
     assert tri.weights_version == "calibrated-2026-07-18"
     assert tri.score == 50
+
+
+def _write_weights(tmp_path, monkeypatch, **over):
+    data = {
+        "version": "cal-test", "base": 0,
+        "bands": {"medium": 40, "high": 70},
+        "signals": {"external_form": [50.0, "Formulaire externe"]},
+    }
+    data.update(over)
+    p = tmp_path / "w.json"
+    p.write_text(json.dumps(data))
+    monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(p))
+    return p
+
+
+# --- F1 : la branche de clamp (raw hors [0,100]) doit préserver Σ==score ---
+
+def test_clamp_high_preserves_invariant(tmp_path, monkeypatch):
+    # signaux qui somment > 100 -> score plafonné à 100, invariant maintenu.
+    _write_weights(tmp_path, monkeypatch, base=30,
+                   signals={"external_form": [200.0, "Formulaire externe"]})
+    tri = compute_triage([_rf("External form action", "medium")], verdict="malicious")
+    assert tri.score == 100
+    assert sum(round(s.weight) for s in tri.signals) == tri.score
+
+
+def test_clamp_low_preserves_invariant(tmp_path, monkeypatch):
+    # base négative -> raw < 0 -> score plancher à 0, invariant maintenu.
+    _write_weights(tmp_path, monkeypatch, base=-50,
+                   signals={"external_form": [10.0, "Formulaire externe"]})
+    tri = compute_triage([_rf("External form action", "medium")], verdict="benign")
+    assert tri.score == 0
+    assert sum(round(s.weight) for s in tri.signals) == tri.score
+
+
+# --- F2 : base demi-entière + clamp ne doit pas casser Σ==score (banker's rounding) ---
+
+def test_half_integer_base_under_clamp_preserves_invariant(tmp_path, monkeypatch):
+    # base=0.5 + poids forçant un delta impair : round(base+delta) != round(base)+delta.
+    _write_weights(tmp_path, monkeypatch, base=0.5,
+                   signals={"external_form": [103.0, "Formulaire externe"]})
+    tri = compute_triage([_rf("External form action", "medium")], verdict="malicious")
+    assert tri.score == 100
+    assert sum(round(s.weight) for s in tri.signals) == tri.score
+
+
+# --- F3 : validation explicite / fail-safe (jamais d'exception) ---
+
+def test_empty_weights_file_falls_back(tmp_path, monkeypatch):
+    p = tmp_path / "w.json"
+    p.write_text("{}")
+    monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(p))
+    weights, err = load_weights()
+    assert weights["version"] == "builtin-1"
+    assert err is not None
+    tri = compute_triage([], verdict="benign")
+    assert any(s.key == "weights_load_error" for s in tri.signals)
+
+
+def test_malformed_signal_entry_falls_back(tmp_path, monkeypatch):
+    # forme globale valide mais une entrée de signal n'est pas [poids, libellé].
+    _write_weights(tmp_path, monkeypatch, signals={"external_form": "oops"})
+    weights, err = load_weights()
+    assert weights["version"] == "builtin-1"
+    assert err is not None
+    # compute_triage ne doit pas lever et doit surfacer l'erreur de chargement.
+    tri = compute_triage([_rf("External form action", "medium")], verdict="benign")
+    assert any(s.key == "weights_load_error" for s in tri.signals)
