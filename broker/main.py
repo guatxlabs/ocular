@@ -225,7 +225,18 @@ def run_forever() -> None:
         # `ocular:jobs`) pour que la file de commandes de session ne soit
         # jamais affamée par un flux de jobs (et inversement) : chaque tour
         # attend au plus ~2s au total avant de reboucler.
-        job = queue.dequeue(timeout=1)
+        # Le DÉPILAGE lui-même est gardé : la désérialisation (pydantic `Job`)
+        # a lieu dans `dequeue`, hors du `try` de traitement ci-dessous. Un seul
+        # élément corrompu en file (champ requis manquant, contenu non-JSON)
+        # remontait donc jusqu'au `while True` et ARRÊTAIT le process broker —
+        # emportant les 3 threads démon (reaper/gc/sweeper) avec lui. L'élément
+        # fautif est déjà consommé par `blpop` : on le journalise SANS son
+        # contenu brut (qui peut porter un token/secret) et on reboucle.
+        try:
+            job = queue.dequeue(timeout=1)
+        except Exception as exc:  # noqa: BLE001 - élément illisible : on l'abandonne
+            log.error("job illisible ignoré err=%s", type(exc).__name__)
+            continue
         if job is not None:
             try:
                 process_one(queue, job)
@@ -240,7 +251,13 @@ def run_forever() -> None:
                     queue.set_result(job.job_id, error_result(job.job_id, exc))
                 except Exception:  # noqa: BLE001 - Redis encore en vrac : on abandonne ce job proprement
                     pass
-        cmd = cmd_queue.dequeue_cmd(timeout=1)
+        # Même garde côté commandes de session : `json.loads` a lieu dans
+        # `dequeue_cmd`, hors du `try` de traitement (cf. commentaire ci-dessus).
+        try:
+            cmd = cmd_queue.dequeue_cmd(timeout=1)
+        except Exception as exc:  # noqa: BLE001 - commande illisible : on l'abandonne
+            log.error("commande de session illisible ignorée err=%s", type(exc).__name__)
+            continue
         if cmd is not None:
             try:
                 process_session_cmd(cmd, registry)
