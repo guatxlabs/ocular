@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -28,6 +29,22 @@ from engine.result import (
     StealthInfo,
 )
 from engine.triage import compute_triage
+from ocular_logging import get_logger
+
+_log = get_logger("wrapper")
+_DEFAULT_MAX_ARTIFACT_BYTES = 32 * 1024 * 1024  # 32 MiB
+
+
+def _max_artifact_bytes() -> int:
+    """Cap de taille d'UN artefact (DOM ou screenshot) stocké dans le wrapper.
+    Anti-OOM : une page HOSTILE peut gonfler son DOM (`body.innerHTML =
+    'x'.repeat(5e8)`) et produire un blob de centaines de Mo que le broker
+    (mem_limit 1g) lirait en entier depuis stdout du runner. `0` = illimité.
+    Réglable via `OCULAR_MAX_ARTIFACT_BYTES`."""
+    try:
+        return max(0, int(os.environ.get("OCULAR_MAX_ARTIFACT_BYTES", str(_DEFAULT_MAX_ARTIFACT_BYTES))))
+    except ValueError:
+        return _DEFAULT_MAX_ARTIFACT_BYTES
 
 
 def sha256_ref(data: bytes) -> str:
@@ -82,7 +99,14 @@ class ResultBuilder:
         self.screenshots: list[Screenshot] = []
         self.artifacts = Artifacts()
 
-    def add_screenshot(self, step: int, phase: str, png: bytes, viewport: str = "1280x720") -> str:
+    def add_screenshot(self, step: int, phase: str, png: bytes, viewport: str = "1280x720") -> Optional[str]:
+        # Un PNG tronqué serait invalide -> on IGNORE un screenshot hors-cap
+        # (le résultat n'aura pas cette capture) plutôt que de corrompre l'image.
+        cap = _max_artifact_bytes()
+        if cap and len(png) > cap:
+            _log.warning("screenshot ignoré step=%d phase=%s bytes=%d > cap=%d (page hostile bloatée ?)",
+                         step, phase, len(png), cap)
+            return None
         ref = sha256_ref(png)
         self.blobs[ref] = png
         self.screenshots.append(Screenshot(step=step, phase=phase, image_ref=ref, viewport=viewport))
@@ -91,6 +115,13 @@ class ResultBuilder:
     def set_dom(self, dom_html: bytes) -> Optional[str]:
         if not dom_html:
             return None
+        # Le DOM est un artefact de CONSULTATION : on le tronque au cap (reste
+        # affichable) plutôt que d'OOM. Le hash porte sur les octets réellement
+        # stockés (contenu-adressage cohérent).
+        cap = _max_artifact_bytes()
+        if cap and len(dom_html) > cap:
+            _log.warning("DOM tronqué bytes=%d > cap=%d (page hostile bloatée ?)", len(dom_html), cap)
+            dom_html = dom_html[:cap]
         ref = sha256_ref(dom_html)
         self.blobs[ref] = dom_html
         self.artifacts = Artifacts(dom_html_ref=ref, har_ref=self.artifacts.har_ref)

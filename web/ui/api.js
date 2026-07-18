@@ -46,7 +46,7 @@ export async function submitJob(body) {
 // GET /jobs/{id} -> résultat complet OU {status:"pending"}.
 export async function getJob(id) {
   const res = await authFetch('/jobs/' + encodeURIComponent(id));
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -56,7 +56,7 @@ export async function getJob(id) {
 // La réponse `explanation` est une sortie LLM NON fiable : à poser en textContent.
 export async function explainJob(id) {
   const res = await authFetch('/jobs/' + encodeURIComponent(id) + '/explain', { method: 'POST' });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -75,14 +75,14 @@ export async function checkToken() {
 // DOIT la poser en textContent, jamais en innerHTML.
 export async function whoami() {
   const res = await authFetch('/auth/whoami');
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
 // Charge un artefact protégé (PNG ou DOM) en blob -> objectURL utilisable en src/href.
 export async function artifactObjectUrl(id, ref) {
   const res = await authFetch('/jobs/' + encodeURIComponent(id) + '/artifact/' + ref);
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
@@ -113,7 +113,7 @@ export async function createSession(body) {
 // DELETE /sessions/{id} -> {deleted}. Détruit la session côté serveur (arrêt du conteneur).
 export async function deleteSession(id) {
   const res = await authFetch('/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -127,7 +127,7 @@ export async function captureSession(id, opts) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ turnstile_passed: !!(opts && opts.turnstilePassed) }),
   });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -137,7 +137,7 @@ export async function captureSession(id, opts) {
 // courant. 404 = session inconnue, 502 = conteneur ne répond pas.
 export async function liveSession(id) {
   const res = await authFetch('/sessions/' + encodeURIComponent(id) + '/live');
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -163,7 +163,7 @@ export async function saveAnalysis(jobId, label) {
     if (duplicateLabel) e.duplicateLabel = true; else e.expired = true;
     throw e;
   }
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -172,7 +172,7 @@ export async function saveAnalysis(jobId, label) {
 export async function lookupSaved(hash) {
   const res = await authFetch('/saved/' + encodeURIComponent(hash));
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -187,7 +187,7 @@ export async function lookupSavedByUrl(url) {
     body: JSON.stringify({ url }),
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -199,7 +199,7 @@ export async function listSaved(params) {
   // nu (compat des appelants existants : getSavedMeta, renderSaved par défaut).
   const qs = params ? '?' + new URLSearchParams(params).toString() : '';
   const res = await authFetch('/saved' + qs);
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
@@ -224,21 +224,21 @@ export async function setAnalystVerdict(sid, verdict, note) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) { const e = new Error(await errText(res)); e.status = res.status; throw e; }
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
 // GET /saved/{id}/result -> OcularResult complet (même forme qu'un job).
 export async function getSavedResult(id) {
   const res = await authFetch('/saved/' + encodeURIComponent(id) + '/result');
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   return res.json();
 }
 
 // GET /saved/{id}/artifact/{ref} -> blob -> objectURL (fetch + Bearer, comme les jobs).
 export async function savedArtifactObjectUrl(id, ref) {
   const res = await authFetch('/saved/' + encodeURIComponent(id) + '/artifact/' + ref);
-  if (!res.ok) throw new Error(await errText(res));
+  if (!res.ok) throw await httpError(res);
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
@@ -278,6 +278,15 @@ export async function sha256Hex(text) {
   const hex = Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0')).join('');
   return 'sha256:' + hex;
+}
+
+// Erreur HTTP applicative unifiée : message = corps tronqué (errText), + le
+// status pour que la vue puisse distinguer 403/404/409/422/502 (factorise le
+// motif `new Error(errText); e.status = res.status; throw` répété).
+async function httpError(res) {
+  const e = new Error(await errText(res));
+  e.status = res.status;
+  return e;
 }
 
 async function errText(res) {

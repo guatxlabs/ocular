@@ -93,6 +93,37 @@ export function fmtTs(ms) {
   return new Date(ms).toLocaleString(loc);
 }
 
+// ---- helpers de formatage / pastilles partagés (audit qualité : sortis de
+// views/saved.js — ce sont des utilitaires génériques, pas spécifiques à la vue
+// liste ; réutilisés par jobs/detail/admin/submit). --------------------------
+const VERDICT_TONE = { benign: 'ok', suspicious: 'warn', malicious: 'bad' };
+export const TONE_STYLE = {
+  ok: 'color:var(--ok);background:color-mix(in srgb,var(--ok) 14%,transparent);border-color:color-mix(in srgb,var(--ok) 40%,transparent)',
+  warn: 'color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);border-color:color-mix(in srgb,var(--warn) 40%,transparent)',
+  bad: 'color:var(--bad);background:color-mix(in srgb,var(--bad) 14%,transparent);border-color:color-mix(in srgb,var(--bad) 42%,transparent)',
+  mut: 'color:var(--mut);background:var(--card2)',
+};
+
+// Pastille verdict AUTO (benign/suspicious/malicious) — donnée enum non hostile.
+export function verdictPill(v) {
+  const tone = VERDICT_TONE[v] || 'mut';
+  return el('span.pending-pill', { style: TONE_STYLE[tone] }, v || 'unknown');
+}
+
+// ISO 8601 -> horodatage local lisible (fallback : la chaîne brute si non parsable).
+// Distinct de fmtTs (qui prend des ms epoch) — ici une chaîne ISO.
+export function fmtIso(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString();
+}
+
+// "sha256:abcd…" -> "abcd…" (12 hex de tête). Jamais rendu en HTML.
+export function shortHash(h) {
+  const hex = String(h || '').replace(/^sha256:/, '');
+  return hex.length > 14 ? hex.slice(0, 12) + '…' : hex;
+}
+
 // ---- bandeau whoami « connecté : <identity> » (Phase 3e) --------------------
 // Un whoami() réussi authentifie AUSSI le routeur (identityConfirmed) : couvre le
 // cas forward-auth pur (opt-in serveur actif, aucun jeton Bearer stocké côté

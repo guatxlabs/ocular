@@ -5,7 +5,7 @@
 // Deux sources partagent le même rendu (paramétré par `src`) :
 //   - job   : GET /jobs/{id}      (polling des "pending" + panneau « Sauvegarder »)
 //   - saved : GET /saved/{id}/... (analyse figée en base, pas de polling ni de save)
-import { el, iconNode, esc } from '../core.js';
+import { el, iconNode, esc, fmtIso } from '../core.js';
 import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
   saveAnalysis, getSavedMeta, setAnalystVerdict, explainJob, Unauthorized,
@@ -15,7 +15,6 @@ import {
   CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
   networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
 } from '../filter.js';
-import { fmtIso } from './saved.js';
 import { triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL } from '../triage.js';
 
 // seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau

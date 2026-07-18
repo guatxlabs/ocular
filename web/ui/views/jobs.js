@@ -1,9 +1,8 @@
 // jobs.js — liste des jobs soumis depuis ce navigateur + polling des "pending".
 // L'API n'a pas d'endpoint de listing : la source est localStorage (state.js).
-import { el, iconNode, fmtTs } from '../core.js';
+import { el, iconNode, fmtTs, verdictPill } from '../core.js';
 import { getJobs, removeJobs } from '../state.js';
 import { getJob, Unauthorized } from '../api.js';
-import { verdictPill } from './saved.js';
 
 export function renderJobs(app) {
   const jobs = getJobs();

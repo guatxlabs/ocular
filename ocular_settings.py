@@ -157,6 +157,12 @@ def session_ready_timeout() -> float:
     return float(os.environ.get("OCULAR_SESSION_READY_TIMEOUT", "30"))
 
 
+def artifacts_dir() -> str:
+    """Répertoire des artefacts (screenshots/DOM/HAR) contenu-adressés.
+    Défaut `artifacts` (relatif). Centralise l'accès à `OCULAR_ARTIFACTS_DIR`."""
+    return os.environ.get("OCULAR_ARTIFACTS_DIR", "artifacts")
+
+
 def max_sessions() -> int:
     """Plafond de sessions interactives CONCURRENTES (anti-épuisement de
     ressources : chaque session = un conteneur ~4g). Le web refuse (429)

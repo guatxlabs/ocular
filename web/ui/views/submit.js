@@ -6,10 +6,9 @@
 // ET hash calculés côté serveur via POST /saved/lookup (un seul normaliseur Python
 // canonique — évite la divergence avec un parseur URL JS). Si une analyse existe
 // déjà, une modale propose de la revoir.
-import { el, iconNode, openModal } from '../core.js';
+import { el, iconNode, openModal, fmtIso } from '../core.js';
 import { addJob } from '../state.js';
 import { submitJob, sha256Hex, lookupSaved, lookupSavedByUrl, Unauthorized } from '../api.js';
-import { fmtIso } from './saved.js';
 
 export function renderSubmit(app) {
   let profile = 'capture'; // défaut URL ('capture') ; 'analysis' = HTML
