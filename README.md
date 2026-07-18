@@ -207,20 +207,60 @@ téléchargements déclenchés automatiquement) s'exécute et se rend **dans le 
 (`--cap-drop ALL`, seccomp recon, `--read-only`, non-root) — jamais sur la machine de l'analyste,
 qui ne reçoit que des pixels.
 
-**Ouvrir une session :**
+**Ouvrir une session — la création est ASYNCHRONE (202) :**
 
 ```sh
 curl -X POST http://localhost:8000/sessions \
   -H "Authorization: Bearer $OCULAR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"url": "https://exemple-suspect.tld"}'
+# HTTP 202 Accepted (réponse en < 1 s)
 # -> {"session_id": "sess-…", "token": "…"}  -- token capability WS, à usage unique
 ```
 
+> **202 ne veut PAS dire « prête ».** La session est *acceptée* ; son conteneur met encore ~7-9 s
+> à démarrer. Il faut ensuite **sonder** sa disponibilité (ci-dessous) avant de brancher le
+> WebSocket noVNC ou de capturer.
+
+Cette route était autrefois **synchrone** : elle attendait la disponibilité (jusqu'à
+`OCULAR_SESSION_READY_TIMEOUT`, 30 s) avant de répondre. Un client qui abandonnait pendant
+l'attente — timeout, `Ctrl-C`, proxy amont, onglet fermé — n'apprenait **jamais** son
+`session_id` alors que la session était déjà créée : elle immobilisait un conteneur (~4 Go) et un
+sous-réseau du pool docker jusqu'à son TTL, **sans que personne ne puisse la supprimer**. Le
+client reçoit désormais l'identifiant immédiatement et peut donc toujours nettoyer.
+
+**Sonder la disponibilité :** `GET /sessions/{session_id}`
+
+```sh
+curl http://localhost:8000/sessions/sess-… -H "Authorization: Bearer $OCULAR_TOKEN"
+# -> {"session_id":"sess-…","state":"starting","ready":false,
+#     "kind":"recon-vnc","target":"https://exemple-suspect.tld/","created_at":…,"last_activity":…}
+```
+
+| `state` | signification |
+| --- | --- |
+| `pending` | l'entrée registre existe, le conteneur n'est **pas encore lancé** |
+| `starting` | conteneur lancé, son `session_server` ne répond pas encore `/health` |
+| `ready` | prête : WebSocket noVNC et `/capture` utilisables |
+
+`ready` (booléen) est le dérivé `state == "ready"` : s'arrêter dessus plutôt que sur une liste
+d'états intermédiaires codée en dur, pour survivre à l'ajout d'un état.
+
+La réponse ne contient **jamais** le token capability WS ni le secret de frontière conteneur
+(même filtrage que `GET /sessions`) ; `owner` n'est rendu qu'à un admin. Comme toutes les routes
+de session, elle rend **404** aussi bien pour une session inconnue que pour celle d'un autre
+analyste (indistinguables à dessein : pas d'oracle d'existence) — l'admin passe outre.
+
+**Nettoyage — la contrepartie du 202.** Si la disponibilité n'arrive pas dans un délai
+raisonnable, ou si le sondage échoue, le client **doit** appeler `DELETE /sessions/{session_id}`.
+Un 404 pendant le sondage signale que le serveur a lui-même renoncé et détruit la session (filet
+de sécurité conservé du contrat synchrone) : c'est un échec terminal, pas un état d'attente.
+
 Le client noVNC de l'UI se connecte ensuite à `/sessions/{session_id}/ws` avec ce jeton comme
 sous-protocole WebSocket. Plus simple : ouvrir `#/interactive` dans l'UI (`http://localhost:8000`
-une fois connecté avec `$OCULAR_TOKEN`), qui gère la création de session et l'affichage noVNC
-sans manipuler l'API directement.
+une fois connecté avec `$OCULAR_TOKEN`), qui gère la création de session, le sondage (avec
+progression visible), le nettoyage en cas d'échec et l'affichage noVNC sans manipuler l'API
+directement.
 
 ### Portabilité authentification & secrets
 
