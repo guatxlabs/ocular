@@ -16,11 +16,18 @@ from ocular_settings import session_screen
 log = get_logger("broker.sessions")
 
 _SESSION_IMAGE = "ocular-runner-recon-vnc:latest"
-_SESSION_NETWORK = "ocular-sessions"
 
 
 def _session_name(session_id: str) -> str:
     return f"ocular-sess-{session_id}"
+
+
+def _session_net(session_id: str) -> str:
+    """Réseau docker DÉDIÉ à une session (miroir de `_session_name`). Chaque
+    session vit sur son propre réseau bridge : deux sessions n'ont donc aucune
+    route l'une vers l'autre (un conteneur compromis ne peut plus joindre le
+    :6080/:8090 d'un pair). Le web y est attaché dynamiquement par le broker."""
+    return f"ocular-sess-net-{session_id}"
 
 
 def build_session_args(
@@ -28,8 +35,9 @@ def build_session_args(
 ) -> list[str]:
     """docker run **détaché** (`-d`, jamais `--rm -i` : le conteneur est
     persistant, son cycle de vie géré explicitement via `stop_session`) pour
-    une session interactive (noVNC). Réseau `ocular-sessions` ON (egress
-    Internet nécessaire au recon) mais **aucun port hôte publié** (`-p`) :
+    une session interactive (noVNC). Réseau **dédié à la session**
+    (`ocular-sess-net-{id}`) ON (egress Internet nécessaire au recon) mais
+    **aucun port hôte publié** (`-p`) :
     le web/broker parlent au conteneur via le réseau Docker interne
     uniquement — jamais docker.sock, jamais `--network host`, jamais
     `--privileged`. Durcissement (cap-drop/no-new-privileges/read-only/user)
@@ -37,7 +45,7 @@ def build_session_args(
     return [
         "docker", "run", "-d",
         *base_hardening(_session_name(session_id), rm=False),
-        "--network", _SESSION_NETWORK,
+        "--network", _session_net(session_id),
         "--security-opt", f"seccomp={RECON_SECCOMP}",
         "--tmpfs", "/work:size=512m,mode=1777",
         "--tmpfs", "/tmp:size=64m,mode=1777",
