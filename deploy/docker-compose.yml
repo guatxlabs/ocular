@@ -1,3 +1,10 @@
+# Nom de projet compose EXPLICITE. Sans lui, compose prend le nom du dossier
+# contenant ce fichier (`deploy`) et préfixe tout : images `deploy-web`,
+# conteneurs `deploy-web-1`, volumes `deploy_ocular-*` — trompeur (rien
+# n'indique Ocular) et fragile (déplacer/renommer le dossier renommerait
+# silencieusement toutes les ressources, orphelinant les volumes).
+name: ocular
+
 services:
   redis:
     image: redis:7-alpine
@@ -104,8 +111,14 @@ services:
     # `ocular-sessions`.
 
 volumes:
+  # Noms EXPLICITES (comme le réseau ocular-sessions ci-dessous) : sans `name:`,
+  # compose les préfixerait du nom de projet, donc un renommage du projet
+  # créerait des volumes NEUFS et VIDES en orphelinant les données existantes.
+  # Épingler le nom rend les données indépendantes du nom de projet.
   ocular-artifacts:
+    name: ocular-artifacts
   ocular-saved:
+    name: ocular-saved
 
 networks:
   default: {}
