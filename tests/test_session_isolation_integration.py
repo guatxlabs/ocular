@@ -63,6 +63,9 @@ def test_two_sessions_cannot_reach_each_other(monkeypatch):
 
     suffix = uuid.uuid4().hex[:8]
     sid_a, sid_b = f"iso-a-{suffix}", f"iso-b-{suffix}"
+    # Noms déterministes : calculés AVANT tout lancement pour que le `finally`
+    # d'arrêt couvre aussi un échec de launch_session.
+    ca, cb = f"ocular-sess-{sid_a}", f"ocular-sess-{sid_b}"
     probe = f"ocular-web-probe-{suffix}"
 
     # La « sonde » joue le rôle du conteneur web : launch_session l'attachera
@@ -75,16 +78,19 @@ def test_two_sessions_cannot_reach_each_other(monkeypatch):
         capture_output=True, check=False,
     )
     try:
-        launch_session(sid_a)
-        launch_session(sid_b)
-        ca, cb = f"ocular-sess-{sid_a}", f"ocular-sess-{sid_b}"
         try:
+            launch_session(sid_a)
+            launch_session(sid_b)
+
             # 1) Contrôle POSITIF : la sonde (= le web) joint les DEUX sessions.
             #    Attente de disponibilité : websockify met quelques secondes.
             assert _wait_reachable(docker, probe, ca, 6080), \
                 "la sonde (web) doit joindre la session A"
             assert _wait_reachable(docker, probe, cb, 6080), \
                 "la sonde (web) doit joindre la session B"
+            assert _wait_reachable(docker, probe, ca, 8090), \
+                "la sonde (web) doit joindre le :8090 de la session A " \
+                "(sinon l'assertion négative sur 8090 serait vacue)"
 
             # 2) PROPRIÉTÉ DE SÉCURITÉ : A ne joint PAS B (réseaux disjoints).
             assert not _can_reach(docker, ca, cb, 6080), \
