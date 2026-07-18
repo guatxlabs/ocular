@@ -34,6 +34,8 @@ _NEW_COLUMNS = [
     ("analyst", "TEXT"),
     ("analyst_at", "TEXT"),
     ("analyst_note", "TEXT"),
+    ("triage_score", "INTEGER"),
+    ("triage_band", "TEXT"),
 ]
 
 _ANALYST_VERDICTS = {"legitimate", "suspicious", "malicious"}
@@ -112,6 +114,9 @@ def save(
     # donne donc NULL — pas 0 — pour ne PAS afficher « Turnstile non passé ».
     _ts = (stealth or {}).get("turnstile_solved") if stealth is not None else None
     turnstile_solved = None if _ts is None else (1 if _ts else 0)
+    triage = result.get("triage") or {}
+    triage_score = triage.get("score")
+    triage_band = triage.get("band")
     with conn:  # transaction atomique
         if label:
             # unicité du nom : un label non vide ne peut pas être réutilisé par un
@@ -128,10 +133,12 @@ def save(
         try:
             cur = conn.execute(
                 "INSERT INTO saved_analysis"
-                " (input_hash, input_kind, job_id, verdict, label, result_json, saved_at, saved_by, turnstile_solved)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                " (input_hash, input_kind, job_id, verdict, label, result_json, saved_at,"
+                "  saved_by, turnstile_solved, triage_score, triage_band)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (input_hash, kind, result.get("job_id"), result.get("verdict"),
-                 label, json.dumps(result), now_iso, saved_by, turnstile_solved),
+                 label, json.dumps(result), now_iso, saved_by, turnstile_solved,
+                 triage_score, triage_band),
             )
         except sqlite3.IntegrityError as exc:
             # filet atomique contre la course perdue par le SELECT ci-dessus :
@@ -150,7 +157,7 @@ def save(
 
 _META_COLUMNS = (
     "id, input_hash, verdict, label, saved_at, saved_by, turnstile_solved,"
-    " analyst_verdict, analyst, analyst_at"
+    " analyst_verdict, analyst, analyst_at, triage_score, triage_band"
 )
 
 
@@ -195,9 +202,29 @@ def set_analyst_verdict(
     return cur.rowcount > 0
 
 
-def list_all(conn) -> list[dict]:
+_SORTABLE = {"saved_at", "triage_score"}
+_ORDERS = {"asc", "desc"}
+_BANDS = {"low", "medium", "high"}
+_BAND_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def list_all(conn, *, sort: str = "saved_at", order: str = "desc",
+             min_band: Optional[str] = None) -> list[dict]:
+    if sort not in _SORTABLE or order not in _ORDERS:
+        raise ValueError("tri invalide")
+    if min_band is not None and min_band not in _BANDS:
+        raise ValueError("bande invalide")
+    where, params = "", []
+    if min_band is not None:
+        allowed = [b for b, rank in _BAND_RANK.items() if rank >= _BAND_RANK[min_band]]
+        where = " WHERE triage_band IN (%s)" % ",".join("?" * len(allowed))
+        params = allowed
+    # tri secondaire par id desc pour un ordre stable ; NULLs de triage en fin.
+    direction = "DESC" if order == "desc" else "ASC"
+    order_sql = f"{sort} {direction}, id DESC"
     rows = conn.execute(
-        f"SELECT {_META_COLUMNS} FROM saved_analysis ORDER BY id DESC"
+        f"SELECT {_META_COLUMNS} FROM saved_analysis{where} ORDER BY {order_sql}",
+        params,
     ).fetchall()
     return [dict(r) for r in rows]
 

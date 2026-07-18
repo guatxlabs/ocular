@@ -73,6 +73,26 @@ class StealthInfo(BaseModel):
     challenge: Optional[str] = None
 
 
+class TriageSignal(BaseModel):
+    key: str
+    label: str
+    weight: float
+    detail: str = ""
+
+
+class Triage(BaseModel):
+    """2e avis natif, parallèle au verdict règles (jamais un écrasement).
+    `score` 0-100 = priorité « à regarder » ; sa décomposition intégrale est
+    dans `signals` (Σ des weight affichés == score). `weights_version` trace le
+    jeu de poids (BUILTIN ou calibré) ayant produit ce score."""
+    score: int
+    band: Literal["low", "medium", "high"]
+    second_opinion: Verdict
+    agrees_with_rules: bool
+    signals: list[TriageSignal] = Field(default_factory=list)
+    weights_version: str
+
+
 class Artifacts(BaseModel):
     har_ref: Optional[str] = None
     dom_html_ref: Optional[str] = None
@@ -93,6 +113,7 @@ class OcularResult(BaseModel):
     static_findings: list[StaticFinding] = Field(default_factory=list)
     dynamic_steps: list[DynamicStep] = Field(default_factory=list)
     stealth: Optional[StealthInfo] = None
+    triage: Optional[Triage] = None
     artifacts: Artifacts = Field(default_factory=Artifacts)
 
     @classmethod

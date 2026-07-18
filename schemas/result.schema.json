@@ -346,6 +346,86 @@
       ],
       "title": "StealthInfo",
       "type": "object"
+    },
+    "Triage": {
+      "description": "2e avis natif, parallèle au verdict règles (jamais un écrasement).\n`score` 0-100 = priorité « à regarder » ; sa décomposition intégrale est\ndans `signals` (Σ des weight affichés == score). `weights_version` trace le\njeu de poids (BUILTIN ou calibré) ayant produit ce score.",
+      "properties": {
+        "score": {
+          "title": "Score",
+          "type": "integer"
+        },
+        "band": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Band",
+          "type": "string"
+        },
+        "second_opinion": {
+          "enum": [
+            "benign",
+            "suspicious",
+            "malicious",
+            "unknown"
+          ],
+          "title": "Second Opinion",
+          "type": "string"
+        },
+        "agrees_with_rules": {
+          "title": "Agrees With Rules",
+          "type": "boolean"
+        },
+        "signals": {
+          "items": {
+            "$ref": "#/$defs/TriageSignal"
+          },
+          "title": "Signals",
+          "type": "array"
+        },
+        "weights_version": {
+          "title": "Weights Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "score",
+        "band",
+        "second_opinion",
+        "agrees_with_rules",
+        "weights_version"
+      ],
+      "title": "Triage",
+      "type": "object"
+    },
+    "TriageSignal": {
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "weight": {
+          "title": "Weight",
+          "type": "number"
+        },
+        "detail": {
+          "default": "",
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "weight"
+      ],
+      "title": "TriageSignal",
+      "type": "object"
     }
   },
   "properties": {
@@ -440,6 +520,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/StealthInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "triage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Triage"
         },
         {
           "type": "null"

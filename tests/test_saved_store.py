@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+import saved_store
 import saved_store as ss
 
 
@@ -257,3 +258,47 @@ def test_list_all_and_get_by_hash_expose_new_fields():
     meta = ss.get_by_hash(c, _result()["input_hash"])
     for field in ("saved_by", "turnstile_solved", "analyst_verdict", "analyst", "analyst_at"):
         assert field in meta
+
+
+def test_save_persists_triage(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    result = {
+        "input_hash": "sha256:aa", "profile": "analysis", "job_id": "j",
+        "verdict": "benign",
+        "triage": {"score": 63, "band": "medium"},
+    }
+    sid = saved_store.save(conn, result, {}, "lbl", "2026-01-01T00:00:00Z")
+    meta = saved_store.get_meta(conn, sid)
+    assert meta["triage_score"] == 63
+    assert meta["triage_band"] == "medium"
+
+
+def test_save_without_triage_is_null(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    result = {"input_hash": "sha256:bb", "profile": "analysis", "verdict": "benign"}
+    sid = saved_store.save(conn, result, {}, None, "2026-01-01T00:00:00Z")
+    meta = saved_store.get_meta(conn, sid)
+    assert meta["triage_score"] is None
+    assert meta["triage_band"] is None
+
+
+def _seed(conn, hash_, score, band):
+    saved_store.save(conn, {"input_hash": hash_, "profile": "analysis", "verdict": "benign",
+                            "triage": {"score": score, "band": band}}, {}, None,
+                     "2026-01-01T00:00:00Z")
+
+
+def test_list_all_sort_by_triage_desc(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    _seed(conn, "sha256:a", 10, "low")
+    _seed(conn, "sha256:b", 80, "high")
+    rows = saved_store.list_all(conn, sort="triage_score", order="desc")
+    assert [r["triage_score"] for r in rows] == [80, 10]
+
+
+def test_list_all_filter_min_band(tmp_path):
+    conn = saved_store.connect(str(tmp_path / "s.db"))
+    _seed(conn, "sha256:a", 10, "low")
+    _seed(conn, "sha256:b", 80, "high")
+    rows = saved_store.list_all(conn, min_band="high")
+    assert [r["input_hash"] for r in rows] == ["sha256:b"]

@@ -64,6 +64,28 @@ Refactors **comportement-préservant** (tests verts + redéployé), aucun rewrit
 
 **Écarté (sur-ingénierie, cf. audit)** : fusion `build_result`/`build_capture_result`, unification des `FakePage`, split `core.js`, consolidation des factories `_client`.
 
+## ✅ Phase 3o — couche IA/ML de triage + 2e avis + calibration — LIVRÉE (2026-07-18, 629 tests / 0 échec ; Docker 627+2 skip node)
+
+Couche **native, résource-consciente**, purement additive : elle **complète** le verdict règles sans jamais l'écraser (`compute_verdict` intact byte-for-byte). Spec/plan : `docs/superpowers/specs|plans/2026-07-18-triage-ia-ocular.*`.
+
+1. **Scoreur linéaire transparent** (`engine/triage.py` + `engine/triage_weights.py`, pur-Python 0 dép runtime) : score de triage 0-100 **entièrement décomposable** (Σ des contributions affichées == score, invariant tenu même sous clamp/arrondi), un **2e avis** (`second_opinion`) dérivé des seuils, `agrees_with_rules` vs le verdict règles. Calculé **une seule fois** dans `ResultBuilder.build()` (les 4 sites runner inchangés). Poids surchargeables via `OCULAR_TRIAGE_WEIGHTS`, **fail-safe** (fichier illisible/malformé → BUILTIN + signal `weights_load_error`, ne lève jamais, résistant à `python -O`).
+2. **Persistance + tri/filtre** : colonnes `triage_score`/`triage_band` (migration idempotente, NULL rétro-compat) ; `GET /saved?sort=&order=&min_band=` validé **whitelist-avant-interpolation** (anti-injection) → 422 hors-enum.
+3. **UI explicite** (`web/ui/triage.js` helpers **purs** node-testés + panneau dans `detail.js` + pastille/tri dans `saved.js`) : priorité/100 + bande + 2e avis + badge « diverge du verdict règles » + décomposition des signaux + `weights_version`. Tout en `textNode` (jamais `innerHTML`).
+4. **Calibration ML hors-ligne** (`tools/calibrate_triage.py`, `make calibrate`) : régression logistique multinomiale **numpy** (déterministe, graine fixe) sur les `analyst_verdict` accumulés, **rejoue `extract_signals`** (une seule source de features, pas de dérive train/serve), **refuse sous seuil de données**, sortie **relue puis activée à la main** par l'opérateur. numpy = **test/offline uniquement** (absent des images runtime). Conteneur jetable, zéro résidu host.
+5. **Option LLM d'explication** (`POST /jobs/{id}/explain`) : **off par défaut** (opt-in `OCULAR_LLM_ENABLED`+`_BASE_URL`), OpenAI-compatible (Ollama), **passe par la garde egress** (`validate_capture_url` avant tout appel ; `OCULAR_LLM_ALLOW_INTERNAL` scope l'hôte configuré), **résumé whitelist** (verdict/triage/findings rule+severity/forms action+method — **jamais** HTML brut/artefacts/screenshots/post-bodies, prouvé par test). Sortie LLM rendue en `textNode`. Note d'aide, **jamais** un verdict.
+
+**Sécu** (revue finale opus, 0 Critical/0 Important) : en configuration par défaut, **zéro nouvel egress, zéro nouveau chemin de privilège** ; séparation web→Redis→broker→runner inchangée.
+
+**Décisions notables** : `obfuscation_cluster` 35→50 (poids provisoire calibrable) ; ML natif **avec les données** (heuristique day-1 → classifieur appris à la calibration), pas de modèle pré-entraîné embarqué (pas de dataset fiable).
+
+**⏳ Backlog post-merge (Minors, non bloquants)** :
+- `obfuscation_cluster=50` n'atteint la bande *high* que si le cluster contient un finding *high-severity* ; un cluster de rules *medium* uniquement **diverge** du verdict règles (comportement voulu — le 2e avis complète, ne miroite pas — mais à recalibrer si alignement souhaité).
+- **`calibrate` pas strictement read-only** : `saved_store.connect()` exécute le `_migrate` idempotent (écritures de schéma) → ouvrir la base en `mode=ro` pour la calibration.
+- **DNS-rebinding LLM** : l'appel sortant utilise `urllib` derrière la garde au submit (pas de pinning IP à la connexion) → réutiliser `resolve_allowed_ip` (déjà sur le chemin runner) pour fermer la fenêtre TOCTOU.
+- **Filtre `min_band`** supporté serveur mais **pas exposé en UI** (seul le tri l'est).
+- **Arrondi JS `Math.round` vs banker Python** : un poids calibré à exactement `.5` peut faire diverger l'affichage JS du score de ±1.
+- Tri `triage_score ASC` place les NULL en tête ; message de commit dit « indexées » sans index créé (YAGNI au volume actuel).
+
 ## ✅ Fait (mergé sur `main`)
 
 | Tranche | Contenu |
@@ -211,4 +233,4 @@ Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
 
 ---
 
-*Dernière mise à jour : 2026-07-13 (après merge phase 3c). Voir `docs/superpowers/specs/` et `docs/superpowers/plans/` pour le détail de chaque phase.*
+*Dernière mise à jour : 2026-07-18 (après merge phase 3o — triage IA/ML). Voir `docs/superpowers/specs/` et `docs/superpowers/plans/` pour le détail de chaque phase.*

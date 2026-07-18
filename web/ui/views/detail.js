@@ -8,7 +8,7 @@
 import { el, iconNode, esc } from '../core.js';
 import {
   getJob, artifactObjectUrl, getSavedResult, savedArtifactObjectUrl,
-  saveAnalysis, getSavedMeta, setAnalystVerdict, Unauthorized,
+  saveAnalysis, getSavedMeta, setAnalystVerdict, explainJob, Unauthorized,
 } from '../api.js';
 import {
   buildFilterBar, dedupEntries, networkKey, consoleKey,
@@ -16,6 +16,7 @@ import {
   networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
 } from '../filter.js';
 import { fmtIso } from './saved.js';
+import { triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL } from '../triage.js';
 
 // seuil au-delà duquel la barre de filtre SOC s'affiche au-dessus du tableau
 // réseau (petit résultat -> pas de bruit inutile).
@@ -146,6 +147,18 @@ function mount(app, id, src) {
       el('div.finding-count', {}, [el('b', {}, String(findings.length)), 'détections']),
     ]));
 
+    // ---- panneau TRIAGE (2e avis IA/ML) : priorité/100 + bande + divergence +
+    // décomposition des signaux. Absent gracieusement sur une analyse antérieure
+    // (r.triage null) -> ligne discrète « triage non calculé ». Tout en textNode.
+    frag.appendChild(buildTriage(r.triage, verdict));
+
+    // ---- explication LLM (option OPT-IN, désarmée par défaut). Le bouton n'a de
+    // sens que s'il existe un job id à résumer côté serveur. LLM OFF -> clic -> 404
+    // -> note discrète « option désactivée » (jamais une boîte d'erreur). La réponse
+    // du LLM est NON fiable : posée en textContent via el(), jamais innerHTML.
+    const jobId = r.job_id || id;
+    if (jobId) frag.appendChild(buildLlmExplain(jobId));
+
     // ---- furtivité (profil capture) : moteur + statut Turnstile ----
     if (r.stealth) frag.appendChild(buildStealth(r.stealth));
 
@@ -185,6 +198,39 @@ function mount(app, id, src) {
     frag.appendChild(buildDom(r));
 
     body.replaceChildren(frag);
+  }
+
+  // Panneau « Expliquer avec LLM » (option opt-in, désarmée par défaut). Au clic :
+  // désactive le bouton le temps de la requête (anti double-submit) puis, selon la
+  // réponse : succès -> note + badge modèle (explication en textNode, JAMAIS
+  // innerHTML — sortie LLM non fiable) ; 404 -> ligne muette « option désactivée »
+  // (comportement par défaut, pas une erreur) ; autre échec -> ligne muette discrète.
+  function buildLlmExplain(jobId) {
+    const sec = el('div.llm-panel');
+    const btn = el('button.btn-ghost', { type: 'button' }, 'Expliquer avec LLM');
+    const out = el('div.llm-out');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      out.replaceChildren();
+      try {
+        const res = await explainJob(jobId);
+        out.replaceChildren(el('div.llm-note', {}, [
+          el('span.llm-badge', {}, 'note générée par LLM (' + (res.model || '?') + ')'),
+          el('p', {}, res.explanation || ''),
+        ]));
+        btn.remove(); // note affichée : plus besoin du bouton
+      } catch (ex) {
+        if (ex instanceof Unauthorized) return; // redirection login déjà déclenchée
+        const msg = ex && ex.status === 404
+          ? 'note LLM : option désactivée'
+          : 'note LLM indisponible';
+        out.replaceChildren(el('p.llm-muted', {}, msg));
+        btn.remove();
+      }
+    });
+    sec.appendChild(btn);
+    sec.appendChild(out);
+    return sec;
   }
 
   // Panneau de sauvegarde : label optionnel + bouton. Succès -> « sauvegardée ✓ »
@@ -322,6 +368,48 @@ function mount(app, id, src) {
     post_turnstile: 'Après Turnstile',
     final: 'Capture finale',
   };
+
+  // Panneau TRIAGE (2e avis IA/ML). Helpers PURS (triage.js) -> assemblage el()
+  // ici. `triage` provient de NOTRE moteur (non hostile) mais on reste sur
+  // textNode par cohérence (jamais innerHTML). `null` -> ligne discrète.
+  function buildTriage(triage, rulesVerdict) {
+    if (!triage) {
+      return el('div.triage-none.muted', {}, 'triage non calculé (analyse antérieure)');
+    }
+    const band = triage.band || 'low';
+    const sec = el('div', { class: 'card triage-panel triage-band-' + band });
+
+    // en-tête : priorité + bande
+    sec.appendChild(el('div.triage-head', {}, [
+      el('span.triage-score', {}, ['Priorité ', el('b', {}, String(triage.score)), ' / 100']),
+      el('span.triage-band-pill', {}, TRIAGE_BAND_LABEL[band] || band),
+    ]));
+
+    // 2e avis + badge de divergence éventuel
+    const opinion = [el('span.triage-2label', {}, '2e avis : '),
+      el('b', {}, String(triage.second_opinion || 'inconnu'))];
+    if (triageDiverges(triage, rulesVerdict)) {
+      opinion.push(el('span.triage-diverge', {
+        title: 'verdict règles : ' + String(rulesVerdict || 'inconnu'),
+      }, 'diverge du verdict règles'));
+    }
+    sec.appendChild(el('div.triage-opinion', {}, opinion));
+
+    // décomposition des signaux (label + poids signé + détail)
+    const rows = triageSignalRows(triage);
+    if (rows.length) {
+      sec.appendChild(el('ul.triage-signals', {}, rows.map((s) => el('li.triage-sig', {}, [
+        el('span.sig-weight', {}, s.weightText),
+        el('span.sig-label', {}, s.label),
+        s.detail ? el('span.sig-detail', {}, s.detail) : null,
+      ]))));
+    }
+
+    // traçabilité des poids
+    sec.appendChild(el('div.triage-foot.muted', {},
+      'poids : ' + String(triage.weights_version || '?')));
+    return sec;
+  }
 
   function buildStealth(st) {
     const sec = el('div.stealth-bar');

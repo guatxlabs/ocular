@@ -155,3 +155,27 @@ def session_ready_timeout() -> float:
     session + au session_server pour répondre `/health`, avant de renvoyer
     504 côté web."""
     return float(os.environ.get("OCULAR_SESSION_READY_TIMEOUT", "30"))
+
+
+def llm_enabled() -> bool:
+    """Option d'explication LLM (triage 3o). OFF par défaut : l'explication est
+    strictement opt-in et n'entre JAMAIS dans le chemin de scoring. Ne s'arme
+    qu'avec `OCULAR_LLM_ENABLED=1` ET un `OCULAR_LLM_BASE_URL` non vide."""
+    return os.environ.get("OCULAR_LLM_ENABLED", "0") == "1"
+
+
+def llm_base_url() -> str:
+    """Base URL OpenAI-compatible (ex. `https://host/v1`). Vide par défaut =
+    endpoint /explain désarmé (404)."""
+    return os.environ.get("OCULAR_LLM_BASE_URL", "").strip()
+
+
+def llm_model() -> str:
+    return os.environ.get("OCULAR_LLM_MODEL", "").strip()
+
+
+def llm_allow_internal() -> bool:
+    """Opt-in explicite : autorise un `llm_base_url()` interne (loopback /
+    RFC1918 / link-local) pour un LLM auto-hébergé. Par défaut False → la garde
+    egress (`validate_capture_url`) rejette tout hôte interne avant l'appel."""
+    return os.environ.get("OCULAR_LLM_ALLOW_INTERNAL", "0") == "1"
