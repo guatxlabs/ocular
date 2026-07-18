@@ -66,7 +66,7 @@ Deux passes d'audit adversarial multi-agents (Opus) : (A) **sécu réseau/pivot*
 
 **Backlog post-audit — traité (2026-07-18)** : ✅ cap taille DOM/screenshot côté runner (`ResultBuilder`, `OCULAR_MAX_ARTIFACT_BYTES`) ; ✅ helpers UI `verdictPill`/`fmtIso`/`shortHash`+`TONE_STYLE` → `core.js` ; ✅ accessor `artifacts_dir()` ; ✅ `httpError()` factorisé dans `api.js`.
 
-**⏳ Reste (décision de design, non bloquant)** : **isolation VNC inter-sessions**. Aujourd'hui websockify/x11vnc (port conteneur 6080) n'a pas d'auth propre ; l'accès est protégé par (a) l'auth du proxy WS côté web (token capability avant `accept()`), (b) le `X-Session-Secret` sur les endpoints de contrôle, (c) l'isolation réseau `ocular-sessions`. Résiduel : un conteneur COMPROMIS sur ce réseau pourrait joindre directement le :6080 d'un pair. Le VNC-passwd (DES 8 char) serait une fausse sécurité ; le vrai correctif est **un réseau docker par session** (isolation conteneur-à-conteneur), à cadrer comme mini-chantier broker. Documenté résiduel opérateur L3 en attendant.
+- ~~**Isolation VNC inter-sessions**~~ → **✅ FERMÉ (2026-07-18)** : un réseau docker par session (`ocular-sess-net-{id}`), le broker y attache dynamiquement le web ; deux sessions sont sur des réseaux disjoints. Le VNC-passwd (DES 8 char) a été écarté comme fausse sécurité. Prouvé par un test d'intégration (A ne joint pas B, la sonde-web joint les deux). Prérequis opérateur : élargir `default-address-pools` de Docker (cf. DEPLOY-SECURITY §2.3).
 
 ## ✅ Phase 3n — refactors qualité (dette de l'audit 3m) — LIVRÉE (2026-07-16, 594 tests / 0 échec)
 
