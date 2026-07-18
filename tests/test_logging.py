@@ -87,3 +87,42 @@ def test_valid_log_levels_are_still_honoured(monkeypatch, raw, expected):
 def test_log_level_accessor_strips_and_never_raises(monkeypatch):
     monkeypatch.setenv("OCULAR_LOG_LEVEL", "  debug \n")
     assert ocular_settings.log_level() == "DEBUG"
+
+
+# --- Le paramètre `stream` est SUPPRIMÉ, pas seulement inutilisé -------------
+# Devenu vestigial une fois le défaut passé à stderr (les runners passaient
+# encore `stream=sys.stderr`, sans effet), il restait surtout une façon de
+# recréer la panne : `get_logger("x", stream=sys.stdout)` corrompt le wrapper
+# JSON des runners que parse broker/launcher.py. Le flux n'est pas un choix
+# d'appelant.
+
+def test_get_logger_no_longer_accepts_a_stream_argument():
+    import inspect
+    import ocular_logging
+
+    params = inspect.signature(ocular_logging.get_logger).parameters
+    assert "stream" not in params, (
+        "`stream` doit rester SUPPRIMÉ : le rétablir redonne à un appelant le "
+        "pouvoir d'envoyer des logs sur stdout et de casser le contrat runner."
+    )
+    with pytest.raises(TypeError):
+        ocular_logging.get_logger("x", stream=__import__("sys").stdout)
+
+
+def test_no_caller_passes_a_stream_argument():
+    """Aucun appelant résiduel (les runners le passaient explicitement)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    # `ocular_logging.py` (la définition) et ce fichier de test citent la
+    # signature historique EN PROSE pour documenter pourquoi elle a disparu.
+    skip = {"test_logging.py", "ocular_logging.py"}
+    offenders = []
+    for path in root.rglob("*.py"):
+        if ".venv" in path.parts or path.name in skip:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "get_logger(" in line and "stream=" in line:
+                offenders.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+    assert not offenders, "appels résiduels avec `stream=` : " + "; ".join(offenders)

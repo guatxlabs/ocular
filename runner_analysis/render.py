@@ -13,8 +13,10 @@ from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper, sha256_r
 from ocular_logging import get_logger
 
 # CRITIQUE : stdout du runner = wrapper JSON pur consommé par broker/launcher.py.
-# Tous les logs partent donc sur stderr, jamais sur stdout.
-log = get_logger("runner", stream=sys.stderr)
+# Tous les logs partent donc sur stderr, jamais sur stdout — garanti par
+# `ocular_logging.get_logger` lui-même, qui n'expose PLUS de paramètre `stream`
+# (le flux n'est pas un choix d'appelant : cf. sa docstring).
+log = get_logger("runner")
 
 
 def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple[OcularResult, dict[str, bytes]]:
