@@ -19,35 +19,53 @@ export const $ = (s, r = document) => r.querySelector(s);
 export const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// icônes SVG inline (mêmes chemins que plume ; couleur via currentColor)
-const ICONS = {
-  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>',
-  flask: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3"/><path d="M7 14h10"/>',
-  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
-  logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
-  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>',
-  moon: '<path d="M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z"/>',
-  chevleft: '<path d="M15 6l-6 6 6 6"/>',
-  chevright: '<path d="M9 6l6 6-6 6"/>',
-  download: '<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>',
-  upload: '<path d="M12 21V9"/><path d="M7 14l5-5 5 5"/><path d="M5 3h14"/>',
-  inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.5 5h13l3.5 7v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-6z"/>',
-  warn: '<path d="M12 3l10 18H2z"/><path d="M12 10v4M12 18h.01"/>',
-  bookmark: '<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
-  check: '<path d="M20 6L9 17l-5-5"/>',
-  trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>',
-  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
-};
-export const ic = (n, cls = '') =>
-  `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[n] || ''}</svg>`;
+// Icônes SVG décrites en DONNÉES (élément + attributs), jamais en markup.
+// `iconNode` les construit avec createElementNS/setAttribute : AUCUN innerHTML
+// n'intervient nulle part dans l'UI (hors vendor/noVNC).
+//
+// La version précédente assemblait une chaîne SVG puis la posait en innerHTML,
+// en interpolant `cls` DIRECTEMENT dans l'attribut class. Aucun appelant ne
+// lui passait de donnée non fiable — tous utilisent des littéraux — mais rien
+// ne l'empêchait, et le sink était générique. CodeQL (js/xss) l'a signalé.
+// `setAttribute` n'interprète jamais de markup : le point d'injection
+// disparaît par construction, pas par assainissement.
+const SVG_NS = 'http://www.w3.org/2000/svg';
 
-// version NŒUD de ic() : à passer comme enfant dans el(...) (un string enfant
-// deviendrait un textNode et afficherait le markup en clair). Contenu 100% statique.
+const ICONS = {
+  eye: [['path', {d: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z'}], ['circle', {cx: '12', cy: '12', r: '3'}]],
+  flask: [['path', {d: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3'}], ['path', {d: 'M7 14h10'}]],
+  list: [['path', {d: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01'}]],
+  logout: [['path', {d: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4'}], ['path', {d: 'M16 17l5-5-5-5'}], ['path', {d: 'M21 12H9'}]],
+  sun: [['circle', {cx: '12', cy: '12', r: '4'}], ['path', {d: 'M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2'}]],
+  moon: [['path', {d: 'M21 13A9 9 0 1 1 11 3a7 7 0 0 0 10 10z'}]],
+  chevleft: [['path', {d: 'M15 6l-6 6 6 6'}]],
+  chevright: [['path', {d: 'M9 6l6 6-6 6'}]],
+  download: [['path', {d: 'M12 3v12'}], ['path', {d: 'M7 10l5 5 5-5'}], ['path', {d: 'M5 21h14'}]],
+  upload: [['path', {d: 'M12 21V9'}], ['path', {d: 'M7 14l5-5 5 5'}], ['path', {d: 'M5 3h14'}]],
+  inbox: [['path', {d: 'M22 12h-6l-2 3h-4l-2-3H2'}], ['path', {d: 'M5.5 5h13l3.5 7v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-6z'}]],
+  warn: [['path', {d: 'M12 3l10 18H2z'}], ['path', {d: 'M12 10v4M12 18h.01'}]],
+  bookmark: [['path', {d: 'M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z'}]],
+  check: [['path', {d: 'M20 6L9 17l-5-5'}]],
+  trash: [['path', {d: 'M3 6h18'}], ['path', {d: 'M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2'}], ['path', {d: 'M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6'}], ['path', {d: 'M10 11v6M14 11v6'}]],
+  shield: [['path', {d: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'}]],
+};
+
 export function iconNode(n, cls = '') {
-  const span = document.createElement('span');
-  span.style.display = 'contents';
-  span.innerHTML = ic(n, cls);
-  return span.firstChild;
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', cls ? 'ic ' + cls : 'ic');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  for (const [tag, attrs] of ICONS[n] || []) {
+    const child = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) child.setAttribute(k, v);
+    svg.appendChild(child);
+  }
+  return svg;
 }
 
 // fabrique d'élément : el('div.card', {onclick}, [child|str])
@@ -60,8 +78,7 @@ export function el(tag, attrs = {}, kids = []) {
   });
   for (const [k, v] of Object.entries(attrs)) {
     if (v == null || v === false) continue;
-    if (k === 'html') node.innerHTML = v;
-    else if (k === 'text') node.textContent = v;
+    if (k === 'text') node.textContent = v;
     else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v);
   }
@@ -251,7 +268,7 @@ async function boot() {
 
   const themeBtn = $('#theme');
   if (themeBtn) {
-    const paint = () => { themeBtn.innerHTML = ic(getTheme() === 'dark' ? 'sun' : 'moon'); };
+    const paint = () => { themeBtn.replaceChildren(iconNode(getTheme() === 'dark' ? 'sun' : 'moon')); };
     paint();
     themeBtn.addEventListener('click', () => {
       const next = getTheme() === 'dark' ? 'light' : 'dark';
