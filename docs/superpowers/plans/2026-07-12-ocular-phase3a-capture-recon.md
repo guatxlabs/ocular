@@ -84,7 +84,7 @@ def url_input_hash(url: str) -> str:
 
 - [ ] **Step 1: Copier vision + template**
 ```bash
-cd /home/guat/wslRecover/guat/ocular && mkdir -p runner_recon && touch runner_recon/__init__.py
+cd <racine-du-depot> && mkdir -p runner_recon && touch runner_recon/__init__.py
 cp ../YesWeHack/toolkit/browser-automation/vision.py runner_recon/vision.py
 cp ../YesWeHack/toolkit/browser-automation/turnstile_checkbox.png runner_recon/turnstile_checkbox.png
 ```
@@ -295,7 +295,7 @@ exec python -m runner_recon.capture "$@"
 
 - [ ] **Step 6: Build réel + smoke** —
 ```bash
-cd /home/guat/wslRecover/guat/ocular
+cd <racine-du-depot>
 docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
 # smoke : naviguer une URL bénigne (réseau ON) et vérifier le wrapper
 docker run --rm --cap-drop ALL --security-opt no-new-privileges:true \
