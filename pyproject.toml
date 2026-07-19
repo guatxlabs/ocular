@@ -20,7 +20,7 @@ dependencies = [
   "redis>=5.0",
   "playwright>=1.41",
   "jsonschema>=4.21",
-  "websockets>=12",
+  "websockets>=16.1.1",
 ]
 
 [project.optional-dependencies]
