@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Test comportemental (node) des helpers purs de web/ui/triage.js.
 
 Lance tests/triage_test.mjs via subprocess ; ignoré si `node` est introuvable

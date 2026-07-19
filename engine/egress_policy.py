@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Politique egress + kwargs de lancement Camoufox PARTAGÉS entre le tier batch
 (`runner_recon/capture.py`) et le tier interactif (`runner_recon_vnc/
 session_server.py`). Source UNIQUE : la décision (démarrer le garde / refuser en

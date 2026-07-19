@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Poids par défaut du scoreur de triage (engine/triage.py). SEUL point de
 réglage des poids/seuils : éditable à la main, versionné en Git. Un jeu calibré
 (tools/calibrate_triage.py) a la même forme et remplace celui-ci via

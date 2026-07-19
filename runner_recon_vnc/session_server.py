@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """`session_server` — serveur FastAPI PERSISTANT (contrairement à
 `runner_recon/capture.py` qui est un one-shot CLI) : garde une session
 Camoufox headed vivante entre les appels HTTP `/goto`, `/load`, `/capture`,

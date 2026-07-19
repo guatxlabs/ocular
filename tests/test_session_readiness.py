@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Contrat ASYNCHRONE de création de session (défaut : `POST /sessions` était
 SYNCHRONE et attendait ~7-9 s la disponibilité avant de répondre).
 

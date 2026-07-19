@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Exécuteur de steps 3c côté runner : rejoue une séquence VALIDÉE via l'API
 locator Playwright (aucun eval de contenu utilisateur), journalise, déclenche
 les screenshots `capture`. La validation vit dans engine.steps (source

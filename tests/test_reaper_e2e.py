@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Test d'intégration reap() <-> SessionRegistry : couvre le couplage réel
 entre `expired()` (bus/sessions.py) et `reap()` (broker/sessions.py), que
 les tests unitaires de test_broker_sessions.py (avec _FakeRegistry) ne

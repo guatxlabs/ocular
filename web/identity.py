@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Résolution d'identité pour l'auth web — forward-auth opt-in strict.
 
 Anti-spoofing : l'en-tête d'identité forward-auth (`X-Forwarded-User` par

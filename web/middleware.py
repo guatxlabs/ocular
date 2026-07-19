@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Middleware ASGI de plafonnement du corps de requête. Extrait de `web/app.py`
 (audit qualité 3m). Les gardes courtes `_auth`/`_csp`/`_body_size_guard`
 (en-têtes seulement) restent dans `web/app.py` — leur ordre d'enregistrement est

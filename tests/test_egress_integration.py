@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Intégration réelle du câblage de l'egress guard dans `runner_recon/capture.py`
 (Phase 3g, Task G2) : preuve que le trafic navigateur d'un conteneur
 `ocular-runner-recon` réel passe RÉELLEMENT par `engine.egress_guard.

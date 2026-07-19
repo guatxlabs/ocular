@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Appels HTTP INTERNES du web vers le `session_server` d'un conteneur de
 session (réseau applicatif interne uniquement). Bibliothèque standard seule —
 le web n'a AUCUN accès au moteur de conteneurs (seul le broker en dispose) et

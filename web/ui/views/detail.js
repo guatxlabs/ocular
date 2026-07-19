@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // detail.js — résultat d'une analyse. Le VERDICT est le héros de la vue. Screenshot
 // et DOM chargés en blob (fetch + Bearer) car un <img src> nu n'envoie pas l'en-tête.
 // Le DOM (potentiellement hostile) n'est JAMAIS rendu inline : lien de téléchargement.

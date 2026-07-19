@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // submit.js — deux profils d'analyse, sélectionnés par un toggle segmenté :
 //   • « Analyser HTML » (profile: analysis) : textarea HTML + upload .eml.
 //   • « Analyser URL »  (profile: capture)  : capture live d'une URL (stealth).

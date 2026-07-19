@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Mapping px IMAGE (viewport screenshot Playwright) -> px ÉCRAN Xvfb (clic
 xdotool). Cf. docs/superpowers/plans/2026-07-13-ocular-phase3d2b-turnstile-fix.md
 Task B1 — cause racine n°1 du Turnstile qui rate sa cible : `vision.detect()`

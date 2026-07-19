@@ -1,7 +1,7 @@
 # Composants tiers embarqués
 
 Ocular embarque les composants ci-dessous. Ils sont distribués **sous leur
-propre licence**, pas sous la LGPL v3 d'Ocular. La LGPL v3 s'applique au code
+propre licence**, pas sous l'AGPL v3 d'Ocular. L'AGPL v3 s'applique au code
 propre au projet ; rien ici ne la leur substitue.
 
 Ces composants sont volontairement **embarqués** (`vendor/`) plutôt que
@@ -24,9 +24,10 @@ MPL-2.0 et sa source modifiée doit être fournie. Les fichiers embarqués ici s
 modification future d'un de ces fichiers doit conserver son en-tête et rester
 sous MPL-2.0.
 
-La MPL-2.0 est compatible avec une distribution combinée sous (L)GPL v3 : sa
-section 3.3 autorise explicitement cette combinaison, chaque composant restant
-sous sa propre licence.
+La MPL-2.0 est compatible avec une distribution combinée sous AGPL v3 : sa
+section 1.12 range explicitement l'AGPL v3 parmi les « licences secondaires »,
+et sa section 3.3 autorise cette combinaison — chaque composant restant sous sa
+propre licence.
 
 ## pako
 

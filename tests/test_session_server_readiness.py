@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """`/health` du `session_server` = DISPONIBILITÉ, pas simple vivacité.
 
 Défaut corrigé ici : `/health` renvoyait `{"ok": True}` dès qu'uvicorn écoutait,

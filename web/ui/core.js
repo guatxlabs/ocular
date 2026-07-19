@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // core.js — point d'entrée de l'UI Ocular : helpers DOM partagés, routeur hash,
 // et câblage du header (nav / langue / thème / déconnexion). Vanilla ES modules,
 // zéro build. Importé une fois par index.html (<script type="module">).

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Accès centralisé à la configuration par variables d'environnement.
 
 RÈGLE INVARIANTE — **un accesseur ne lève JAMAIS sur une valeur malformée ; il

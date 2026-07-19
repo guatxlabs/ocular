@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Preuve d'intégration de l'isolation réseau par session (design
 2026-07-18) : deux sessions réelles vivent sur des réseaux docker DISJOINTS,
 donc un conteneur de session compromis ne peut PAS joindre le :6080/:8090

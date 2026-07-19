@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Prefs Firefox durcies partagées (engine/browser_prefs) — ferment les canaux
 egress HORS du proxy TCP du garde. Audit sécu 3k, findings 1-4."""
 from engine.browser_prefs import HARDENED_FIREFOX_PREFS

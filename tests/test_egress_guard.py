@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Egress guard (Phase 3g, Task G1) : proxy CONNECT/HTTP filtrant côté
 runner. Sépare clairement :
 - tests SÉCU : le blocage réel (`resolve_allowed_ip` non mocké) refuse

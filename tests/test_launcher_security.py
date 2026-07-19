@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import json
 import pytest
 from broker.launcher import build_docker_args, run_analysis_job
