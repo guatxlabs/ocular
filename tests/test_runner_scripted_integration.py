@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Intégration réelle du mode scripté (3c) : `runner_recon.capture.main()`
 rejoue un job `{"url": ..., "steps": [...]}` reçu sur **stdin**, contre une

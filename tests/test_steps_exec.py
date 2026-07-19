@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Exécuteur de steps 3c (runner) — page Playwright mockée, pas de vrai navigateur.
 

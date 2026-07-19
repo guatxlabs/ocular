@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // saved.js — liste des analyses sauvegardées (source serveur : GET /saved).
 // Chaque ligne ouvre le détail figé (#/saved/{id}). Toutes les données affichées

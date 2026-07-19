@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Preuve d'intégration de l'isolation réseau par session (design
 2026-07-18) : deux sessions réelles vivent sur des réseaux docker DISJOINTS,

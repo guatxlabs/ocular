@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Logique pure du mode scripté (3c) de runner_recon/capture.py — aucun
 navigateur requis, comme test_capture_logic.py pour `build_result`.

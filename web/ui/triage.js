@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // triage.js — helpers PURS du panneau « Triage » (2e avis IA/ML). Données en
 // entrée -> données/chaînes en sortie ; AUCUN import de core.js et AUCUN accès

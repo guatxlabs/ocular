@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Préférences Firefox/Camoufox DURCIES, partagées par les DEUX tiers réseau-ON
 (capture batch `runner_recon/capture.py` et session interactive

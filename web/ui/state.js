@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // state.js — persistance légère côté client (token, thème, langue, jobs soumis).
 // L'API Ocular n'expose pas de "liste des jobs" : on garde les ids soumis en

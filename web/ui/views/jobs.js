@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // jobs.js — liste des jobs soumis depuis ce navigateur + polling des "pending".
 // L'API n'a pas d'endpoint de listing : la source est localStorage (state.js).

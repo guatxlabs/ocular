@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Résilience applicative de runner_recon/capture.py : même si le driver/
 navigateur Camoufox meurt en cours de capture (page hostile Cloudflare/Auth0,

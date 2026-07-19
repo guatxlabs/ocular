@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // api.js — wrapper fetch qui ajoute Authorization: Bearer <token> à chaque appel
 // et redirige vers la vue login sur 401. Le screenshot et le DOM se chargent en

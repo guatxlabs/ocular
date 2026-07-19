@@ -369,7 +369,7 @@ L'AGPL ajoute à la GPL une obligation qui compte pour un outil comme celui-ci :
 correspondant à ses utilisateurs — pas seulement à ceux à qui vous distribuez un binaire.
 C'est délibéré : Ocular est fait pour tourner en service.
 
-    Copyright (C) 2026 guatx
+    Copyright (C) 2026 GuatX
 
     Ce programme est un logiciel libre : vous pouvez le redistribuer et/ou le
     modifier selon les termes de la GNU Affero General Public License telle que

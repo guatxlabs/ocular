@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // login.js — saisie du jeton Bearer -> localStorage, vérifié contre le serveur
 // avant de naviguer. 401 = jeton refusé ; 503 = serveur sans OCULAR_TOKEN.
