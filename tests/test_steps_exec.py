@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Exécuteur de steps 3c (runner) — page Playwright mockée, pas de vrai navigateur.
 
 Vérifie : dispatch de chaque verbe vers l'API locator, journal redigé (jamais

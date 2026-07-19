@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 import logging
 
 from ocular_logging import get_logger

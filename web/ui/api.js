@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // api.js — wrapper fetch qui ajoute Authorization: Bearer <token> à chaque appel
 // et redirige vers la vue login sur 401. Le screenshot et le DOM se chargent en
 // blob (fetch + header) car un <img src> nu n'envoie PAS l'en-tête Bearer.

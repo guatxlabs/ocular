@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Calibration HORS-LIGNE des poids de triage par régression logistique.
 Lecture seule de la base saved, aucun accès réseau. Sortie = fichier de poids
 proposé (même forme que BUILTIN) + rapport ; l'opérateur relit puis pointe

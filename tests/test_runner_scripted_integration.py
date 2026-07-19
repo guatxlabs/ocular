@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Intégration réelle du mode scripté (3c) : `runner_recon.capture.main()`
 rejoue un job `{"url": ..., "steps": [...]}` reçu sur **stdin**, contre une
 page fixture servie par un conteneur dédié sur un réseau docker privé, et le

@@ -361,27 +361,30 @@ vérification live de ce qui a changé.
 
 ## Licence
 
-**GNU Lesser General Public License v3.0 ou ultérieure** (LGPL-3.0-or-later), pour le
+**GNU Affero General Public License v3.0 ou ultérieure** (AGPL-3.0-or-later), pour le
 code propre au projet.
 
-Les composants tiers embarqués (noVNC sous MPL-2.0, pako sous MIT) restent sous **leur
-propre licence** — voir [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+L'AGPL ajoute à la GPL une obligation qui compte pour un outil comme celui-ci : si vous
+**exposez une version modifiée en service réseau**, vous devez en proposer le source
+correspondant à ses utilisateurs — pas seulement à ceux à qui vous distribuez un binaire.
+C'est délibéré : Ocular est fait pour tourner en service.
 
     Copyright (C) 2026 guatx
 
     Ce programme est un logiciel libre : vous pouvez le redistribuer et/ou le
-    modifier selon les termes de la GNU Lesser General Public License telle que
+    modifier selon les termes de la GNU Affero General Public License telle que
     publiée par la Free Software Foundation, soit la version 3 de la licence,
     soit (à votre choix) toute version ultérieure.
 
     Ce programme est distribué dans l'espoir qu'il sera utile, mais SANS AUCUNE
     GARANTIE, sans même la garantie implicite de QUALITÉ MARCHANDE ou
-    D'ADÉQUATION À UN USAGE PARTICULIER. Voir la GNU Lesser General Public
+    D'ADÉQUATION À UN USAGE PARTICULIER. Voir la GNU Affero General Public
     License pour plus de détails.
 
-    Vous devriez avoir reçu une copie de la GNU Lesser General Public License
+    Vous devriez avoir reçu une copie de la GNU Affero General Public License
     avec ce programme. Si ce n'est pas le cas, voir <https://www.gnu.org/licenses/>.
 
-Texte intégral : [`COPYING.LESSER`](COPYING.LESSER) (LGPL v3), qui s'applique comme
-permissions additionnelles au-dessus de [`COPYING`](COPYING) (GPL v3) — les deux fichiers
-sont nécessaires, la LGPL étant rédigée par référence à la GPL.
+Texte intégral : [`COPYING`](COPYING).
+
+Les composants tiers embarqués (noVNC sous MPL-2.0, pako sous MIT) restent sous **leur
+propre licence** — voir [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // sw.js — service worker PWA d'Ocular. App shell en NETWORK-FIRST (le frais quand
 // en ligne ; le cache sert de secours hors-ligne). L'API (/jobs) n'est JAMAIS mise
 // en cache : les résultats et artefacts protégés passent toujours au réseau.

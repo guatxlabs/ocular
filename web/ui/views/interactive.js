@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // interactive.js — session interactive (live) : ouvre une session côté conteneur,
 // affiche ses pixels via noVNC (RFB embarqué localement, aucun CDN), et propose
 // « Capturer » (fige l'état en analyse) et « Fermer » (détruit la session).

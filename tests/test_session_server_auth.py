@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Auth à la frontière conteneur (défense-en-profondeur F1/F2) : le
 `session_server` exige le header `X-Session-Secret` sur /goto, /load, /capture
 (PAS /health). Fail-closed (secret non configuré => 403), comparaison en temps

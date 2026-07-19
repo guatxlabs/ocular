@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // i18n.js — dictionnaire FR->EN appliqué au DOM (même approche que plume : seuls
 // les libellés connus sont traduits ; les données — verdict brut, urls, matches —
 // ne matchent aucune clé donc restent intactes). Actif seulement si LANG === 'en'.

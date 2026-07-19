@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Garde de build des 5 images de déploiement.
 
 Ce test aurait attrapé :

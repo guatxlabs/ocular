@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Mécanique commune aux runners `runner_analysis/render.py` (profil analysis,
 Chromium/Playwright) et `runner_recon/capture.py` (profil capture, Camoufox) :
 hash de référence des blobs, listeners réseau/console, construction de

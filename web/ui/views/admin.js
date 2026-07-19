@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-License-Identifier: AGPL-3.0-or-later
 // admin.js — vue privilégiée : purge des analyses sauvegardées. Les DELETE exigent
 // l'en-tête X-Admin-Token EN PLUS du Bearer. Le token admin est gardé en variable
 // de MÉMOIRE (module ES singleton), JAMAIS en localStorage — il disparaît au reload.

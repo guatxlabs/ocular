@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Test comportemental (node) du module UI web/ui/filter.js.
 
 Lance tests/filter_test.mjs via subprocess ; ignoré si `node` est introuvable

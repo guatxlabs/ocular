@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Tests unitaires pour web.identity.resolve_identity — anti-spoofing en priorité.
 
 Le cas critique : opt-in OFF (défaut) ⇒ l'en-tête X-Forwarded-User n'est JAMAIS

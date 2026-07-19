@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Proxy websocket noVNC `/sessions/{sid}/ws` (Tâche 6, phase 3b).
 
 Sécu critique : auth par SOUS-PROTOCOLE (`Sec-WebSocket-Protocol:

@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Appartenance des sessions interactives (défaut d'audit : aucun propriétaire).
 
 Une session interactive est un CONTENEUR PILOTABLE : `/ws` est un proxy noVNC

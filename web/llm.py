@@ -1,3 +1,5 @@
+# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Option LLM d'explication (triage 3o), extraite de web/app.py.
 
 OFF par défaut, JAMAIS dans le chemin de scoring. L'explication est opt-in et
