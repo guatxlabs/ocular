@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // login.js — saisie du jeton Bearer -> localStorage, vérifié contre le serveur
 // avant de naviguer. 401 = jeton refusé ; 503 = serveur sans OCULAR_TOKEN.
-import { el, ic } from '../core.js';
+import { el, iconNode } from '../core.js';
 import { setToken } from '../state.js';
 import { checkToken, Unauthorized } from '../api.js';
 
@@ -39,7 +39,7 @@ export function renderLogin(app) {
       }
     },
   }, [
-    el('div.oc-eye', { html: ic('eye', 'ic-lg') }),
+    el('div.oc-eye', {}, [iconNode('eye', 'ic-lg')]),
     el('h2', {}, 'Connexion'),
     el('p.sub', {}, 'Colle ton jeton Ocular pour accéder au moteur.'),
     el('div.oc-field', {}, [
