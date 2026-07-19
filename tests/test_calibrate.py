@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import sqlite3
 
-import numpy as np
 import pytest
 
 import saved_store
-from tools.calibrate_triage import calibrate, collect_dataset, fit_weights
+from tools.calibrate_triage import calibrate, collect_dataset
 
 
 def _save_labeled(conn, hash_, findings_rules, analyst_verdict):
