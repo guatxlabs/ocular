@@ -3,7 +3,7 @@
 - **Date** : 2026-07-12
 - **Statut** : Approuvé (design), prêt pour plan d'implémentation
 - **Auteur** : guatx (+ Claude)
-- **Sous-projet** : 1/3 (moteur autonome). Suivants : 2) adaptateur plume, 3) publication GitHub `xguatx`.
+- **Sous-projet** : 1/3 (moteur autonome). Suivants : 2) adaptateur plume, 3) publication publique.
 
 ---
 
@@ -36,7 +36,7 @@ Le design ci-dessous **supprime ces deux causes par l'architecture**, pas par de
 ## 2. Objectifs / non-objectifs
 
 ### Objectifs (v1)
-- Un moteur **unifié** capture + analyse, **autonome** (repo indépendant, publiable `xguatx`).
+- Un moteur **unifié** capture + analyse, **autonome** (repo indépendant, publiable tel quel).
 - **Fix sécu structurel** : plus jamais de rendu hostile dans le navigateur de l'analyste ;
   plus de `docker.sock` ni de `network_mode: host` sur la surface exposée.
 - Deux profils : `capture` (recon anti-bot) et `analysis` (HTML/EML hostile isolé).

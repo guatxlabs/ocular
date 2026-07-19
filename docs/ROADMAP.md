@@ -1,6 +1,6 @@
 # Ocular — Roadmap
 
-Moteur autonome de **capture + analyse web durci** (fusion `web-screenshot-capture` + `malware-html-sandbox` + bypass `browser-automation`). Repo standalone, destiné au GitHub `xguatx`, indépendant de GUATX.
+Moteur autonome de **capture + analyse web durci** (fusion `web-screenshot-capture` + `malware-html-sandbox` + bypass `browser-automation`). Repo standalone, destiné à une publication publique, indépendant de GUATX.
 
 **Méthode** (éprouvée sur toutes les phases) : brainstorm → spec → plan → SDD (implémenteur + relecteur par tâche) → audit indépendant (3 auditeurs archi/sécu/qualité) → **e2e réel Docker** → merge local. On ne merge jamais sans e2e réel : la boucle a attrapé à répétition de vrais défauts (Dockerfiles incomplets, timing-attack, TOCTOU, double-fault, réflexion 422, `/artifacts:ro`, sur-classification de verdict…).
 
@@ -331,7 +331,7 @@ Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
 ## 🧩 Sous-projets (hors phase 3)
 
 - **Adaptateur plume** — intégration d'Ocular dans plume (le tier analyse/capture surtout ; `forge` = red team, moins pertinent). **Ne pas modifier plume ; construire l'adaptateur côté Ocular.**
-- **Publication GitHub `xguatx`** — licence, mentions légales, CI (la garde e2e `test_deploy_images` couvre déjà le smoke des images), doc auth/secrets portable (OIDC/LDAP/reverse-proxy, `.env`/Vault/SOPS).
+- **Publication publique** — ✅ **fait (2026-07-19)** : licence **AGPL-3.0-or-later** (`COPYING`, SPDX sur le code propre, `vendor/` exclu), `THIRD-PARTY-NOTICES.md` (noVNC MPL-2.0 + pako MIT, dont les fichiers de licence MANQUAIENT), `SECURITY.md`, `AGENTS.md`, historique purgé de toute identité personnelle. **Reste** : CI (la garde e2e `test_deploy_images` couvre déjà le smoke des images) et doc auth/secrets portable (OIDC/LDAP/reverse-proxy, `.env`/Vault/SOPS).
 
 ---
 
