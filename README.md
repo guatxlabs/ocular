@@ -14,6 +14,16 @@ haute, avec le détail de chaque contribution au score — cluster d'obfuscation
 langage d'urgence, identifiants postés vers un domaine externe, exfiltration
 mailto.](docs/images/verdict.png)
 
+**Soumission.** URL ou HTML collé, et un **DSL scripté borné** — une séquence
+`click/fill/sleep/press/scroll/capture` rejouée après le chargement, sans
+jamais exécuter de JavaScript arbitraire.
+
+![Vue de soumission : bascule URL / HTML, champ d'URL indiquant que le domaine
+nu est accepté et la capture furtive assurée par Camoufox avec gestion du
+Turnstile, puis un champ de script JSON optionnel avec son exemple et trois
+modèles prêts à l'emploi — accepter les cookies, remplir un formulaire,
+capture pleine page.](docs/images/soumission.png)
+
 **Détections statiques**, classées par sévérité, avec l'extrait de code et la
 ligne qui les déclenche.
 
