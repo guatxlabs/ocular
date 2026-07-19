@@ -229,6 +229,90 @@ Résumé des correctifs livrés :
 - **Trop flash** : retirer/atténuer le glow néon ; teinte exacte guatx `#00d4aa`.
 - **Proportions** : l'amande (oval) est trop petite vs l'iris rond → l'iris déborde de l'amande. Corriger.
 
+## 🔒 Audit holistique 2026-07-18/19 — sécurité, correction, publication
+
+Audit du périmètre jamais audité + préparation à la publication. Chaque correctif
+est vérifié **live**, pas seulement par les suites : les tests unitaires seuls
+avaient déjà laissé passer une panne totale des jobs.
+
+### Corrigé
+
+- **`POST /sessions` se décapitait lui-même** (~4 échecs sur 6, `curl rc=52`).
+  `docker network connect` sur un conteneur à **port publié** fait reprogrammer
+  à Docker sa publication : le `docker-proxy` est tué et respawné, coupant les
+  connexions en vol. Or la requête tenait la connexion ~8-10 s pendant que le
+  broker attachait `ocular-web` au réseau de la session. La session **était
+  créée** → le client perdait un `session_id` vivant, qui immobilisait un
+  conteneur (~4 Go) et un sous-réseau jusqu'à son TTL. **Correctif** : le port
+  publié vit désormais sur un frontal TCP nginx (`gateway`) jamais re-câblé ; le
+  web ne publie plus rien. L4 délibérément, pour ne rien changer au WebSocket
+  noVNC ni aux en-têtes. *Non vu par les tests d'intégration, qui appellent
+  `launch_session` en direct sans passer par l'API HTTP.*
+- **Aucun contrôle d'appartenance des sessions.** Le registre ne stockait aucun
+  propriétaire : en mode IdP, tout utilisateur authentifié pouvait agir sur la
+  session d'un autre — dont le **proxy noVNC**, soit le clavier et la souris
+  d'une session potentiellement connectée à ses comptes. Propriétaire stocké,
+  appartenance imposée sur les 5 routes, admin passe outre, **404 partout** pour
+  ne pas créer d'oracle d'existence.
+- **Commandes de session affamées par les jobs batch.** `process_one` étant
+  synchrone et lent, un job long faisait échouer la création de session en
+  **504 à 30 s** alors que le conteneur se lançait **67 s plus tard**. Le
+  consommateur a son propre thread démon : **6,7 s** sous la même charge.
+- **Durcissement du déploiement.** Le `broker` — seul à monter `docker.sock` —
+  tournait root, rootfs inscriptible, toutes capabilities. Désormais non-root,
+  `cap_drop: ALL`, `no-new-privileges`, `read_only`. Redis idem, auth câblée.
+  API bindée sur la **loopback** par défaut.
+- **Panne DNS confondue avec un refus de politique.** L'API aplatissait les deux
+  en « url interdite » : quand le DNS des conteneurs est tombé, chaque capture
+  renvoyait ce message et envoyait chercher une règle SSRF inexistante.
+  `DnsResolutionError` sous-classe `ValueError` **à dessein** — tous les
+  appelants existants continuent de fail-closed à l'identique.
+- **`broker/gc.py` lisait `REDIS_URL` en direct**, ignorant `OCULAR_REDIS_URL`
+  prioritaire partout ailleurs : le GC aurait pointé sur un **autre** Redis et,
+  n'y voyant aucun résultat, supprimé des artefacts encore référencés.
+- Divers : `stop_session` prend un `session_id` (le mauvais argument fuyait un
+  sous-réseau en silence), boucles démon factorisées, paramètre `stream`
+  vestigial retiré, test `test_defaults` isolé de `REDIS_URL` (il rougissait sur
+  du code sain).
+
+### Publication (AGPL v3)
+
+Licence **AGPL-3.0-or-later** (et non LGPL) : l'obligation de fournir le source
+aux utilisateurs **réseau** est cohérente pour un moteur destiné à tourner en
+service. SPDX sur les 120 fichiers du code propre, `vendor/` exclu.
+
+**Défaut de conformité corrigé** : les en-têtes noVNC renvoyaient à un
+`LICENSE.txt` **non distribué**, et pako n'avait pas sa licence — la MPL-2.0
+(§3.1) et la licence MIT exigent l'une comme l'autre que leur texte accompagne
+le source redistribué. Textes récupérés depuis l'amont, `THIRD-PARTY-NOTICES.md`
+ajouté.
+
+Historique des 275 commits scanné : `deploy/.env` **jamais** indexé, aucune clé
+ni jeton ; les chaînes suspectes sont toutes des fixtures de `tests/`.
+
+### ⚠️ Ouvert — décisions qui ne m'appartiennent pas
+
+- **Adresse e-mail personnelle dans les 275 commits** (`guatx <…@gmail.com>`).
+  Elle deviendra publique et permanente. À changer **avant** le premier push :
+  après, réécrire l'historique est douloureux et ne rattrape pas les copies.
+- **Hook `pre-receive` et commits historiques.** Les commits antérieurs à
+  l'audit ne portent pas le trailer. Si le hook contrôle tout l'historique
+  poussé plutôt que les seuls commits **nouveaux**, le push initial sera rejeté
+  en bloc. À cadrer avec la convention commune `GUATX/AGENTS.md`.
+- **Auth Redis désactivée par défaut** (une ligne dans `deploy/.env`). Redis
+  porte les secrets de session **en clair**. À activer en déploiement partagé.
+- **`docker.sock` monté côté broker.** Inhérent — le broker ne peut pas lancer
+  de conteneurs sans. Le durcissement ferme les étapes intermédiaires, **pas**
+  `docker run -v /:/host --privileged`. Dit tel quel dans `SECURITY.md`.
+- **Mode mixte** : un porteur du jeton Bearer verrait son WebSocket refusé
+  (fail-closed, son navigateur n'envoyant pas d'en-tête d'identité). Ses routes
+  HTTP fonctionnent. Sans usage mixte réel, rien à faire.
+- **Piège d'exploitation** : si le VPN de l'hôte bascule, les conteneurs déjà
+  démarrés gardent l'ancien résolveur DNS et **toutes les captures échouent**.
+  `make down && make up` les réaligne.
+
+---
+
 ## ⏳ Différés techniques (dette identifiée par les audits, non bloquante)
 
 Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
