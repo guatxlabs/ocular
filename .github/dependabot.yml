@@ -45,3 +45,17 @@ updates:
       interval: weekly
     commit-message:
       prefix: "deps"
+    ignore:
+      # On veut les correctifs de SÉCURITÉ de l'image de base (3.11-slim ->
+      # 3.11.x-slim), pas les sauts de version du langage. Une montée majeure
+      # ou mineure de Python change le runtime des conteneurs de production
+      # alors que la CI, elle, ne teste que les versions de sa matrice : le job
+      # passerait au vert sans rien dire de la version proposée. Playwright et
+      # Camoufox doivent en outre disposer de roues pour la version visée, ce
+      # qui n'est jamais acquis sur une version fraîche.
+      # Changer de Python reste un choix DÉLIBÉRÉ : ajouter la version à la
+      # matrice de CI, reconstruire les images, passer test-int et un e2e réel.
+      - dependency-name: python
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
