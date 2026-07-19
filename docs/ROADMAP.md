@@ -325,6 +325,7 @@ Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
 - ~~**Langage d'urgence phishing multilingue**~~ → **✅ FAIT (phase 3i)** : EN/FR/**ES/DE/PT** (12 patterns rejoignant le cluster `_URGENCY`, ReDoS-safe, anti-faux-positif). *(Autres langues au besoin.)*
 - ~~**Bug `urlnorm` sur `data:`**~~ → **✅ FAIT (phase 3i)** : `normalize_url` robuste (schemes non-réseau/malformé → rejet propre 400, plus de crash 500).
 - **poll `/live` → `mark_connected`** (C) : uniquement si un reconnect auto RFB est ajouté un jour (sinon sans objet).
+- **Smoke-test e2e de l'UI (aucun aujourd'hui).** Le frontend (`web/ui/`) n'a AUCUN test automatisé : les suites couvrent le backend, l'UI n'est validée qu'à la main. Défaut déjà passé en prod à cause de ça : `docs/images/soumission.png` a été publié montrant la page de **connexion** au lieu de la vue de soumission (le routeur ne relisait pas l'auth après un `localStorage.setItem` sans reload) — attrapé par l'œil du propriétaire, pas par la CI. **Attendu** : un smoke Playwright/Camoufox (l'image runner embarque déjà Camoufox) qui, pour les 4 vues principales (login, submit, jobs, détail/verdict, interactif), pose le token, charge la route, et asserte un marqueur stable de la vue attendue (titre `h2`, présence du canvas noVNC…) + zéro erreur `pageerror`. Bornes : headless, réseau interne, aucun résidu de session. Reste hors de la matrice CI actuelle (pas de navigateur sur les runners GitHub) → job séparé ou cible `make` dédiée, comme `test-int`.
 
 ---
 
