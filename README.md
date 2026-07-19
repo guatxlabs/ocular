@@ -337,3 +337,51 @@ Le tier `web` n'a jamais accès à `docker.sock` (seul `broker` y accède) et li
 lecture seule depuis le volume partagé `ocular-artifacts`. Il est recommandé de mettre un
 reverse-proxy (Caddy) avec TLS + une couche d'authentification supplémentaire devant `web` avant
 toute exposition publique.
+
+## Sécurité
+
+Ocular **charge et exécute du contenu web hostile** : c'est sa fonction. Le confinement
+(séparation des privilèges, conteneurs éphémères durcis, isolation réseau par session, garde
+SSRF avec épinglage d'IP) est décrit dans [`SECURITY.md`](SECURITY.md), qui documente aussi
+les **limites connues et assumées** — dont le fait que le `broker` monte le socket Docker.
+
+Pour signaler une vulnérabilité : **ne pas ouvrir d'issue publique**, voir
+[`SECURITY.md`](SECURITY.md).
+
+Prérequis de déploiement (règles `DOCKER-USER`, `default-address-pools`) :
+[`docs/DEPLOY-SECURITY.md`](docs/DEPLOY-SECURITY.md).
+
+## Contribuer
+
+La convention d'opération du dépôt — discipline git, actions gatées, pièges vérifiés — est
+dans [`AGENTS.md`](AGENTS.md). Elle s'applique aux sessions humaines comme aux agents.
+
+Avant toute proposition de fusion : `make test` et `make test-int` verts, plus une
+vérification live de ce qui a changé.
+
+## Licence
+
+**GNU Lesser General Public License v3.0 ou ultérieure** (LGPL-3.0-or-later), pour le
+code propre au projet.
+
+Les composants tiers embarqués (noVNC sous MPL-2.0, pako sous MIT) restent sous **leur
+propre licence** — voir [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+    Copyright (C) 2026 guatx
+
+    Ce programme est un logiciel libre : vous pouvez le redistribuer et/ou le
+    modifier selon les termes de la GNU Lesser General Public License telle que
+    publiée par la Free Software Foundation, soit la version 3 de la licence,
+    soit (à votre choix) toute version ultérieure.
+
+    Ce programme est distribué dans l'espoir qu'il sera utile, mais SANS AUCUNE
+    GARANTIE, sans même la garantie implicite de QUALITÉ MARCHANDE ou
+    D'ADÉQUATION À UN USAGE PARTICULIER. Voir la GNU Lesser General Public
+    License pour plus de détails.
+
+    Vous devriez avoir reçu une copie de la GNU Lesser General Public License
+    avec ce programme. Si ce n'est pas le cas, voir <https://www.gnu.org/licenses/>.
+
+Texte intégral : [`COPYING.LESSER`](COPYING.LESSER) (LGPL v3), qui s'applique comme
+permissions additionnelles au-dessus de [`COPYING`](COPYING) (GPL v3) — les deux fichiers
+sont nécessaires, la LGPL étant rédigée par référence à la GPL.

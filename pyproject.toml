@@ -1,7 +1,14 @@
 [project]
 name = "ocular"
 version = "0.1.0"
+description = "Moteur unifié de capture + analyse web durci (recon anti-bot, analyse HTML hostile)"
+readme = "README.md"
 requires-python = ">=3.11"
+# Le code propre au projet est sous LGPL-3.0-or-later. Les composants tiers
+# EMBARQUÉS (noVNC en MPL-2.0, pako en MIT) restent sous leur propre licence :
+# cf. THIRD-PARTY-NOTICES.md. Cette clé ne décrit QUE le code du projet.
+license = "LGPL-3.0-or-later"
+license-files = ["COPYING", "COPYING.LESSER"]
 dependencies = [
   "pydantic>=2.6",
   "fastapi>=0.110",
