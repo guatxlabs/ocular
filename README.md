@@ -4,6 +4,44 @@ Moteur unifié de capture + analyse web durci (recon anti-bot + analyse HTML hos
 
 Voir `docs/superpowers/specs/` pour le design.
 
+## Aperçu
+
+**Verdict et score décomposé.** Chaque contribution au score est affichée : le
+score n'est jamais un nombre opaque, il se relit ligne à ligne.
+
+![Verdict « malicious » sur un échantillon hostile : priorité 100/100 en bande
+haute, avec le détail de chaque contribution au score — cluster d'obfuscation,
+langage d'urgence, identifiants postés vers un domaine externe, exfiltration
+mailto.](docs/images/verdict.png)
+
+**Soumission.** URL ou HTML collé, et un **DSL scripté borné** — une séquence
+`click/fill/sleep/press/scroll/capture` rejouée après le chargement, sans
+jamais exécuter de JavaScript arbitraire.
+
+![Vue de soumission : bascule URL / HTML, champ d'URL indiquant que le domaine
+nu est accepté et la capture furtive assurée par Camoufox avec gestion du
+Turnstile, puis un champ de script JSON optionnel avec son exemple et trois
+modèles prêts à l'emploi — accepter les cookies, remplir un formulaire,
+capture pleine page.](docs/images/soumission.png)
+
+**Détections statiques**, classées par sévérité, avec l'extrait de code et la
+ligne qui les déclenche.
+
+![Liste des détections : évaluation de code dynamique, écriture DOM directe,
+formulaire et script externes, décodages base64 et URL, textes de vérification
+de compte — chacune avec son extrait de code et son numéro de ligne.](docs/images/detections.png)
+
+**Session interactive isolée.** La page hostile est rendue dans un conteneur
+éphémère, sur son propre réseau, et pilotée à distance : le contenu n'atteint
+jamais le navigateur de l'analyste.
+
+![Session interactive : une page web rendue dans le conteneur isolé et affichée
+via noVNC, avec la barre d'action (agrandir, marquer le Turnstile comme passé,
+sauvegarder l'analyse, fermer la session).](docs/images/session-interactive.png)
+
+> Ces captures sont produites **par Ocular lui-même** — le moteur furtif du
+> projet pilote sa propre interface.
+
 ## Utiliser
 
 ### En local (CLI, sans docker compose)
