@@ -2,7 +2,7 @@
 # conteneur, sans venv natif. Les tests unitaires mockent camoufox/playwright/
 # redis (fakeredis) : aucun navigateur ni service requis. Les tests d'INTÉGRATION
 # (marqueur `integration`) restent sur l'hôte (orchestrent Docker).
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
