@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """DSL d'actions déclaratif borné pour le tier dynamique scripté (3c).
 Partagé par le web (validation à la soumission) et le runner (re-validation

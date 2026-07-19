@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 guatx
+// SPDX-FileCopyrightText: 2026 GuatX
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // filter.js — filtrage/recherche des entrées réseau d'un résultat, côté client,
 // SANS regex utilisateur (anti-ReDoS) : matching uniquement par String.includes

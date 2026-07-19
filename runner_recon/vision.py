@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 guatx
+# SPDX-FileCopyrightText: 2026 GuatX
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """
 vision.py — port de guatx-ia-vision dans runner_recon (Ocular).
