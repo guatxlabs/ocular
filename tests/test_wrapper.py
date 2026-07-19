@@ -151,8 +151,7 @@ def test_emit_wrapper_writes_json_with_base64_blobs(monkeypatch):
     assert payload["blobs"][ref] == "iVBORw0KGgpBQUE="
 
 
-from engine.wrapper import ResultBuilder
-from engine.result import StaticFinding, DomInfo
+from engine.result import StaticFinding
 
 
 def test_build_populates_triage():

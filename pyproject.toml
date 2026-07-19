@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ocular"
 version = "0.1.0"
@@ -22,6 +26,24 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "fakeredis>=2.21", "httpx>=0.27", "ruff>=0.3", "mypy>=1.9", "numpy>=1.26"]
 
+# Paquets DÉCLARÉS explicitement. Sans cette liste, setuptools tente une
+# découverte automatique, voit plusieurs répertoires racine (`deploy`, `docs`,
+# `tests`…), refuse de deviner et fait ÉCHOUER `pip install -e .` — donc toute
+# CI qui installe le projet. `tests` est volontairement absent : ce n'est pas
+# du code distribuable.
+[tool.setuptools]
+packages = [
+  "broker",
+  "bus",
+  "engine",
+  "runner_analysis",
+  "runner_recon",
+  "runner_recon_vnc",
+  "tools",
+  "web",
+]
+py-modules = ["ocular_logging", "ocular_settings", "saved_store"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
@@ -33,6 +55,14 @@ markers = [
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# E402 (import hors de l'en-tête) est TOLÉRÉ dans les tests : plusieurs fichiers
+# placent délibérément un import juste sous le commentaire de section qu'il
+# sert, pour que le lecteur voie ensemble la dépendance et ce qu'elle teste.
+# Les remonter en tête satisferait le linter mais casserait ce lien. Exemption
+# ciblée et assumée — jamais appliquée au code de production.
+"tests/*" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

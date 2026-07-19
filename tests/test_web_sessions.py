@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import base64
 import hashlib
-import json
 
 import fakeredis
 import pytest
