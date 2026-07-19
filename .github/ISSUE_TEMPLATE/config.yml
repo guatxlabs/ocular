@@ -1,0 +1,10 @@
+# Détourne les rapports de vulnérabilité de la voie publique AVANT qu'ils ne
+# soient écrits : une faille de confinement publiée en clair sur un outil qui
+# exécute du contenu hostile est exploitable par quiconque lit l'issue.
+blank_issues_enabled: true
+contact_links:
+  - name: Signaler une vulnérabilité (PRIVÉ)
+    url: https://github.com/guatxlabs/ocular/security/advisories/new
+    about: >-
+      N'ouvrez PAS d'issue publique pour une faille de sécurité. Utilisez le
+      signalement privé — voir SECURITY.md.
