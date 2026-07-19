@@ -1,0 +1,47 @@
+# Mises à jour automatiques de dépendances.
+#
+# Les ALERTES Dependabot fonctionnent sans ce fichier ; ce sont les mises à
+# jour de VERSION (ouverture automatique de PR) qui en dépendent entièrement.
+#
+# Toutes les PR arrivent sur `main`, protégée : elles passent donc par la CI et
+# c'est un humain qui fusionne. Une mise à jour ne peut pas entrer sans que la
+# suite complète soit verte — ce qui est précisément l'intérêt d'automatiser la
+# proposition sans automatiser l'acceptation.
+version: 2
+
+updates:
+  # --- Dépendances Python (lues dans pyproject.toml) ---
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+      include: scope
+    groups:
+      # Une PR groupée pour l'outillage de dev : ces montées sont sans risque
+      # pour le produit livré et n'ont pas à consommer une PR chacune.
+      dev-tooling:
+        patterns: ["pytest*", "ruff", "mypy", "fakeredis", "httpx", "numpy"]
+
+  # --- Actions GitHub ---
+  # INDISPENSABLE ici : le dépôt exige des actions épinglées à un SHA complet.
+  # Sans Dependabot, ces SHA se figent et on rate les correctifs de sécurité
+  # amont — l'épinglage protège de la mutation d'un tag, il ne met pas à jour.
+  # Dependabot met à jour le SHA *et* le commentaire de version, donc
+  # l'épinglage reste conforme à la règle après la mise à jour.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  # --- Images de base des Dockerfiles ---
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"
