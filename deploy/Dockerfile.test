@@ -6,18 +6,39 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Dépendances runtime + dev. À garder en phase avec pyproject.toml. playwright en
-# PAQUET seulement (aucun navigateur) : les tests unitaires ne lancent rien.
-RUN pip install --no-cache-dir \
-    "pydantic>=2.6" "fastapi>=0.110" "uvicorn>=0.29" "redis>=5.0" "playwright>=1.41" \
-    "jsonschema>=4.21" "websockets>=12" "numpy>=1.26" \
-    "pytest>=8.0" "pytest-asyncio>=0.24" "fakeredis>=2.21" "httpx>=0.27"
+# Dépendances lues DEPUIS pyproject.toml — source unique de vérité.
+#
+# Cette liste était auparavant recopiée ici à la main, avec la consigne « à
+# garder en phase avec pyproject.toml ». Elle ne l'est pas restée : après une
+# montée des planchers côté pyproject, cette image installait encore les
+# anciennes versions. La suite DOCKERISÉE et la suite unitaire ne testaient
+# donc plus le même jeu de dépendances — et c'est la suite dockerisée qui sert
+# de référence dans la CI. Une consigne en commentaire ne tient pas lieu de
+# mécanisme.
+#
+# `pyproject.toml` est copié SEUL avant cette étape : la couche d'installation
+# n'est donc invalidée que si les dépendances changent, jamais à chaque
+# modification de source.
+#
+# Le PROJET lui-même n'est pas installé (`pip install -e .`) : pytest résout
+# les imports via `pythonpath = ["."]`, et une installation éditable exigerait
+# que tout le source soit déjà copié, ce qui ruinerait le cache.
+#
+# playwright est installé en PAQUET seulement (aucun navigateur) : les tests
+# unitaires mockent camoufox/playwright et ne lancent rien.
+COPY pyproject.toml ./
+RUN python - <<'EOF' && pip install --no-cache-dir -r /tmp/reqs.txt
+import tomllib, pathlib
+d = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
+deps = list(d["dependencies"]) + list(d["optional-dependencies"]["dev"])
+pathlib.Path("/tmp/reqs.txt").write_text("\n".join(deps) + "\n")
+EOF
 
 # ALLOWLIST : on copie UNIQUEMENT le code source + les tests, JAMAIS de secrets
 # (pas de `.env`/`deploy/.env`/clés/`.db`/artefacts). C'est CETTE liste qui
 # garantit l'absence de fuite dans l'image, pas seulement le dockerignore.
-# pytest résout les imports via pythonpath=["."] (pyproject).
-COPY pyproject.toml ./
+# pytest résout les imports via pythonpath=["."] (pyproject.toml est déjà
+# copié plus haut pour l'étape d'installation des dépendances).
 COPY engine ./engine
 COPY bus ./bus
 COPY broker ./broker
