@@ -19,7 +19,7 @@ dependencies = [
   "uvicorn>=0.29",
   "redis>=8.0.1",
   "playwright>=1.41",
-  "jsonschema>=4.21",
+  "jsonschema>=4.26.0",
   "websockets>=16.1.1",
 ]
 
