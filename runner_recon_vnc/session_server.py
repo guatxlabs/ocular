@@ -43,7 +43,7 @@ from engine.result import DomInfo, OcularResult, StealthInfo, Truncation
 from engine.static import HtmlScan, extract_forms, extract_mailtos, scan_html
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
-from engine.wrapper import NetworkCapture, ResultBuilder, _env_cap, _max_findings, wrapper_payload
+from engine.wrapper import NetworkCapture, ResultBuilder, _max_findings, wrapper_payload
 
 
 log = logging.getLogger("ocular.session_server")
@@ -465,7 +465,6 @@ async def _live_analysis(dom: str) -> dict[str, Any]:
 
 
 _LIVE_WINDOW = 500
-_DEFAULT_MAX_LIVE_JSON_BYTES = 8 * 1024 * 1024
 
 
 def _max_live_json_bytes() -> int:
