@@ -89,10 +89,40 @@ def test_every_regex_of_the_module_goes_through_the_guard():
     r"a{3,}b",                # `{n,}`
     r"x[^y]+?z",              # paresseux : la borne haute reste absente
     r"(?:ab{0,4}){0,9}",      # imbrication
+    # Une garde qui SAUTE ce qu'elle ne lit pas ne garde rien. Le corps des
+    # assertions était avalé jusqu'au premier `:` ou `)` : `(?=a*)` passait.
+    r"(?=a*)",                # lookahead
+    r"(?!x+)y",               # lookahead négatif
+    r"(?<=a{2,})b",           # lookbehind
+    r"(?<!a+)b",              # lookbehind négatif
+    r"(?P<n>a*)",             # groupe nommé
+    r"(?>a*)",                # groupe atomique
+    r"(?i)a*",                # drapeau en ligne
+    r"(?i:a+)",               # drapeau avec corps
+    r"a(?#commentaire)b*",    # commentaire
+    r"[a-z]*",                # classe de caractères
+    r"[\]]*",                 # classe avec `]` échappé
+    r"[]]*",                  # classe commençant par `]`
+    r"(?(1)a*|b)",            # conditionnel : non reconnu -> refusé (fail-closed)
 ])
 def test_the_guard_refuses_unbounded_patterns(bad):
     with pytest.raises(UnboundedPatternError):
         _compile_bounded(bad)
+
+
+@pytest.mark.parametrize("ok", [
+    r"(?=abc)x{0,4}",
+    r"(?:ab|cd){0,3}",
+    r"(?P<nom>a{0,9})",
+    r"(?i:ab)c{0,2}",
+    r"a(?#commentaire)b{0,5}",
+    r"(?<=ab)c{0,4}",
+])
+def test_the_guard_accepts_bounded_patterns_inside_every_group_kind(ok):
+    """Contrepartie : la garde doit VOIR le corps de chaque forme de groupe sans
+    refuser celles qui sont bornées, sinon elle interdirait d'écrire des motifs
+    corrects."""
+    _compile_bounded(ok)
 
 
 @pytest.mark.parametrize("ok,expected", [
