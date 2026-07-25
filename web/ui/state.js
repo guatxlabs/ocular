@@ -12,7 +12,20 @@ const JOBS_KEY = 'ocular_jobs';
 // --- token (Bearer) ---
 export const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
 export const setToken = (t) => localStorage.setItem(TOKEN_KEY, t);
-export const clearToken = () => localStorage.removeItem(TOKEN_KEY);
+// Purge le Cache Storage EN MÊME TEMPS que le jeton : le cache du service
+// worker survit sinon à la déconnexion sur un poste partagé. Rendue asynchrone
+// (les appelants n'ont pas à l'attendre) et best-effort — l'absence de l'API
+// `caches` ou un échec de suppression ne doit jamais empêcher la déconnexion.
+export const clearToken = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  return purgeCaches();
+};
+export async function purgeCaches() {
+  try {
+    if (typeof caches === 'undefined') return;
+    await Promise.all((await caches.keys()).map((k) => caches.delete(k)));
+  } catch { /* best-effort : la déconnexion locale a déjà eu lieu */ }
+}
 
 // --- langue (fr par défaut ; EN via dico FR->EN, appliqué au reload) ---
 export const LANG = localStorage.getItem(LANG_KEY) || 'fr';
