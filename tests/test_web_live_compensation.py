@@ -8,12 +8,18 @@ s'est déconnecté un instant, sinon le reaper la détruit alors que l'analyste 
 sert ». Ces deux appels étaient placés APRÈS le `except`, donc sur le seul chemin
 de succès.
 
-Or l'appel interne expire à 5,0 s, et l'analyse d'un DOM hostile dépasse ce
-budget (mesuré : 9 647 ms au plafond de 5 Mo, dont 6 487 ms de balayage regex
-incompressible). Un poll qui expire ne compensait donc RIEN : après une
-micro-coupure du WS VNC, le reaper détruisait une session SAINE — exactement le
-symptôme S8 que 17a2fb6 déclarait fermé, atteint par le timeout de `/live` au
-lieu du gel de `/health`.
+Un poll qui échoue ne compensait donc RIEN : après une micro-coupure du WS VNC,
+le reaper détruisait une session SAINE — exactement le symptôme S8 que 17a2fb6
+déclarait fermé, atteint par le timeout de `/live` au lieu du gel de `/health`.
+
+Le déclencheur mesuré à l'époque était l'expiration à 5,0 s de l'appel interne
+sur un DOM hostile (reproduit bout en bout sur 2067ee7 : 64 Kio de `eval(`
+répété -> 5 polls sur 5 en 502). Cette cause-là est fermée dans `engine.static`
+(cf. tests/test_static_bounded.py), et le chiffre n'est donc PAS reconduit ici :
+ce que ce fichier verrouille ne dépend pas d'un budget d'analyse. N'IMPORTE
+QUELLE cause d'échec — conteneur qui redémarre, coupure du réseau interne,
+réponse hors plafond de lecture — produit le même `CaptureError`, et aucune ne
+prouve que l'analyste a cessé de se servir de la session.
 
 Le fait d'être pollé est l'ÉVÉNEMENT qui prouve l'activité de l'analyste ; que le
 conteneur ait su répondre est une autre question. La compensation appartient donc

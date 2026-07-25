@@ -775,12 +775,18 @@ def session_live(
     #
     # AVANT l'appel interne, pas après : c'est le POLL qui prouve l'activité de
     # l'analyste, pas la capacité du conteneur à répondre. Placée après le
-    # `except`, la compensation n'était atteinte que sur le chemin de succès —
-    # or l'appel expire à 5,0 s et l'analyse d'un DOM hostile dépasse ce budget
-    # (mesuré : 9 647 ms au plafond de 5 Mo, dont 6 487 ms de balayage regex
-    # incompressible). Une page hostile suffisait donc à faire détruire une
-    # session SAINE par le reaper après une micro-coupure du WS VNC : le
-    # symptôme S8, atteint par le timeout de /live au lieu du gel de /health.
+    # `except`, la compensation n'était atteinte que sur le chemin de succès.
+    # Elle est ici INDÉPENDANTE de la raison de l'échec — expiration, conteneur
+    # qui redémarre, coupure réseau interne : aucune ne dit que l'analyste a
+    # cessé de se servir de la session. C'est pour ça qu'aucun chiffre de coût
+    # ne figure plus dans ce commentaire : le placement ne se justifie pas par
+    # un budget d'analyse, il se justifie par ce que le poll PROUVE.
+    #
+    # Le déclencheur historiquement mesuré était l'expiration à 5,0 s de l'appel
+    # interne sur un DOM hostile (reproduit bout en bout : 64 Kio de `eval(`
+    # répété -> 5/5 polls en 502) ; la cause en a depuis été fermée dans
+    # `engine.static`. La compensation reste sur le chemin d'entrée : le
+    # placement est correct pour toutes les autres causes d'échec.
     #
     # Après le contrôle d'appartenance : jamais de compensation sur une session
     # inconnue ou appartenant à autrui (`touch`/`mark_connected` sont par
