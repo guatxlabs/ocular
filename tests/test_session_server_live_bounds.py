@@ -38,6 +38,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import runner_recon_vnc.session_server as ss
+from engine.result import Truncation
 from engine.wrapper import NetworkCapture
 
 
@@ -63,6 +64,36 @@ class _FakePage:
 
     async def content(self) -> str:
         return self._dom
+
+
+class _MutatingPage:
+    """DOM qui change d'UN OCTET à chaque lecture : ni le mémo ni le
+    single-flight ne peuvent le dédupliquer. C'est la forme qui fabrique N
+    analyses pour N polls simultanés."""
+
+    def __init__(self, body: str = "<html><body>x</body></html>") -> None:
+        self._body = body
+        self._n = 0
+
+    async def content(self) -> str:
+        self._n += 1
+        return f"<!--{self._n}-->{self._body}"
+
+
+def _hostile_dom(pad: str = "\x00") -> str:
+    """Page dont TOUT le volume est dicté par elle : formulaires, mailto,
+    détections. `\\x00` coûte six octets par caractère une fois échappé en
+    JSON — c'est la forme qui gonfle le plus la réponse `/live`.
+
+    `eval(atob(...))` ci-dessous est une chaîne d'octets INERTE (faux DOM
+    capturé), jamais exécutée : elle ne sert qu'à faire mordre un motif
+    d'engine.static — même convention que tests/test_session_server_live_cpu.py."""
+    return "".join(
+        f'<form action="{pad * 500}" method="POST"></form>'
+        f'<a href="mailto:{i:04d}{pad * 310}">x</a>'
+        f'<script>eval(atob("x"))</script>'
+        for i in range(120)
+    )
 
 
 class _Req:
@@ -144,6 +175,81 @@ def test_live_findings_cardinality_is_capped(live_client, monkeypatch):
     data = _live(live_client).json()
     assert len(data["findings"]) == 25
     assert data["truncation"]["findings_dropped"] > 0
+
+
+# --- 1 bis. le délestage porte sur TOUTES les fenêtres, pas sur trois noms ---
+
+def test_every_variable_volume_window_is_shed_including_ones_never_named():
+    """Le délestage bouclait sur le tuple littéral (console, network, findings)
+    et laissait `forms` et `mailtos` — deux listes du même payload, 100 %
+    dictées par la page — hors de son champ. Mesuré sur 651840c : réponse de
+    490 631 octets, `truncation` à ZÉRO donc annoncée COMPLÈTE, aux plafonds
+    1 024, 65 536 et 262 144.
+
+    LA MUTATION QUI COMPTE est dans ce test : `fenetre_inventee_2027` n'est
+    nommée nulle part dans le code de production. Si le délestage redevient une
+    liste de noms, ce champ (et le prochain champ ajouté au payload) survit au
+    plafond et ce test échoue."""
+    payload = {
+        "network": [{"url": "u" * 1000} for _ in range(300)],
+        "console": [{"text": "c" * 1000} for _ in range(300)],
+        "findings": [{"rule": "r" * 1000} for _ in range(300)],
+        "forms": [{"action": "a" * 500, "method": "POST"} for _ in range(100)],
+        "mailtos": ["m" * 320 for _ in range(100)],
+        "fenetre_inventee_2027": ["z" * 1000 for _ in range(300)],
+        "counts": {"network": 300, "findings": 300, "console": 300},
+        "truncation": Truncation().model_dump(mode="json"),
+        "analysis_stale": False,
+        "verdict": "benign",
+    }
+    for cap in (1024, 65536, 262144):
+        fitted = ss._fit_live_payload(json.loads(json.dumps(payload)), cap)
+        size = len(json.dumps(fitted))
+        assert size <= cap, (
+            f"cap={cap} : réponse de {size} octets. Une fenêtre de volume "
+            f"variable échappe au délestage"
+        )
+        for window in ("forms", "mailtos", "fenetre_inventee_2027"):
+            counter = f"{window}_dropped"
+            assert fitted["truncation"].get(counter, 0) > 0, (
+                f"cap={cap} : `{window}` délestée SANS le dire — "
+                f"la réponse s'annonce complète alors qu'elle ne l'est pas"
+            )
+
+
+def test_the_live_response_stays_under_its_budget_whatever_the_page_emits(live_client, monkeypatch):
+    """La propriété, mesurée en bout de chaîne sur la réponse RÉELLE : quel que
+    soit le budget, `/live` reste sous son plafond et le web l'accepte poll
+    après poll. Bout en bout sur 651840c avec
+    `OCULAR_MAX_INTERNAL_JSON_BYTES=262144` — un RESSERREMENT, l'opération que
+    §2.10 sanctionne comme légitime : 0 poll servi sur 3, tous en 502."""
+    from web.internal_http import CaptureError, _read_capped
+
+    cap = NetworkCapture(keep="last")
+    hooks = _wire(cap)
+    for i in range(60):
+        hooks["request"](_Req(f"https://x.test/{i}?q={'a' * 300}", post_data="p" * 300))
+    ss._state.update(page=_FakePage(_hostile_dom()), cap=cap)
+
+    class _Resp:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def read(self, n: int) -> bytes:
+            return self._payload[:n]
+
+    for budget in (1024, 65536, 262144, DOC_LIVE_JSON_BYTES):
+        monkeypatch.setenv("OCULAR_MAX_LIVE_JSON_BYTES", str(budget))
+        _reset_live_state()
+        for poll in range(3):
+            body = _live(live_client).content
+            assert len(body) <= budget, (
+                f"budget={budget} poll={poll + 1} : réponse de {len(body)} octets"
+            )
+            try:
+                _read_capped(_Resp(body), budget, "live")
+            except CaptureError as exc:
+                pytest.fail(f"budget={budget} poll={poll + 1} refusé par le web : {exc}")
 
 
 # --- 2. plus de perte de preuve silencieuse ---------------------------------
@@ -262,6 +368,80 @@ def test_concurrent_polls_of_the_same_dom_run_a_single_analysis():
     assert all(r["findings"] == results[0]["findings"] for r in results)
 
 
+def test_a_mutating_dom_still_runs_one_analysis_at_a_time():
+    """LA PORTE QUE LE SINGLE-FLIGHT NE FERME PAS. Sa clef est l'empreinte du
+    DOM : une page qui change d'un octet par poll la manque à tous les coups, et
+    N polls simultanés redevenaient N analyses sérialisées par le GIL. Mesuré
+    bout en bout (uvicorn + le vrai client interne et son échéance de 5,0 s,
+    512 Kio de `atob(`) : N=1 -> 1/1 servi ; N=2 -> 2/2 ; N=4 -> 0/4 ; N=20 ->
+    0/20, toutes en 502.
+
+    La borne ne dépend d'aucune liste d'appelants : `_live_analysis` ne lance
+    une analyse que lorsque `_LIVE_INFLIGHT` est vide, et c'est le seul endroit
+    qui y écrit."""
+    inflight = {"cur": 0, "peak": 0, "total": 0}
+    lock = threading.Lock()
+    real = ss.scan_html
+
+    def _spy(html):
+        with lock:
+            inflight["cur"] += 1
+            inflight["total"] += 1
+            inflight["peak"] = max(inflight["peak"], inflight["cur"])
+        time.sleep(0.05)
+        try:
+            return real(html)
+        finally:
+            with lock:
+                inflight["cur"] -= 1
+
+    async def _scenario():
+        _reset_live_state()
+        ss._state.update(page=_MutatingPage(), cap=NetworkCapture())
+        ss.scan_html = _spy
+        try:
+            # deux vagues : la première sans rien en mémo, la seconde avec.
+            first = await asyncio.gather(*[ss.live() for _ in range(20)])
+            second = await asyncio.gather(*[ss.live() for _ in range(20)])
+            return first, second
+        finally:
+            ss.scan_html = real
+
+    first, second = asyncio.run(_scenario())
+
+    assert inflight["peak"] == 1, (
+        f"pic de concurrence {inflight['peak']} : N onglets se multiplient en N "
+        f"analyses, et la latence franchit l'échéance du client"
+    )
+    assert inflight["total"] == 2, (
+        f"{inflight['total']} analyses pour 40 polls d'un DOM mutant : la borne "
+        f"n'est pas tenue"
+    )
+    assert len(first) == 20 and len(second) == 20, "des polls sont restés sans réponse"
+    # ... et ceux qui reçoivent une analyse d'un autre tour le DISENT.
+    assert sum(1 for r in first + second if r["analysis_stale"]) == 38
+    assert all("verdict" in r and "counts" in r for r in first + second)
+
+
+def test_a_lone_poller_never_gets_a_stale_analysis():
+    """Non-régression sur l'usage NORMAL (un onglet, polls séquentiels) : la
+    borne de concurrence ne doit jamais s'y déclencher — chaque tour analyse le
+    DOM du tour."""
+    async def _scenario():
+        _reset_live_state()
+        page = _FakePage("<html><body>rien</body></html>")
+        ss._state.update(page=page, cap=NetworkCapture())
+        out = []
+        for i in range(5):
+            page.set_dom(f'<form action="https://evil.example/{i}" method="POST"></form>')
+            out.append(await ss.live())
+        return out
+
+    polls = asyncio.run(_scenario())
+    assert [p["analysis_stale"] for p in polls] == [False] * 5
+    assert polls[-1]["forms"] == [{"action": "https://evil.example/4", "method": "POST"}]
+
+
 def test_a_changed_dom_is_still_reanalyzed():
     """Non-régression : le single-flight ne doit pas figer l'analyse."""
     calls = {"n": 0}
@@ -305,7 +485,9 @@ def test_a_benign_live_poll_is_unchanged_and_declares_itself_complete(live_clien
     assert data["counts"]["network"] == 12 and len(data["network"]) == 12
     assert data["counts"]["console"] == 1
     assert data["forms"] == [{"action": "/login", "method": "POST"}]
-    assert json.loads(json.dumps(data["truncation"])) == {
-        "network_dropped": 0, "console_dropped": 0, "post_data_truncated": 0,
-        "findings_dropped": 0, "text_truncated": 0, "html_chars_dropped": 0,
-    }
+    # Attendu DÉRIVÉ du modèle : recopié à la main, ce dict devenait faux au
+    # premier compteur ajouté à `Truncation` — et il l'a été (`other_dropped`,
+    # `over_cap_bytes`). La propriété testée est « TOUS les compteurs à zéro »,
+    # pas « ces six-là à zéro ».
+    from engine.result import Truncation as _T
+    assert json.loads(json.dumps(data["truncation"])) == {k: 0 for k in _T.model_fields}
