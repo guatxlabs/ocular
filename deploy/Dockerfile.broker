@@ -1,0 +1,27 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Le broker est le SEUL tier autorisé à parler à Docker (socket monté par compose) :
+# il a besoin du CLI client `docker` pour lancer/tuer les conteneurs runner_analysis.
+# NB: sur Debian récent le paquet `docker.io` ne fournit QUE le daemon (dockerd) ;
+# le client `/usr/bin/docker` est désormais dans le paquet séparé `docker-cli`.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends docker-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY ocular_settings.py ocular_logging.py ./
+COPY engine/ ./engine/
+COPY bus/ ./bus/
+COPY broker/ ./broker/
+
+RUN pip install --no-cache-dir redis pydantic
+
+# /artifacts est un volume nommé rw partagé avec le web (uid 10002, capture de
+# session interactive) : voir le commentaire miroir dans deploy/Dockerfile.web
+# — même mode 0777 pré-créé ici pour un résultat déterministe quel que soit
+# le conteneur qui peuple le volume neuf en premier.
+RUN mkdir -p /artifacts && chmod 0777 /artifacts
+
+CMD ["python", "-m", "broker.main"]

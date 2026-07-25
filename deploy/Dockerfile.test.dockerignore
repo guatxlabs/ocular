@@ -1,0 +1,25 @@
+# dockerignore SPÉCIFIQUE à deploy/Dockerfile.test (BuildKit : ce fichier prime
+# sur le .dockerignore racine pour ce Dockerfile). On N'exclut PAS tests/
+# (l'image de test unitaire en a besoin), et le Dockerfile.test copie en
+# ALLOWLIST (source + tests uniquement) — donc aucun secret ne peut entrer.
+# Ces exclusions sont une défense en profondeur (contexte lean + jamais de secret).
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+.coverage
+.superpowers
+docs
+artifacts
+*.db
+*.db-*
+# secrets — jamais dans le contexte de build (défense en profondeur)
+**/.env
+**/.env.*
+!**/.env.example
+**/*.key
+**/*.pem
+**/*.p12
+**/*secret*

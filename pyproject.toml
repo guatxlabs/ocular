@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocular"
+version = "0.1.0"
+description = "Moteur unifié de capture + analyse web durci (recon anti-bot, analyse HTML hostile)"
+readme = "README.md"
+requires-python = ">=3.11"
+# Le code propre au projet est sous AGPL-3.0-or-later. Les composants tiers
+# EMBARQUÉS (noVNC en MPL-2.0, pako en MIT) restent sous leur propre licence :
+# cf. THIRD-PARTY-NOTICES.md. Cette clé ne décrit QUE le code du projet.
+license = "AGPL-3.0-or-later"
+license-files = ["COPYING"]
+# TODO (chaîne d'approvisionnement, DEPLOY-SECURITY §2.6, MEDIUM) : ces bornes
+# `>=` ne fixent qu'un PLANCHER — un build reproductible exige un lockfile
+# épinglé + hashes. Recommandé : générer un `requirements.lock` verrouillé avec
+# hashes (`pip-compile --generate-hashes` de pip-tools, ou `uv lock`) et
+# installer via `pip install --require-hashes -r requirements.lock` dans les
+# Dockerfiles. NON introduit ici pour ne PAS ajouter silencieusement un nouvel
+# outil au build ; à décider par l'opérateur. Le binaire Camoufox est vérifié
+# séparément (checksum opt-in dans runner_recon/Dockerfile — même §).
+dependencies = [
+  "pydantic>=2.13.4",
+  "fastapi>=0.139.2",
+  "uvicorn>=0.51.0",
+  "redis>=8.0.1",
+  "playwright>=1.41",
+  "jsonschema>=4.26.0",
+  "websockets>=16.1.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "fakeredis>=2.36.2", "httpx>=0.28.1", "ruff>=0.15.22", "mypy>=2.3.0", "numpy>=2.4.6"]
+
+# Paquets DÉCLARÉS explicitement. Sans cette liste, setuptools tente une
+# découverte automatique, voit plusieurs répertoires racine (`deploy`, `docs`,
+# `tests`…), refuse de deviner et fait ÉCHOUER `pip install -e .` — donc toute
+# CI qui installe le projet. `tests` est volontairement absent : ce n'est pas
+# du code distribuable.
+[tool.setuptools]
+packages = [
+  "broker",
+  "bus",
+  "engine",
+  "runner_analysis",
+  "runner_recon",
+  "runner_recon_vnc",
+  "tools",
+  "web",
+]
+py-modules = ["ocular_logging", "ocular_settings", "saved_store"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-m 'not integration'"
+asyncio_mode = "auto"
+markers = [
+  "integration: requires external tooling — Playwright + Chromium (playwright install chromium) and/or a working Docker daemon",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+# E402 (import hors de l'en-tête) est TOLÉRÉ dans les tests : plusieurs fichiers
+# placent délibérément un import juste sous le commentaire de section qu'il
+# sert, pour que le lecteur voie ensemble la dépendance et ce qu'elle teste.
+# Les remonter en tête satisferait le linter mais casserait ce lien. Exemption
+# ciblée et assumée — jamais appliquée au code de production.
+"tests/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true

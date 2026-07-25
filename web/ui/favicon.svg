@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Ocular = l'œil du quetzal. MÊME tracé que le logo d'en-tête (index.html) :
+       amande + iris + éclat. S'adapte au thème du système via prefers-color-scheme
+       (teinte guatx #00d4aa en sombre, un peu plus dense en clair pour le contraste ;
+       l'éclat passe du blanc à un teal très clair pour rester visible sur fond clair). -->
+  <style>
+    .eye  { fill: none; stroke: #00d4aa; }
+    .iris { fill: #00d4aa; }
+    .glint{ fill: #ffffff; }
+    @media (prefers-color-scheme: light) {
+      .eye  { stroke: #00a886; }
+      .iris { fill: #00a886; }
+      .glint{ fill: #eafff8; }
+    }
+  </style>
+  <path class="eye" d="M1.6 12 C5.3 6, 18.7 6, 22.4 12 C18.7 18, 5.3 18, 1.6 12 Z" stroke-width="1.5"/>
+  <circle class="iris" cx="12" cy="12" r="3"/>
+  <circle class="glint" cx="13.2" cy="10.6" r="1"/>
+</svg>

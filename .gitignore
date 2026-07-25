@@ -1,0 +1,42 @@
+__pycache__/
+*.pyc
+# Secrets — never commit real env files (env examples/samples stay tracked)
+.env
+**/.env
+*.env
+!*.env.example
+!*.env.sample
+node_modules/
+runner-*/browser-cache/
+logs/
+.superpowers/
+.venv/
+*.egg-info/
+artifacts/
+.coverage
+*.db
+*.db-*
+
+# Secrets — classes de fichiers qui ne doivent JAMAIS entrer dans l'index.
+# `deploy/.env` était couvert, mais pas ses variantes (`.env.local`,
+# `.env.prod`, `.env.save`) ni les clés/certificats/kubeconfig/bases.
+.env.*
+!.env.example
+!.env.sample
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+*.age
+*.token
+id_rsa*
+id_ecdsa*
+id_ed25519*
+kubeconfig*
+.kube/
+credentials
+.npmrc
+*.sqlite
+*.sqlite3
+dump.rdb

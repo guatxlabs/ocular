@@ -1,0 +1,240 @@
+# Nom de projet compose EXPLICITE. Sans lui, compose prend le nom du dossier
+# contenant ce fichier (`deploy`) et préfixe tout : images `deploy-web`,
+# conteneurs `deploy-web-1`, volumes `deploy_ocular-*` — trompeur (rien
+# n'indique Ocular) et fragile (déplacer/renommer le dossier renommerait
+# silencieusement toutes les ressources, orphelinant les volumes).
+name: ocular
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AUTH optionnelle, sans branche : `requirepass ""` DÉSACTIVE le mot de passe
+    # côté serveur, et l'URL correspondante `redis://:@redis:6379` est parsée par
+    # redis-py en password=None (donc AUCUN AUTH envoyé). Les deux extrémités
+    # dégradent donc proprement vers le comportement actuel quand la variable est
+    # vide — poser OCULAR_REDIS_PASSWORD dans deploy/.env active l'auth des DEUX
+    # côtés d'un coup, sans toucher au compose. Vérifié live dans les deux sens.
+    command: ["redis-server", "--requirepass", "${OCULAR_REDIS_PASSWORD:-}"]
+    read_only: true
+    # mode=1777 OBLIGATOIRE (pas un simple `/data`) : redis tourne en uid 999 et
+    # un tmpfs Docker par défaut est root:root 0755. Sans ce mode, le premier
+    # point de sauvegarde (`save 60 10000`…) échoue en EACCES, et redis bascule
+    # alors en `stop-writes-on-bgsave-error` -> **MISCONF, tout write refusé** :
+    # la stack entière tombe quelques minutes après le démarrage, pas au boot.
+    # Piège vérifié live (reproduit puis corrigé) avant d'être écrit ici.
+    # Contrepartie assumée : la RDB vit en RAM, donc les sessions ne survivent
+    # plus à un `restart` de redis (avant : rootfs du conteneur). Délibéré —
+    # redis porte les secrets de session EN CLAIR, qui n'ont pas à toucher le
+    # disque ; aucun volume n'a jamais été monté ici de toute façon.
+    tmpfs: ["/data:mode=1777"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "999:999"
+
+  web:
+    build: { context: .., dockerfile: deploy/Dockerfile.web }
+    # Nom DÉTERMINISTE : le broker attache ce conteneur aux réseaux per-session
+    # (docker network connect). Sans container_name, Docker générerait
+    # `<projet>-web-1`, que le broker ne peut pas deviner.
+    # Le nom dérive de la MÊME variable que celle lue par le broker plus bas
+    # (OCULAR_WEB_CONTAINER) : source unique, les deux ne peuvent pas diverger
+    # même si un opérateur la surcharge dans deploy/.env.
+    # Contrepartie assumée : `container_name` interdit `docker compose up
+    # --scale web=N` — le web est un singleton du plan de contrôle.
+    container_name: "${OCULAR_WEB_CONTAINER:-ocular-web}"
+    restart: unless-stopped
+    environment:
+      # Vide -> `redis://:@redis:6379` -> password=None côté redis-py (aucun AUTH),
+      # exactement le comportement d'avant. Cf. le bloc `redis` ci-dessus.
+      REDIS_URL: "redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379"
+      OCULAR_TOKEN: "${OCULAR_TOKEN:?OCULAR_TOKEN requis}"
+      OCULAR_ADMIN_TOKEN: "${OCULAR_ADMIN_TOKEN:-}"
+      OCULAR_ARTIFACTS_DIR: "/artifacts"
+      OCULAR_SAVED_DB: "/saved/saved.db"
+      # Identité IdP (phase 3e) — forward-auth OPT-IN. Par défaut désactivé
+      # (seul le Bearer authentifie). À activer UNIQUEMENT derrière un
+      # reverse-proxy authentifié qui STRIPPE les copies client de l'en-tête
+      # d'identité (sinon spoofing de X-Forwarded-User). Cf. README §identité.
+      OCULAR_TRUST_FORWARD_AUTH: "${OCULAR_TRUST_FORWARD_AUTH:-}"
+      OCULAR_FORWARD_USER_HEADER: "${OCULAR_FORWARD_USER_HEADER:-X-Forwarded-User}"
+      OCULAR_FORWARD_EMAIL_HEADER: "${OCULAR_FORWARD_EMAIL_HEADER:-X-Forwarded-Email}"
+      # Rôle admin via groupe IdP (phase 3h) — opt-in : nécessite aussi
+      # OCULAR_TRUST_FORWARD_AUTH=1 + le proxy qui strippe le header client.
+      # Vide -> admin uniquement via X-Admin-Token.
+      OCULAR_ADMIN_GROUP: "${OCULAR_ADMIN_GROUP:-}"
+      OCULAR_FORWARD_GROUPS_HEADER: "${OCULAR_FORWARD_GROUPS_HEADER:-X-Forwarded-Groups}"
+      # Plafond de sessions interactives CONCURRENTES (anti-épuisement de
+      # ressources : chaque session = un conteneur ~4g). Le web refuse (429)
+      # au-delà. 0 = illimité. Lu par create_session.
+      # ⚠️ Chaque session consomme AUSSI un réseau docker dédié, donc un
+      # sous-réseau du pool d'adresses local. Le pool PAR DÉFAUT de Docker n'en
+      # fournit qu'une trentaine au total : à cette valeur de 25, l'épuisement
+      # n'est pas un cas extrême mais le nominal. Élargir `default-address-pools`
+      # dans /etc/docker/daemon.json (prérequis de déploiement, cf.
+      # `docs/DEPLOY-SECURITY.md` §2.3) ou abaisser cette valeur.
+      OCULAR_MAX_SESSIONS: "${OCULAR_MAX_SESSIONS:-25}"
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    user: "10002:10002"
+    # Bind LOOPBACK par défaut. `"8000:8000"` écoutait implicitement sur 0.0.0.0 :
+    # toute l'API (/sessions, proxy noVNC) était joignable depuis n'importe quel
+    # poste du LAN, derrière un unique Bearer statique sans rotation ni rate-limit
+    # — en contradiction avec le modèle du §1 de docs/DEPLOY-SECURITY.md, qui
+    # suppose un reverse-proxy authentifiant en amont. Exposer reste possible,
+    # mais devient un acte EXPLICITE de l'opérateur (OCULAR_BIND=0.0.0.0).
+    # ⚠️ AUCUN `ports:` ICI — DÉLIBÉRÉ, C'EST UN CORRECTIF, PAS UN OUBLI.
+    # Le port publié vit désormais sur le service `gateway` ci-dessous.
+    # Republier 8000 sur CE conteneur ressusciterait le défaut : le broker
+    # attache/détache ce conteneur d'un réseau par session (`docker network
+    # connect`), et Docker reprogramme alors SA publication de ports — il tue et
+    # respawn le `docker-proxy`, coupant net toute connexion en vol (`curl
+    # rc=52`, zéro octet de réponse). Or `POST /sessions` tient justement sa
+    # connexion cliente ouverte ~8-10 s pendant `_wait_session_ready` : il se
+    # faisait décapiter par son PROPRE lancement de session (~4 échecs sur 6
+    # mesurés), alors que la session était bel et bien créée -> session_id perdu
+    # et fuite jusqu'au TTL. Mécanisme complet et preuve : deploy/gateway.conf.
+    mem_limit: 1g
+    cpus: "1.0"
+    volumes:
+      # rw (pas :ro) : le web ÉCRIT aussi les artefacts de capture de session
+      # interactive (POST /sessions/{id}/capture -> engine.artifacts.store_blobs).
+      # Sûr malgré rootfs read_only=true + rw sur ce seul volume : store_blobs
+      # vérifie que ref == sha256(contenu) avant tout write, donc un web
+      # compromis ne peut poser QUE des blobs sous leur propre nom de hash —
+      # aucun empoisonnement possible du store content-addressé partagé avec
+      # le broker.
+      - ocular-artifacts:/artifacts
+      - ocular-saved:/saved              # web LIT/ÉCRIT les analyses sauvegardées
+    depends_on: [redis]
+    networks:
+      - default          # redis
+      - ocular-sessions  # vestigial : le proxy interactif passe désormais par
+                         # les réseaux per-session attachés dynamiquement
+    # PAS de docker.sock — contrainte de sécurité
+
+  # Frontal TCP STABLE : SEUL détenteur du port publié 8000.
+  # Il ne rejoint QUE `default` et n'est jamais attaché à un réseau de session,
+  # donc son `docker-proxy` n'est jamais reprogrammé — c'est toute la raison de
+  # son existence. Ne lui ajoutez aucun réseau dynamique. Cf. deploy/gateway.conf.
+  gateway:
+    image: nginx:alpine
+    restart: unless-stopped
+    # Bind LOOPBACK par défaut (propriété conservée telle quelle en déplaçant le
+    # port depuis `web`). `"8000:8000"` écouterait implicitement sur 0.0.0.0 :
+    # toute l'API (/sessions, proxy noVNC) serait joignable depuis n'importe quel
+    # poste du LAN, derrière un unique Bearer statique sans rotation ni
+    # rate-limit — en contradiction avec le modèle du §1 de
+    # docs/DEPLOY-SECURITY.md, qui suppose un reverse-proxy authentifiant en
+    # amont. Exposer reste possible, mais reste un acte EXPLICITE de l'opérateur
+    # (OCULAR_BIND=0.0.0.0).
+    ports: ["${OCULAR_BIND:-127.0.0.1}:8000:8000"]
+    volumes:
+      - ./gateway.conf:/etc/nginx/nginx.conf:ro
+    read_only: true
+    # nginx écrit son pid (redirigé sur /tmp par gateway.conf) et ses fichiers
+    # temporaires ; seul chemin inscriptible sous read_only: true.
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # uid nginx de l'image alpine. Le port 8000 étant > 1024, aucune capability
+    # (NET_BIND_SERVICE) n'est nécessaire pour l'écouter en non-root.
+    user: "101:101"
+    mem_limit: 128m
+    cpus: "0.5"
+    depends_on: [web]
+    networks: [default]   # JAMAIS de réseau per-session ici (cf. ci-dessus)
+
+  broker:
+    build: { context: .., dockerfile: deploy/Dockerfile.broker }
+    restart: unless-stopped
+    environment:
+      REDIS_URL: "redis://:${OCULAR_REDIS_PASSWORD:-}@redis:6379"
+      # NE PAS RETIRER : sans cette variable, artifacts_dir() retombe sur le
+      # chemin RELATIF "artifacts" -> /app/artifacts, non inscriptible sous
+      # read_only: true. Le volume nommé ne serait plus utilisé du tout.
+      OCULAR_ARTIFACTS_DIR: "/artifacts"
+      # Le CLI docker résout son répertoire de config sur $HOME/.docker ; en
+      # non-root sans entrée passwd, HOME=/ -> / est sur le rootfs gelé. Aucune
+      # sous-commande utilisée ici n'écrit de config (run/kill/rm/ps/network),
+      # mais ce comportement dépend de la version du CLI : on le pointe donc
+      # explicitement vers le tmpfs, ce qui supprime la classe de risque.
+      DOCKER_CONFIG: "/tmp/.docker"
+      # Mode STRICT egress fail-closed, ON par défaut : le broker le transmet
+      # aux runners réseau-ON (egress_policy_env). Le garde egress est déjà ON
+      # par défaut ; ce flag REFUSE de démarrer un runner si le garde a été
+      # désactivé (OCULAR_EGRESS_GUARD=0) plutôt que de basculer en egress
+      # DIRECT silencieux. Mettre "0" seulement en labo réseau non sensible.
+      OCULAR_REQUIRE_EGRESS_GUARD: "${OCULAR_REQUIRE_EGRESS_GUARD:-1}"
+      # Résolution Xvfb des sessions interactives (LARGEURxHAUTEUR). Non hardcodé :
+      # ajuste-le à la taille d'écran cible (défaut 1920x1080). Le broker le
+      # transmet au conteneur de session (validé par regex).
+      OCULAR_SESSION_SCREEN: "${OCULAR_SESSION_SCREEN:-1920x1080}"
+      # Conteneur web que le broker attache/détache aux réseaux per-session.
+      OCULAR_WEB_CONTAINER: "${OCULAR_WEB_CONTAINER:-ocular-web}"
+    # --- Durcissement du tier qui détient le socket Docker ---------------------
+    # Le broker montait /var/run/docker.sock en ROOT, rootfs inscriptible, toutes
+    # capabilities — soit strictement moins durci que le `web`, qui lui n'a PAS le
+    # socket. Incohérence de posture corrigée ici.
+    # Honnêteté sur ce que ça vaut : quiconque atteint le socket Docker peut
+    # `docker run -v /:/host --privileged` et devenir root sur l'HÔTE. Ces quatre
+    # flags ne ferment PAS ce chemin — seul le retrait du socket le fermerait, et
+    # le broker ne peut pas fonctionner sans. Ils ferment les étapes INTERMÉDIAIRES
+    # d'une RCE dans le broker : implant persistant sur le rootfs, escalade via
+    # binaire SUID, abus de capability.
+    read_only: true
+    tmpfs: ["/tmp"]   # seul chemin inscriptible hors /artifacts (cf. DOCKER_CONFIG)
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    # uid non-root arbitraire (aucun utilisateur dédié dans l'image ; /artifacts
+    # est pré-créé en 0777 par les deux Dockerfiles, donc inscriptible).
+    user: "10002:10002"
+    # LE point délicat. Le socket est `srw-rw---- root:docker` : son GID est
+    # SPÉCIFIQUE À L'HÔTE (965 ici, 999 sur un Debian/Ubuntu standard, autre
+    # ailleurs). Le coder en dur casserait l'accès Docker — donc les sessions
+    # interactives — sur la plupart des hôtes. Il est donc paramétré, avec pour
+    # défaut la valeur la plus courante.
+    # ⚠️ OPÉRATEUR : `stat -c '%g' /var/run/docker.sock` et poser
+    # OCULAR_DOCKER_GID dans deploy/.env (fichier host-specific, non versionné).
+    # En cas de mauvaise valeur l'échec est BRUYANT et sans risque de sécurité :
+    # le broker perd le socket et les sessions échouent — il ne repasse pas root.
+    group_add: ["${OCULAR_DOCKER_GID:-999}"]
+    mem_limit: 1g
+    cpus: "1.0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # SEUL le broker parle à Docker
+      - ../schemas:/app/schemas:ro
+      - ocular-artifacts:/artifacts                # broker ÉCRIT les artefacts
+    depends_on: [redis]
+    networks:
+      - default          # redis
+      - ocular-sessions  # vestigial (voir `networks.ocular-sessions` ci-dessous)
+    # Le broker crée un réseau DÉDIÉ PAR SESSION (`ocular-sess-net-{id}`), y
+    # lance le conteneur de session, et y attache dynamiquement le conteneur web
+    # (docker network connect). Le réseau est supprimé au teardown de la session,
+    # et les réseaux orphelins sont balayés au démarrage du broker. Deux sessions
+    # sont donc sur des réseaux disjoints. AUCUNE session ne rejoint plus
+    # `ocular-sessions`.
+
+volumes:
+  # Noms EXPLICITES (comme le réseau ocular-sessions ci-dessous) : sans `name:`,
+  # compose les préfixerait du nom de projet, donc un renommage du projet
+  # créerait des volumes NEUFS et VIDES en orphelinant les données existantes.
+  # Épingler le nom rend les données indépendantes du nom de projet.
+  ocular-artifacts:
+    name: ocular-artifacts
+  ocular-saved:
+    name: ocular-saved
+
+networks:
+  default: {}
+  ocular-sessions:
+    name: ocular-sessions  # nom stable, non préfixé par le projet compose.
+    # VESTIGIAL : depuis l'isolation réseau par session, plus AUCUN conteneur de
+    # session ne rejoint ce réseau — le broker en crée un dédié par session
+    # (`ocular-sess-net-{id}`). Seuls web et broker y restent attachés. Conservé
+    # pour ne rien casser sur les déploiements existants ; supprimable
+    # ultérieurement (avec les entrées `networks:` de web et broker).
+    # PAS internal: true — les conteneurs ont besoin d'egress Internet.

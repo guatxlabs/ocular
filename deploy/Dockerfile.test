@@ -1,0 +1,64 @@
+# Image de test UNITAIRE (tests marqués "not integration") — exécute pytest en
+# conteneur, sans venv natif. Les tests unitaires mockent camoufox/playwright/
+# redis (fakeredis) : aucun navigateur ni service requis. Les tests d'INTÉGRATION
+# (marqueur `integration`) restent sur l'hôte (orchestrent Docker).
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Dépendances lues DEPUIS pyproject.toml — source unique de vérité.
+#
+# Cette liste était auparavant recopiée ici à la main, avec la consigne « à
+# garder en phase avec pyproject.toml ». Elle ne l'est pas restée : après une
+# montée des planchers côté pyproject, cette image installait encore les
+# anciennes versions. La suite DOCKERISÉE et la suite unitaire ne testaient
+# donc plus le même jeu de dépendances — et c'est la suite dockerisée qui sert
+# de référence dans la CI. Une consigne en commentaire ne tient pas lieu de
+# mécanisme.
+#
+# `pyproject.toml` est copié SEUL avant cette étape : la couche d'installation
+# n'est donc invalidée que si les dépendances changent, jamais à chaque
+# modification de source.
+#
+# Le PROJET lui-même n'est pas installé (`pip install -e .`) : pytest résout
+# les imports via `pythonpath = ["."]`, et une installation éditable exigerait
+# que tout le source soit déjà copié, ce qui ruinerait le cache.
+#
+# playwright est installé en PAQUET seulement (aucun navigateur) : les tests
+# unitaires mockent camoufox/playwright et ne lancent rien.
+COPY pyproject.toml ./
+RUN python - <<'EOF' && pip install --no-cache-dir -r /tmp/reqs.txt
+import tomllib, pathlib
+d = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]
+deps = list(d["dependencies"]) + list(d["optional-dependencies"]["dev"])
+pathlib.Path("/tmp/reqs.txt").write_text("\n".join(deps) + "\n")
+EOF
+
+# ALLOWLIST : on copie UNIQUEMENT le code source + les tests, JAMAIS de secrets
+# (pas de `.env`/`deploy/.env`/clés/`.db`/artefacts). C'est CETTE liste qui
+# garantit l'absence de fuite dans l'image, pas seulement le dockerignore.
+# pytest résout les imports via pythonpath=["."] (pyproject.toml est déjà
+# copié plus haut pour l'étape d'installation des dépendances).
+COPY engine ./engine
+COPY bus ./bus
+COPY broker ./broker
+COPY web ./web
+COPY runner_recon ./runner_recon
+COPY runner_recon_vnc ./runner_recon_vnc
+COPY runner_analysis ./runner_analysis
+COPY schemas ./schemas
+# tools/ = CLI hors-ligne (calibration triage) ; numpy est test-only, jamais
+# dans les images runtime (web/broker/runner). test_calibrate.py l'importe.
+COPY tools ./tools
+COPY tests ./tests
+COPY ocular_settings.py ocular_logging.py saved_store.py ./
+# Certains tests non-integration lisent le Makefile / README / deploy (cibles,
+# doc, Dockerfiles). ALLOWLIST fichier par fichier : `deploy/.env` ne peut pas
+# entrer même si le dockerignore est ignoré (build sans BuildKit), ce qui rend
+# vraie l'affirmation ci-dessus (« c'est CETTE liste qui garantit l'absence de
+# fuite »).
+COPY Makefile README.md ./
+COPY deploy/docker-compose.yml deploy/gateway.conf deploy/Dockerfile.broker \
+     deploy/Dockerfile.web deploy/Dockerfile.test deploy/.env.example ./deploy/
+
+CMD ["pytest", "-m", "not integration", "-q"]

@@ -1,0 +1,22 @@
+.git
+.gitignore
+.venv
+**/__pycache__
+**/*.pyc
+*.egg-info
+.coverage
+.superpowers
+docs
+# secrets — `.env` seul ne matche PAS `deploy/.env` (pas de composant de chemin)
+**/.env
+**/.env.*
+!**/.env.example
+**/*.key
+**/*.pem
+**/*.p12
+**/*secret*
+artifacts
+*.db
+*.db-*
+tests
+.superpowers/
