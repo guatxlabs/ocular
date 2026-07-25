@@ -151,6 +151,7 @@ const TRUNCATION_LABELS = [
   ['findings_dropped', 'détections non conservées'],
   ['post_data_truncated', 'corps de requête coupés'],
   ['text_truncated', 'champs texte coupés'],
+  ['html_chars_dropped', 'caractères de page non analysés'],
 ];
 
 export function truncationNotice(truncation) {

@@ -39,7 +39,7 @@ from fastapi.responses import JSONResponse
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard
 from engine.result import DomInfo, OcularResult, StealthInfo, Truncation
-from engine.static import analyze_html, extract_forms, extract_mailtos
+from engine.static import HtmlScan, extract_forms, extract_mailtos, scan_html
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, _env_cap, _max_findings, wrapper_payload
@@ -172,7 +172,8 @@ def build_capture_result(
     builder.set_dom(dom)
 
     dom_str = dom.decode("utf-8", "replace") if dom else ""
-    findings = analyze_html(dom_str) if dom else []
+    scan = scan_html(dom_str) if dom else HtmlScan([], 0)
+    findings = scan.findings
 
     if kind == "url":
         profile = "capture"
@@ -197,7 +198,7 @@ def build_capture_result(
         # détecté (pas de faux « non passé ») ; l'analyste peut marquer
         # explicitement « passé manuellement » (True) via l'UI de capture.
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved, challenge=challenge),
-        static_findings=findings,
+        static_findings=scan,
         network=network,
         console=console,
         # Ce que les plafonds anti-OOM de `NetworkCapture` ont déjà rejeté :
@@ -359,33 +360,63 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
 # à la page ANALYSÉE — donc hostile — un cœur en permanence par session.
 # Un conteneur = une page : une seule entrée suffit (DOM inchangé -> zéro coût).
 #
-# Le coût est fixé par le NOMBRE DE MATCHES que la page fabrique, pas par la
-# taille du document : mesurer sur un DOM bénin donne un chiffre sans rapport
-# avec la facture réelle. Mesuré sur un DOM de `document.cookie;` répété, après
-# le passage de `analyze_html` en linéaire : 128 Kio 243 ms, 512 Kio 960 ms,
-# 1 Mio 2 020 ms, 2 Mio 4 183 ms, et 9 647 ms pour 5 Mo.
+# CE QUI BORNE RÉELLEMENT CE CHEMIN — et ce que ce mémo ne borne PAS.
 #
-# RÉSIDUEL ASSUMÉ : `internal_get_json` expire à 5,0 s, donc au-delà d'environ
-# 2,5 Mo de contenu hostile le poll `/live` rend encore 502 et le panneau live
-# s'arrête. Ce n'est plus une perte de session — `web.app` compense AVANT
-# l'appel — mais un panneau dégradé. Le plancher est le balayage regex lui-même
-# (6 487 ms des 9 647 ms à 5 Mo) : le réduire demanderait de changer de moteur
-# d'analyse, pas d'ajuster ce mémo. `OCULAR_MAX_HTML_BYTES` ne borne PAS ce
-# chemin (il ne borne que le `html` SOUMIS à l'API) : le DOM live est ce que la
-# page rend.
+# Le mémo ne fait qu'éviter de REFAIRE une analyse ; il ne borne pas ce qu'UNE
+# analyse coûte, et une page qui mute d'un octet par poll ne le rencontre jamais
+# (le single-flight non plus : sa clef est la même empreinte de DOM). Ce qui
+# borne le coût est dans `engine.static`, en deux temps : des motifs à
+# quantificateurs BORNÉS (coût linéaire en la taille, quelle que soit la forme du
+# contenu) et une FENÊTRE d'analyse `OCULAR_MAX_ANALYZED_HTML_CHARS` (défaut
+# 524 288 caractères) qui borne la taille balayée et déclare ce qu'elle écarte
+# dans `truncation.html_chars_dropped`.
+#
+# CHIFFRES MESURÉS, et seulement eux. Sur cette machine (Python 3.14), chemin
+# complet `scan_html` + `extract_forms` + `extract_mailtos`, batterie de 65
+# formes hostiles dérivées des motifs eux-mêmes, chacune répétée jusqu'au plafond
+# de fenêtre : pire cas 784 ms — contre 5,0 s de timeout `internal_get_json`.
+# Au-delà de la fenêtre, agrandir le document ne coûte plus rien : la même
+# batterie à 4 Mio donne le même pire cas (704 ms).
+#
+# Ces chiffres sont une MESURE SUR UNE MACHINE, pas une garantie universelle :
+# ils bornent le coût parce que la fenêtre borne la taille, et le rapport au
+# timeout est ce qu'il faut re-mesurer si l'on relève
+# `OCULAR_MAX_ANALYZED_HTML_CHARS` (tests/test_static_bounded.py rejoue la
+# mesure à chaque exécution de la suite et échoue si le pire cas franchit 5,0 s).
+#
+# Pour référence, l'état AVANT ce correctif, mesuré de la même façon : la forme
+# `eval(` répétée coûtait 27 295 ms à 128 Kio et la forme `<input` 52 608 ms, en
+# produisant ZÉRO détection — 64 Kio suffisaient à faire rendre 502 à CHAQUE
+# poll, indéfiniment. `OCULAR_MAX_HTML_BYTES` ne borne PAS ce chemin (il ne borne
+# que le `html` SOUMIS à l'API) : le DOM live est ce que la page rend.
 _LIVE_ANALYSIS: dict[str, dict[str, Any]] = {}
 
 
 def _analyze_dom(dom: str) -> dict[str, Any]:
     """Analyse statique complète du DOM courant. SYNCHRONE et pure : appelée via
     `run_in_threadpool` pour ne jamais tenir la boucle d'évènements (celle qui
-    pilote Camoufox et sert `/health`, `/goto`, `/capture`)."""
-    findings = analyze_html(dom)
+    pilote Camoufox et sert `/health`, `/goto`, `/capture`).
+
+    SEUL producteur d'une analyse live — donc le seul endroit où décider ce que
+    la session RETIENT. `_max_findings()` s'applique ICI, avant la mise en mémo,
+    et pas plus loin : appliqué à la réponse seulement, il bornait ce que
+    l'analyste voit sans borner ce que le conteneur garde. Mesuré avant, DOM
+    hostile de 1 Mio : 65 536 détections produites, 5 000 rendues, 65 536
+    RETENUES dans `_LIVE_ANALYSIS`, RSS 47 -> 140 Mio après UN poll. Le mémo
+    survit tant que le DOM ne change pas : la part écartée n'avait aucune borne.
+
+    Le verdict est calculé sur les détections CONSERVÉES, comme côté batch
+    (`ResultBuilder.build` plafonne aussi avant `compute_triage`)."""
+    scan = scan_html(dom)
+    cap = _max_findings()
+    kept = scan.findings[:cap]
     return {
-        "findings": [f.model_dump(mode="json") for f in findings],
+        "findings": [f.model_dump(mode="json") for f in kept],
+        "findings_dropped": len(scan.findings) - len(kept),
+        "html_chars_dropped": scan.chars_dropped,
         "forms": extract_forms(dom),
         "mailtos": extract_mailtos(dom),
-        "verdict": compute_verdict(findings),
+        "verdict": compute_verdict(kept),
     }
 
 
@@ -520,10 +551,11 @@ async def live() -> dict[str, Any]:
     truncation = (_truncation_of() if callable(_truncation_of) else Truncation()).model_dump(
         mode="json"
     )
-    all_findings = analysis["findings"]
-    findings_cap = _max_findings()
-    findings = all_findings[:findings_cap]
-    truncation["findings_dropped"] += len(all_findings) - len(findings)
+    # Le plafond de détections a déjà mordu dans `_analyze_dom` (là où la
+    # session RETIENT la liste) ; ici on ne fait que reporter ce qu'il a écarté.
+    findings = analysis["findings"]
+    truncation["findings_dropped"] += analysis["findings_dropped"]
+    truncation["html_chars_dropped"] += analysis["html_chars_dropped"]
     payload = {
         "network": network[-_LIVE_WINDOW:],
         "console": console[-_LIVE_WINDOW:],
@@ -533,7 +565,7 @@ async def live() -> dict[str, Any]:
         # Compte TOTAL émis depuis le début de la session : le tampon est borné,
         # pas le compteur.
         "counts": {"network": len(network) + truncation["network_dropped"],
-                   "findings": len(all_findings),
+                   "findings": len(findings) + analysis["findings_dropped"],
                    "console": len(console) + truncation["console_dropped"],
                    "forms": len(forms), "mailtos": len(mailtos)},
         "truncation": truncation,

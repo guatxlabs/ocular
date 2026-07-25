@@ -9,7 +9,7 @@ import time
 from playwright.sync_api import sync_playwright
 
 from engine.result import DomInfo, OcularResult, StealthInfo
-from engine.static import analyze_html, extract_forms, extract_mailtos
+from engine.static import extract_forms, extract_mailtos, scan_html
 from engine.verdict import compute_verdict
 from engine.wrapper import NetworkCapture, ResultBuilder, emit_wrapper, sha256_ref
 from ocular_logging import get_logger
@@ -25,7 +25,8 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
     started = time.monotonic()
     log.info("job_id=%s render start html_bytes=%d", job_id, len(html.encode("utf-8")))
     # L'analyse static ne dépend PAS du navigateur : toujours disponible, même si le rendu échoue.
-    static_findings = analyze_html(html)
+    scan = scan_html(html)
+    static_findings = scan.findings
     capture = NetworkCapture()
     builder = ResultBuilder()
     dom = DomInfo()
@@ -76,7 +77,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
         verdict=compute_verdict(static_findings),
         dom_info=dom,
         stealth=StealthInfo(engine="chromium"),
-        static_findings=static_findings,
+        static_findings=scan,
         network=capture.network,
         console=capture.console,
         truncation=capture.truncation(),

@@ -34,7 +34,7 @@ log = get_logger("runner-recon")
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS  # noqa: E402
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard  # noqa: E402
 from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo, Truncation  # noqa: E402
-from engine.static import analyze_html, extract_forms, extract_mailtos  # noqa: E402
+from engine.static import HtmlScan, extract_forms, extract_mailtos, scan_html  # noqa: E402
 from engine.steps import validate_steps  # noqa: E402
 from engine.urlnorm import url_input_hash  # noqa: E402
 from engine.verdict import compute_verdict  # noqa: E402
@@ -58,11 +58,15 @@ def _scripted_deadline() -> float:
     return time.monotonic() + SCRIPTED_EXEC_TIMEOUT_S
 
 
-def _analyze(dom_html: bytes) -> list:
+def _analyze(dom_html: bytes) -> HtmlScan:
     """Factorisé entre le chemin 3a (`build_result`) et le chemin scripté 3c
     (`capture_scripted`) — même calcul de findings statiques à partir du DOM
-    capturé, une seule implémentation."""
-    return analyze_html(dom_html.decode("utf-8", "replace")) if dom_html else []
+    capturé, une seule implémentation.
+
+    Rend l'`HtmlScan` COMPLET (détections + part du document non balayée) et non
+    la seule liste : c'est ce qui garantit que le marqueur de troncature suit les
+    détections jusqu'au résultat, sans avoir à le rebrancher tier par tier."""
+    return scan_html(dom_html.decode("utf-8", "replace")) if dom_html else HtmlScan([], 0)
 
 
 # Snippet partagé (source unique engine/browser_js) — parcours pas-à-pas pour
@@ -156,7 +160,8 @@ def build_result(
         builder.add_screenshot(step, phase, png)
     builder.set_dom(dom_html)
 
-    findings = _analyze(dom_html)
+    scan = _analyze(dom_html)
+    findings = scan.findings
 
     return builder.build(
         job_id="",
@@ -166,7 +171,7 @@ def build_result(
         verdict=compute_verdict(findings),
         dom_info=_dom_info(dom_html, title, final_url),
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
-        static_findings=findings,
+        static_findings=scan,
         network=network,
         console=console,
         truncation=truncation,
@@ -590,7 +595,8 @@ async def capture_scripted(
             })
 
     builder.set_dom(dom_html)
-    findings = _analyze(dom_html)
+    scan = _analyze(dom_html)
+    findings = scan.findings
 
     return builder.build(
         job_id="",
@@ -600,7 +606,7 @@ async def capture_scripted(
         verdict=compute_verdict(findings),
         dom_info=_dom_info(dom_html, title, final_url),
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
-        static_findings=findings,
+        static_findings=scan,
         network=capture.network,
         console=capture.console,
         dynamic_steps=journal_to_dynamic_steps(journal, capture_refs),

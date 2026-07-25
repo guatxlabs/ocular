@@ -32,6 +32,7 @@ from engine.result import (
     StealthInfo,
     Truncation,
 )
+from engine.static import HtmlScan
 from engine.triage import compute_triage
 from ocular_logging import get_logger
 
@@ -444,13 +445,24 @@ class ResultBuilder:
         verdict: str,
         dom_info: Optional[DomInfo] = None,
         stealth: Optional[StealthInfo] = None,
-        static_findings: Optional[list] = None,
+        static_findings: "Optional[list | HtmlScan]" = None,
         network: Optional[list[dict[str, Any]]] = None,
         console: Optional[list[dict[str, Any]]] = None,
         dynamic_steps: Optional[list] = None,
         truncation: Optional[Truncation] = None,
     ) -> tuple[OcularResult, dict[str, bytes]]:
-        _findings = list(static_findings or [])
+        # Les détections et LA PART DE DOCUMENT QU'ON N'A PAS REGARDÉE voyagent
+        # dans le MÊME objet (`HtmlScan`) : un appelant ne peut pas transmettre
+        # les unes en perdant l'autre. C'est ce qui rend le marqueur exhaustif
+        # sans avoir à l'ajouter tier par tier. Une simple liste reste acceptée
+        # pour les résultats composés à la main (tests) : aucun document n'a
+        # alors été balayé, donc rien n'a pu être écarté.
+        if isinstance(static_findings, HtmlScan):
+            _findings = list(static_findings.findings)
+            _html_chars_dropped = static_findings.chars_dropped
+        else:
+            _findings = list(static_findings or [])
+            _html_chars_dropped = 0
         _dom = dom_info or DomInfo()
         # Choke-point des plafonds, symétrique de celui des artefacts
         # (`add_screenshot`/`set_dom`). Trois familles, toutes dictées par la page
@@ -499,6 +511,7 @@ class ResultBuilder:
             post_data_truncated=_upstream.post_data_truncated + _body_truncated,
             findings_dropped=_upstream.findings_dropped + _findings_dropped,
             text_truncated=_upstream.text_truncated + _text_truncated,
+            html_chars_dropped=_upstream.html_chars_dropped + _html_chars_dropped,
         )
         triage = compute_triage(
             _findings, verdict=verdict,
@@ -540,15 +553,18 @@ class ResultBuilder:
                 post_data_truncated=_truncation.post_data_truncated,
                 findings_dropped=_truncation.findings_dropped + _shed.findings_dropped,
                 text_truncated=_truncation.text_truncated,
+                html_chars_dropped=_truncation.html_chars_dropped,
             )
             result.truncation = _truncation
         if _truncation != Truncation():
+            # Dérivé du MODÈLE, jamais réécrit à la main : une liste de champs
+            # recopiée dans un format littéral se désynchronise au premier
+            # compteur ajouté, et le compteur neuf disparaît du journal sans que
+            # rien ne le signale (c'est ce qui venait d'arriver à
+            # `html_chars_dropped`). Le broker fait déjà pareil côté réception.
             _log.warning(
-                "résultat tronqué network_dropped=%d console_dropped=%d "
-                "post_data_truncated=%d findings_dropped=%d text_truncated=%d",
-                _truncation.network_dropped, _truncation.console_dropped,
-                _truncation.post_data_truncated, _truncation.findings_dropped,
-                _truncation.text_truncated,
+                "résultat tronqué %s",
+                " ".join(f"{k}={v}" for k, v in sorted(_truncation.model_dump().items())),
             )
         return result, self.blobs
 

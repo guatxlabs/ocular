@@ -3,13 +3,18 @@
 """Coût CPU de `/live` — saturation depuis le contenu ANALYSÉ.
 
 `/live` est pollé toutes les 2 s par session (web/ui/views/interactive.js) et
-refaisait TOUT le travail d'analyse à chaque appel, même DOM inchangé :
-`analyze_html` balaye 64 regex sur le document entier (mesuré ~590 ms pour
-1 MiB, ~2,9 s pour 5 MiB = le plafond `OCULAR_MAX_HTML_BYTES` par défaut). Le
-calcul était fait DANS la coroutine, donc sur la boucle d'évènements qui pilote
-Camoufox et sert `/health` : au-delà de ~1 MiB de DOM la boucle ne rend plus la
-main, la sonde de disponibilité du web expire et une session pourtant SAINE est
-détruite.
+refaisait TOUT le travail d'analyse à chaque appel, même DOM inchangé : le
+balayage statique passe 64 motifs sur le document entier. Le calcul était fait
+DANS la coroutine, donc sur la boucle d'évènements qui pilote Camoufox et sert
+`/health` : tant qu'il dure, la boucle ne rend pas la main, la sonde de
+disponibilité du web expire et une session pourtant SAINE est détruite.
+
+Aucun chiffre de coût n'est cité ici, et c'est délibéré : le « ~590 ms/Mio »
+d'origine était mesuré sur un échantillon BÉNIN et sous-estimait de deux ordres
+de grandeur la facture d'un contenu hostile (mesuré sur 2067ee7 : 27 295 ms pour
+128 Kio de `eval(` répété). Ce fichier vérifie OÙ tourne le calcul et COMBIEN DE
+FOIS il est fait — deux propriétés déterministes, indépendantes de la machine.
+Le coût, lui, est mesuré là où il est borné : tests/test_static_bounded.py.
 
 Deux garanties verrouillées ici :
   1. deux polls consécutifs à DOM identique ne déclenchent qu'UNE analyse ;
@@ -68,7 +73,7 @@ def test_live_analyzes_once_for_two_polls_of_the_same_dom(live_client, monkeypat
             return fn(html)
         return _wrapped
 
-    monkeypatch.setattr(ss, "analyze_html", _counting("analyze", ss.analyze_html))
+    monkeypatch.setattr(ss, "scan_html", _counting("analyze", ss.scan_html))
     monkeypatch.setattr(ss, "extract_forms", _counting("forms", ss.extract_forms))
     monkeypatch.setattr(ss, "extract_mailtos", _counting("mailtos", ss.extract_mailtos))
 
@@ -89,13 +94,13 @@ def test_live_analyzes_once_for_two_polls_of_the_same_dom(live_client, monkeypat
 
 def test_live_reanalyzes_when_the_dom_changes(live_client, monkeypatch):
     calls = {"n": 0}
-    real_analyze = ss.analyze_html
+    real_analyze = ss.scan_html
 
     def _counting(html):
         calls["n"] += 1
         return real_analyze(html)
 
-    monkeypatch.setattr(ss, "analyze_html", _counting)
+    monkeypatch.setattr(ss, "scan_html", _counting)
 
     page = _FakePage("<html><body>rien</body></html>")
     ss._state.update(page=page, cap=_FakeCap())
@@ -116,7 +121,7 @@ def test_live_analysis_runs_off_the_event_loop_thread():
     détruit la session. On vérifie donc où elle tourne, pas combien de temps
     elle dure (mesure déterministe, sans dépendance à la charge machine)."""
     seen: dict[str, int | None] = {"analyze_thread": None, "loop_thread": None}
-    original = ss.analyze_html
+    original = ss.scan_html
 
     def _spy(html):
         seen["analyze_thread"] = threading.get_ident()
@@ -126,16 +131,16 @@ def test_live_analysis_runs_off_the_event_loop_thread():
         seen["loop_thread"] = threading.get_ident()
         ss._LIVE_ANALYSIS.clear()
         ss._state.update(page=_FakePage("<html><body>lourd</body></html>"), cap=_FakeCap())
-        ss.analyze_html = _spy
+        ss.scan_html = _spy
         try:
             await ss.live()
         finally:
-            ss.analyze_html = original
+            ss.scan_html = original
 
     asyncio.run(_scenario())
 
-    assert seen["analyze_thread"] is not None, "analyze_html n'a pas été appelée"
+    assert seen["analyze_thread"] is not None, "scan_html n'a pas été appelée"
     assert seen["analyze_thread"] != seen["loop_thread"], (
-        "analyze_html tourne sur la boucle d'évènements : elle gèle /health, "
+        "scan_html tourne sur la boucle d'évènements : elle gèle /health, "
         "/goto et /capture pendant tout le balayage du DOM"
     )

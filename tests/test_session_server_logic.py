@@ -109,7 +109,7 @@ def test_live_no_active_session_returns_empty_structure(live_client):
         # marqueur que lorsqu'il est non nul oblige le client à distinguer
         # « complet » de « ne sait pas ». Cf. tests/test_session_server_live_bounds.py.
         "truncation": {"network_dropped": 0, "console_dropped": 0, "post_data_truncated": 0,
-                       "findings_dropped": 0, "text_truncated": 0},
+                       "findings_dropped": 0, "text_truncated": 0, "html_chars_dropped": 0},
         "verdict": "benign",
     }
 
@@ -135,7 +135,7 @@ def test_live_with_page_returns_network_findings_counts_verdict(live_client):
 
     # reflète le réseau/console capturés et l'analyse statique du DOM courant —
     # mêmes fonctions que /capture (aucune duplication de la mécanique).
-    expected_findings = ss.analyze_html(dom_html)
+    expected_findings = ss.scan_html(dom_html).findings
     assert body["network"] == network_entries
     assert body["console"] == console_entries
     assert len(body["findings"]) == len(expected_findings) > 0
