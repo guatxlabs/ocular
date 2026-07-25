@@ -375,9 +375,10 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
 # CHIFFRES MESURÉS, et seulement eux. Sur cette machine (Python 3.14), chemin
 # complet `scan_html` + `extract_forms` + `extract_mailtos`, batterie de 65
 # formes hostiles dérivées des motifs eux-mêmes, chacune répétée jusqu'au plafond
-# de fenêtre : pire cas 784 ms — contre 5,0 s de timeout `internal_get_json`.
-# Au-delà de la fenêtre, agrandir le document ne coûte plus rien : la même
-# batterie à 4 Mio donne le même pire cas (704 ms).
+# de fenêtre : pire cas 572 à 784 ms selon la charge de la machine (deux
+# exécutions) — contre 5,0 s de timeout `internal_get_json`. Au-delà de la
+# fenêtre, agrandir le document ne coûte plus rien : la même batterie à 4 Mio
+# donne le même ordre de grandeur (704 ms).
 #
 # Ces chiffres sont une MESURE SUR UNE MACHINE, pas une garantie universelle :
 # ils bornent le coût parce que la fenêtre borne la taille, et le rapport au
