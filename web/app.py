@@ -768,21 +768,33 @@ def session_live(
     # 404 indistinguable : session inconnue OU appartenant à un autre analyste.
     _owned_session_or_404(request, registry, session_id)
 
-    url = f"http://{_session_host(session_id)}:8090/live"
-    secret = registry.get_secret(session_id) or ""
-    try:
-        live = _internal_get_json(url, secret)
-    except _CaptureError:
-        log.warning("session live failed session_id=%s", session_id)
-        raise HTTPException(status_code=502, detail="live échoué")
-
     # Une session ACTIVEMENT pollée via /live (panneau live ouvert) est vivante,
     # même si son WS VNC s'est déconnecté un instant : on réarme `mark_connected`
     # (efface `disconnected_at`) en plus de `touch`, sinon le reaper la détruit
     # après la grâce de déconnexion alors que l'analyste s'en sert (corrige M1).
+    #
+    # AVANT l'appel interne, pas après : c'est le POLL qui prouve l'activité de
+    # l'analyste, pas la capacité du conteneur à répondre. Placée après le
+    # `except`, la compensation n'était atteinte que sur le chemin de succès —
+    # or l'appel expire à 5,0 s et l'analyse d'un DOM hostile dépasse ce budget
+    # (mesuré : 9 647 ms au plafond de 5 Mo, dont 6 487 ms de balayage regex
+    # incompressible). Une page hostile suffisait donc à faire détruire une
+    # session SAINE par le reaper après une micro-coupure du WS VNC : le
+    # symptôme S8, atteint par le timeout de /live au lieu du gel de /health.
+    #
+    # Après le contrôle d'appartenance : jamais de compensation sur une session
+    # inconnue ou appartenant à autrui (`touch`/`mark_connected` sont par
+    # ailleurs no-op anti-résurrection).
     registry.mark_connected(session_id)
     registry.touch(session_id, datetime.now(timezone.utc).isoformat())
-    return live
+
+    url = f"http://{_session_host(session_id)}:8090/live"
+    secret = registry.get_secret(session_id) or ""
+    try:
+        return _internal_get_json(url, secret)
+    except _CaptureError:
+        log.warning("session live failed session_id=%s", session_id)
+        raise HTTPException(status_code=502, detail="live échoué")
 
 
 _WS_SUBPROTOCOL_PREFIX = "ocular.session."

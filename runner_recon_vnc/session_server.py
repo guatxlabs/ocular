@@ -355,12 +355,24 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
 
 # Mémo d'analyse de `/live`, clefé par empreinte du DOM. `/live` est pollé
 # toutes les 2 s PAR SESSION (web/ui/views/interactive.js) et `analyze_html`
-# balaye 64 regex sur le document ENTIER : ~59 ms pour 100 Kio, ~590 ms pour
-# 1 Mio, ~2,9 s pour 5 Mio (= le plafond `OCULAR_MAX_HTML_BYTES` par défaut).
-# Recalculer à chaque tour, c'est offrir à la page ANALYSÉE — donc hostile — un
-# cœur en permanence par session ; à 5 Mio le tour dépasse même la période de
-# poll et gèle `/health`, ce qui fait détruire par le web une session saine.
+# balaye 64 regex sur le document ENTIER. Recalculer à chaque tour, c'est offrir
+# à la page ANALYSÉE — donc hostile — un cœur en permanence par session.
 # Un conteneur = une page : une seule entrée suffit (DOM inchangé -> zéro coût).
+#
+# Le coût est fixé par le NOMBRE DE MATCHES que la page fabrique, pas par la
+# taille du document : mesurer sur un DOM bénin donne un chiffre sans rapport
+# avec la facture réelle. Mesuré sur un DOM de `document.cookie;` répété, après
+# le passage de `analyze_html` en linéaire : 128 Kio 243 ms, 512 Kio 960 ms,
+# 1 Mio 2 020 ms, 2 Mio 4 183 ms, et 9 647 ms pour 5 Mo.
+#
+# RÉSIDUEL ASSUMÉ : `internal_get_json` expire à 5,0 s, donc au-delà d'environ
+# 2,5 Mo de contenu hostile le poll `/live` rend encore 502 et le panneau live
+# s'arrête. Ce n'est plus une perte de session — `web.app` compense AVANT
+# l'appel — mais un panneau dégradé. Le plancher est le balayage regex lui-même
+# (6 487 ms des 9 647 ms à 5 Mo) : le réduire demanderait de changer de moteur
+# d'analyse, pas d'ajuster ce mémo. `OCULAR_MAX_HTML_BYTES` ne borne PAS ce
+# chemin (il ne borne que le `html` SOUMIS à l'API) : le DOM live est ce que la
+# page rend.
 _LIVE_ANALYSIS: dict[str, dict[str, Any]] = {}
 
 

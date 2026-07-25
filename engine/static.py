@@ -115,10 +115,30 @@ _COMPILED = [(re.compile(p, re.IGNORECASE), d, s) for p, d, s in PATTERNS]
 
 
 def analyze_html(html: str) -> list[StaticFinding]:
+    """Détections statiques du document. Le contenu est HOSTILE par définition :
+    le coût doit rester LINÉAIRE en la taille du document, quel que soit le
+    nombre de matches que la page fabrique.
+
+    Le numéro de ligne était recalculé depuis le début pour CHAQUE match
+    (`html.count("\\n", 0, m.start())`), soit O(n) par match — donc quadratique
+    en le nombre de matches, que la page contrôle entièrement. Mesuré sur un DOM
+    de `document.cookie;` répété : 512 Kio -> 3 920 ms, 1 Mio -> 12 264 ms,
+    2 Mio -> 66 739 ms, et ~9 min extrapolées au plafond `OCULAR_MAX_HTML_BYTES`.
+    Comme `internal_get_json` expire à 5 s, ~600 Kio de contenu hostile
+    suffisaient à faire rendre 502 à chaque poll de `/live`.
+
+    `finditer` rend les matches par position croissante : on compte donc les
+    sauts de ligne PAR INTERVALLE DISJOINT depuis le match précédent. La somme
+    des intervalles d'une passe vaut le document entier, une seule fois — O(n)
+    par motif au lieu de O(n) par match, à résultat identique (vérifié contre le
+    recomptage naïf dans tests/test_static_linear.py)."""
     findings: list[StaticFinding] = []
     for rx, description, severity in _COMPILED:
+        cursor = 0     # fin de l'intervalle déjà compté pour ce motif
+        line = 1       # numéro de ligne à la position `cursor`
         for m in rx.finditer(html):
-            line = html.count("\n", 0, m.start()) + 1
+            line += html.count("\n", cursor, m.start())
+            cursor = m.start()
             start = max(0, m.start() - 30)
             findings.append(
                 StaticFinding(
