@@ -179,15 +179,25 @@ def _serve(monkeypatch, body: bytes):
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _FakeHTTPResponse(body))
 
 
+def _capture_read_floor() -> int:
+    """Plus petit plafond de lecture `/capture` que la configuration peut poser.
+    DÉRIVÉ d'`engine.limits` : écrit en dur (`1024`), il désignait depuis le
+    plancher générique une valeur sous laquelle `/capture` ne peut de toute façon
+    plus répondre — la charge du test n'aurait plus rien mesuré."""
+    from engine.limits import PAIRS, _allowance
+    return PAIRS["capture"].source_floor + _allowance(1)
+
+
 def test_internal_capture_refuses_oversized_response(monkeypatch):
-    monkeypatch.setenv("OCULAR_MAX_INTERNAL_CAPTURE_BYTES", "1024")
-    _serve(monkeypatch, b'{"result": {}, "blobs": {"x": "' + b"A" * 4096 + b'"}}')
+    cap = _capture_read_floor()
+    monkeypatch.setenv("OCULAR_MAX_INTERNAL_CAPTURE_BYTES", str(cap))
+    _serve(monkeypatch, b'{"result": {}, "blobs": {"x": "' + b"A" * (4 * cap) + b'"}}')
     with pytest.raises(CaptureError):
         internal_capture("http://ocular-sess-x:8080/capture", "s")
 
 
 def test_internal_capture_accepts_response_under_cap(monkeypatch):
-    monkeypatch.setenv("OCULAR_MAX_INTERNAL_CAPTURE_BYTES", "1024")
+    monkeypatch.setenv("OCULAR_MAX_INTERNAL_CAPTURE_BYTES", str(_capture_read_floor()))
     _serve(monkeypatch, b'{"result": {"job_id": "j"}, "blobs": {}}')
     assert internal_capture("http://ocular-sess-x:8080/capture", "s")["result"]["job_id"] == "j"
 
