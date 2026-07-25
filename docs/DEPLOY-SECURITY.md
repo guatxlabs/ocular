@@ -481,7 +481,7 @@ Trois familles, parce que **borner la cardinalité ne borne rien** : une page n'
 
 | Variable | Défaut | Ce qui se passe au dépassement |
 |---|---|---|
-| `OCULAR_MAX_NETWORK_ENTRIES` | `5000` | Entrées réseau **suivantes rejetées** (on garde les premières : la chaîne de chargement initiale documente la page). Compté dans `truncation.network_dropped`. |
+| `OCULAR_MAX_NETWORK_ENTRIES` | `5000` | Entrées réseau **suivantes rejetées** (tier batch : on garde les premières, la chaîne de chargement initiale documente la page). Tier **interactif** : fenêtre **glissante**, on garde les plus RÉCENTES — la capture y est armée une fois pour toute la session et l'analyste pilote la page pour déclencher l'exfiltration, qui arrive donc en fin de session. Compté dans `truncation.network_dropped`. |
 | `OCULAR_MAX_CONSOLE_ENTRIES` | `5000` | Idem -> `truncation.console_dropped`. |
 | `OCULAR_MAX_FINDINGS` | `5000` | Détections statiques **suivantes rejetées** -> `truncation.findings_dropped`. Un DOM de 2 Mio fait de `document.cookie;` répété produit 131 072 détections, soit 21,9 Mio de JSON. |
 
@@ -504,7 +504,8 @@ Toute coupe de (b) est comptée dans `truncation.text_truncated` — nombre de *
 |---|---|---|
 | `OCULAR_MAX_RESULT_JSON_BYTES` | `33554432` (32 Mio) | `build()` **mesure** le résultat sérialisé et délester proportionnellement console -> réseau -> détections jusqu'à repasser sous le plafond, en comptant tout dans `truncation`. |
 | `OCULAR_MAX_INTERNAL_CAPTURE_BYTES` | `134217728` (128 Mio) | Réponse `/capture` du `session_server` **refusée** -> `502`. Doit rester > budget résultat (32 Mio) + 2 artefacts en base64 (85,4 Mio) = 117,4 Mio. |
-| `OCULAR_MAX_INTERNAL_JSON_BYTES` | `16777216` (16 Mio) | Réponse `/live` **refusée** -> `502`. |
+| `OCULAR_MAX_LIVE_JSON_BYTES` | `8388608` (8 Mio) | Le `session_server` **mesure** sa réponse `/live` et délester les fenêtres affichées jusqu'à repasser dessous, en comptant tout dans `truncation`. |
+| `OCULAR_MAX_INTERNAL_JSON_BYTES` | `16777216` (16 Mio) | Réponse `/live` **refusée** -> `502`. Doit rester > `OCULAR_MAX_LIVE_JSON_BYTES` (8 Mio) : c'est cet écart qui interdit le refus permanent. |
 
 **Ce qui est garanti, et par quelle mesure.** Après `ResultBuilder.build`, `len(json.dumps(result))` ≤ `OCULAR_MAX_RESULT_JSON_BYTES`, quoi qu'émette la page — c'est vérifié sur trois entrées adverses (octets nuls en console, en `post_data`, et tous les champs au plafond) par `tests/test_result_size_limits_adverse.py`. Le délestage ne touche jamais aux `screenshots`, au journal `dynamic_steps` (actions de l'analyste) ni au `triage`.
 
@@ -512,7 +513,7 @@ Toute coupe de (b) est comptée dans `truncation.text_truncated` — nombre de *
 
 Trois propriétés à ne pas régresser :
 
-1. **Jamais de troncature muette** — tout résultat amputé porte `OcularResult.truncation` (compteurs à 0 = complet) et le runner journalise `résultat tronqué …`.
+1. **Jamais de troncature muette** — tout résultat amputé porte `OcularResult.truncation` (compteurs à 0 = complet) et le runner journalise `résultat tronqué …`. Le tier interactif expose le **même marqueur** dans la réponse `/live`, **toujours présent** (y compris à zéro : un marqueur qui n'apparaît qu'en cas de coupe force le client à distinguer « complet » de « ne sait pas »), et `counts` y reste le compte **total** émis depuis le début de la session, tampon borné ou non.
 2. **Fail-closed sur la lecture** — une réponse interne hors plafond est une **erreur** rendue à l'appelant, jamais un corps coupé re-parsé comme s'il était complet.
 3. **Un plafond ne doit jamais devenir un refus permanent** — c'est la contrepartie de (2). Les bornes de (a)/(b)/(c) sont posées **à la source**, de sorte que la réponse interne ne PUISSE PAS dépasser le plafond de lecture ; sans cela, le fail-closed transforme un dépassement en `502` à chaque appel pour le restant de la session, depuis le contenu analysé. L'invariant à préserver est donc : **plafond de lecture ≥ budget de la source**. Le baisser sous le budget de la source est journalisé en WARNING.
 

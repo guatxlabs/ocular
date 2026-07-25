@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -41,7 +42,7 @@ from engine.result import DomInfo, OcularResult, StealthInfo, Truncation
 from engine.static import analyze_html, extract_forms, extract_mailtos
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
-from engine.wrapper import NetworkCapture, ResultBuilder, wrapper_payload
+from engine.wrapper import NetworkCapture, ResultBuilder, _env_cap, _max_findings, wrapper_payload
 
 
 log = logging.getLogger("ocular.session_server")
@@ -284,7 +285,13 @@ async def _launch_browser() -> None:
                 await g.stop()
             _state["guard"] = None
         raise
-    cap = NetworkCapture()
+    # `keep="last"` : le tier interactif INVERSE le choix du tier batch. La
+    # capture est armée UNE fois pour toute la session (ni `/goto` ni `/load` ne
+    # la réarment), donc le plafond de cardinalité est CUMULÉ sur la session
+    # entière ; or l'analyste pilote la page précisément pour DÉCLENCHER
+    # l'exfiltration, qui arrive donc en fin de session. Garder les premières
+    # entrées y jetait en silence exactement la preuve recherchée.
+    cap = NetworkCapture(keep="last")
     cap.attach(page)
     _state.update(cm=cm, page=page, cap=cap)
     # Le plein écran de la fenêtre est assuré par matchbox-window-manager, démarré
@@ -370,16 +377,86 @@ def _analyze_dom(dom: str) -> dict[str, Any]:
     }
 
 
+# Analyses EN VOL, clefées comme le mémo. Le mémo seul ne déduplique que les
+# polls SÉQUENTIELS : il est écrit APRÈS l'analyse, donc N polls concurrents du
+# même DOM le manquent tous et lancent N analyses (mesuré : 20 polls -> pic de
+# concurrence 20). Or `analyze_html` était auparavant appelée en ligne dans la
+# coroutine, donc STRICTEMENT sérialisée : mémoïser sans single-flight
+# remplaçait une sérialisation par une concurrence non bornée, et l'UI poste via
+# `setInterval(pollLive, 2000)` sans attendre la requête précédente.
+_LIVE_INFLIGHT: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
+
+
 async def _live_analysis(dom: str) -> dict[str, Any]:
-    """`_analyze_dom` mémoïsé sur `sha256(dom)` et déporté hors de la boucle."""
+    """`_analyze_dom` mémoïsé sur `sha256(dom)`, déporté hors de la boucle, et
+    à UNE SEULE analyse en vol par empreinte : les polls concurrents du même DOM
+    attendent le même résultat au lieu d'en relancer chacun un."""
     digest = hashlib.sha256(dom.encode("utf-8", "replace")).hexdigest()
     cached = _LIVE_ANALYSIS.get(digest)
     if cached is not None:
         return cached
-    analysis = await run_in_threadpool(_analyze_dom, dom)
+    inflight = _LIVE_INFLIGHT.get(digest)
+    if inflight is not None:
+        # `shield` : un appelant qui abandonne (poll annulé, client parti) ne doit
+        # pas annuler l'analyse partagée par les autres.
+        return await asyncio.shield(inflight)
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
+    _LIVE_INFLIGHT[digest] = future
+    try:
+        analysis = await run_in_threadpool(_analyze_dom, dom)
+    except BaseException as exc:
+        if not future.done():
+            future.set_exception(exc)
+        # Consommé par les attentes ci-dessus ; sans ce retrait, l'exception
+        # resterait non récupérée si personne n'attendait.
+        future.exception()
+        raise
+    finally:
+        _LIVE_INFLIGHT.pop(digest, None)
     _LIVE_ANALYSIS.clear()  # une seule entrée : le DOM courant
     _LIVE_ANALYSIS[digest] = analysis
+    if not future.done():
+        future.set_result(analysis)
     return analysis
+
+
+_LIVE_WINDOW = 500
+_DEFAULT_MAX_LIVE_JSON_BYTES = 8 * 1024 * 1024
+
+
+def _max_live_json_bytes() -> int:
+    """Budget de la réponse `/live` SÉRIALISÉE (`OCULAR_MAX_LIVE_JSON_BYTES`,
+    défaut 8 Mio). Volontairement sous `OCULAR_MAX_INTERNAL_JSON_BYTES` (16 Mio,
+    le plafond de LECTURE côté web) : c'est cet écart qui empêche la page
+    analysée de transformer le fail-closed en refus permanent."""
+    return _env_cap("OCULAR_MAX_LIVE_JSON_BYTES", _DEFAULT_MAX_LIVE_JSON_BYTES,
+                    32 * 1024 * 1024)
+
+
+def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
+    """Ramène la réponse `/live` sérialisée sous `cap` octets, en délestant les
+    fenêtres affichées (console -> réseau -> détections) et en COMPTANT tout dans
+    `truncation`. Mesure avec `json.dumps` par défaut (`ensure_ascii=True`) :
+    Starlette sérialise en `ensure_ascii=False`, toujours plus compact, donc la
+    mesure est pessimiste — jamais optimiste."""
+    for _ in range(8):
+        size = len(json.dumps(payload))
+        if size <= cap:
+            return payload
+        ratio = max(0.0, (cap / size) * 0.9)
+        emptied = True
+        for key, counter in (("console", "console_dropped"),
+                             ("network", "network_dropped"),
+                             ("findings", "findings_dropped")):
+            entries = payload[key]
+            kept = int(len(entries) * ratio)
+            if kept < len(entries):
+                payload["truncation"][counter] += len(entries) - kept
+                payload[key] = entries[:kept]
+            emptied = emptied and not payload[key]
+        if emptied:
+            break
+    return payload
 
 
 @app.get("/live", dependencies=[Depends(require_session_secret)])
@@ -388,15 +465,27 @@ async def live() -> dict[str, Any]:
     réseau + console capturés jusqu'ici + analyse statique du DOM COURANT (pas
     figée à la dernière `/capture`). Réutilise `analyze_html`/`compute_verdict`
     exactement comme `/capture` — aucune duplication de la mécanique.
-    Bornage `[-500:]` sur le réseau ET la console (charge/DoS ; le compte
-    total reste dans `counts`). L'analyse passe par `_live_analysis` :
-    mémoïsée sur l'empreinte du DOM et exécutée dans le threadpool (cf. le
-    commentaire de `_LIVE_ANALYSIS`)."""
+
+    Bornage `[-500:]` sur le réseau ET la console : `counts` porte le compte
+    total NON BORNÉ des éléments émis depuis le début de la session, y compris
+    ceux que le plafond de cardinalité a écartés du tampon — la garantie est
+    tenue, pas retirée de la docstring. Ce que le tampon ne contient plus est
+    dit explicitement par `truncation`, jamais tu : sans ce marqueur, un POST
+    d'exfiltration écarté par le plafond disparaissait sans trace côté analyste.
+
+    La réponse entière est bornée par `OCULAR_MAX_LIVE_JSON_BYTES`, SOUS le
+    plafond de lecture du web : une page hostile ne peut donc pas se rendre
+    illisible et provoquer un `502` à chaque poll pour le restant de la session.
+
+    L'analyse passe par `_live_analysis` : mémoïsée sur l'empreinte du DOM,
+    exécutée dans le threadpool, et à une seule analyse en vol par empreinte."""
     page, cap = _state["page"], _state["cap"]
+    empty_truncation = Truncation().model_dump(mode="json")
     if page is None:
         return {
             "network": [], "console": [], "findings": [],
             "counts": {"network": 0, "findings": 0, "console": 0},
+            "truncation": empty_truncation,
             "verdict": "benign",
         }
 
@@ -408,17 +497,37 @@ async def live() -> dict[str, Any]:
     analysis = await _live_analysis(dom)
     network = cap.network if cap else []
     console = cap.console if cap else []
-    findings, forms, mailtos = analysis["findings"], analysis["forms"], analysis["mailtos"]
-    return {
-        "network": network[-500:],
-        "console": console[-500:],
+    forms, mailtos = analysis["forms"], analysis["mailtos"]
+    # Ce que la capture a déjà écarté sur la durée de la session, plus ce que le
+    # plafond de détections écarte ici : le résultat dit ce qu'il ne contient pas.
+    # `getattr` : une capture qui ne tient pas de compteurs de rejet n'a, par
+    # définition, rien rejeté à déclarer. Le `NetworkCapture` réel en tient
+    # toujours — ce repli ne masque donc aucune troncature, il tolère un double
+    # de test réduit à `.network`/`.console`.
+    _truncation_of = getattr(cap, "truncation", None)
+    truncation = (_truncation_of() if callable(_truncation_of) else Truncation()).model_dump(
+        mode="json"
+    )
+    all_findings = analysis["findings"]
+    findings_cap = _max_findings()
+    findings = all_findings[:findings_cap]
+    truncation["findings_dropped"] += len(all_findings) - len(findings)
+    payload = {
+        "network": network[-_LIVE_WINDOW:],
+        "console": console[-_LIVE_WINDOW:],
         "findings": findings,
         "forms": forms,
         "mailtos": mailtos,
-        "counts": {"network": len(network), "findings": len(findings), "console": len(console),
+        # Compte TOTAL émis depuis le début de la session : le tampon est borné,
+        # pas le compteur.
+        "counts": {"network": len(network) + truncation["network_dropped"],
+                   "findings": len(all_findings),
+                   "console": len(console) + truncation["console_dropped"],
                    "forms": len(forms), "mailtos": len(mailtos)},
+        "truncation": truncation,
         "verdict": analysis["verdict"],
     }
+    return _fit_live_payload(payload, _max_live_json_bytes())
 
 
 @app.post("/capture", dependencies=[Depends(require_session_secret)])

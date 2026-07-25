@@ -105,6 +105,11 @@ def test_live_no_active_session_returns_empty_structure(live_client):
         "console": [],
         "findings": [],
         "counts": {"network": 0, "findings": 0, "console": 0},
+        # `truncation` est présent même ici : un panneau qui n'affiche le
+        # marqueur que lorsqu'il est non nul oblige le client à distinguer
+        # « complet » de « ne sait pas ». Cf. tests/test_session_server_live_bounds.py.
+        "truncation": {"network_dropped": 0, "console_dropped": 0, "post_data_truncated": 0,
+                       "findings_dropped": 0, "text_truncated": 0},
         "verdict": "benign",
     }
 
