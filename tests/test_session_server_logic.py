@@ -100,6 +100,8 @@ def live_client(monkeypatch):
 def test_live_no_active_session_returns_empty_structure(live_client):
     r = live_client.get("/live", headers={"X-Session-Secret": _LIVE_SECRET})
     assert r.status_code == 200
+    from engine.result import Truncation
+
     assert r.json() == {
         "network": [],
         "console": [],
@@ -108,8 +110,13 @@ def test_live_no_active_session_returns_empty_structure(live_client):
         # `truncation` est présent même ici : un panneau qui n'affiche le
         # marqueur que lorsqu'il est non nul oblige le client à distinguer
         # « complet » de « ne sait pas ». Cf. tests/test_session_server_live_bounds.py.
-        "truncation": {"network_dropped": 0, "console_dropped": 0, "post_data_truncated": 0,
-                       "findings_dropped": 0, "text_truncated": 0, "html_chars_dropped": 0},
+        # Attendu DÉRIVÉ du modèle : recopié à la main, ce dict devient faux au
+        # premier compteur ajouté à `Truncation`.
+        "truncation": {k: 0 for k in Truncation.model_fields},
+        # Aucune analyse n'a eu lieu : elle ne peut donc pas être périmée. Le
+        # champ est présent même ici, pour la même raison que `truncation` —
+        # son absence ferait distinguer « à jour » de « on ne sait pas ».
+        "analysis_stale": False,
         "verdict": "benign",
     }
 

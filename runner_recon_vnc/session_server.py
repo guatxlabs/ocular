@@ -427,24 +427,58 @@ def _analyze_dom(dom: str) -> dict[str, Any]:
 # même DOM le manquent tous et lancent N analyses (mesuré : 20 polls -> pic de
 # concurrence 20). Or `analyze_html` était auparavant appelée en ligne dans la
 # coroutine, donc STRICTEMENT sérialisée : mémoïser sans single-flight
-# remplaçait une sérialisation par une concurrence non bornée, et l'UI poste via
-# `setInterval(pollLive, 2000)` sans attendre la requête précédente.
+# remplaçait une sérialisation par une concurrence non bornée.
+#
+# CE DICTIONNAIRE PORTE LA BORNE DE CONCURRENCE, et il la porte PAR
+# CONSTRUCTION : `_live_analysis` est le seul endroit qui y écrit, et il n'y
+# écrit QUE quand il est vide. Sa taille est donc <= 1 à tout instant, quel que
+# soit le nombre de polls simultanés et quel que soit le nombre d'onglets — un
+# onglet de plus n'ajoute pas un cœur de plus. Un appelant ajouté demain hérite
+# de la borne sans avoir à la connaître : elle est dans la fonction, pas dans
+# ses appelants.
+#
+# CE QUE ÇA FERME, mesuré sur 651840c (uvicorn servant cette app + le vrai
+# client `web.internal_http.internal_get_json` et son échéance de 5,0 s, DOM
+# mutant d'un octet par poll pour contourner mémo ET single-flight, 512 Kio de
+# `atob(`) : N polls SIMULTANÉS -> N analyses sérialisées par le GIL, donc une
+# latence qui croît avec N jusqu'à franchir l'échéance du client. Balayage :
+# N=1 -> 1/1 servi ; N=2 -> 2/2 ; N=4 -> 0/4 ; N=20 -> 0/20 (toutes en 502).
 _LIVE_INFLIGHT: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
 
 
-async def _live_analysis(dom: str) -> dict[str, Any]:
-    """`_analyze_dom` mémoïsé sur `sha256(dom)`, déporté hors de la boucle, et
-    à UNE SEULE analyse en vol par empreinte : les polls concurrents du même DOM
-    attendent le même résultat au lieu d'en relancer chacun un."""
+async def _live_analysis(dom: str) -> tuple[dict[str, Any], bool]:
+    """`_analyze_dom` mémoïsé sur `sha256(dom)`, déporté hors de la boucle, à UNE
+    SEULE analyse en vol pour tout le conteneur.
+
+    Rend `(analyse, périmée)`. `périmée=True` signale que l'analyse rendue N'EST
+    PAS celle du DOM demandé : la place unique était prise, et servir le dernier
+    résultat connu coûte O(1) là où attendre son tour coûte N analyses. C'est ce
+    qui borne la latence indépendamment du nombre de polls simultanés.
+
+    La péremption est TOUJOURS dite à l'appelant, jamais absorbée : un panneau
+    qui affiche une analyse d'un autre tour sans le dire est un angle mort, pas
+    une optimisation. Le réseau et la console, eux, restent ceux du tour courant
+    (ils viennent du tampon de capture, pas de l'analyse)."""
     digest = hashlib.sha256(dom.encode("utf-8", "replace")).hexdigest()
     cached = _LIVE_ANALYSIS.get(digest)
     if cached is not None:
-        return cached
+        return cached, False
     inflight = _LIVE_INFLIGHT.get(digest)
     if inflight is not None:
         # `shield` : un appelant qui abandonne (poll annulé, client parti) ne doit
         # pas annuler l'analyse partagée par les autres.
-        return await asyncio.shield(inflight)
+        return await asyncio.shield(inflight), False
+    if _LIVE_INFLIGHT:
+        # La place unique est prise par l'analyse d'un AUTRE DOM. Aucun `await`
+        # ne sépare ce test de la prise de place ci-dessous : deux polls ne
+        # peuvent pas la prendre tous les deux.
+        last = next(iter(_LIVE_ANALYSIS.values()), None)
+        if last is not None:
+            return last, True
+        # Premier tour de la session : rien de connu à servir. On attend
+        # l'analyse déjà lancée plutôt que d'en lancer une seconde.
+        other = next(iter(_LIVE_INFLIGHT.values()))
+        return await asyncio.shield(other), True
     future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     _LIVE_INFLIGHT[digest] = future
     try:
@@ -462,7 +496,7 @@ async def _live_analysis(dom: str) -> dict[str, Any]:
     _LIVE_ANALYSIS[digest] = analysis
     if not future.done():
         future.set_result(analysis)
-    return analysis
+    return analysis, False
 
 
 _LIVE_WINDOW = 500
@@ -481,30 +515,67 @@ def _max_live_json_bytes() -> int:
     return source_budget("live")
 
 
+def _sheddable_windows(payload: dict[str, Any]) -> list[str]:
+    """Fenêtres délestables du payload `/live`, LUES SUR LA STRUCTURE : toute
+    valeur de type liste. Aucun nom de champ n'est écrit ici.
+
+    C'est la différence avec la version précédente, et c'est tout le sujet :
+    elle bouclait sur le tuple littéral `(("console",…),("network",…),
+    ("findings",…))` et laissait donc `forms` et `mailtos` — deux listes du même
+    payload, 100 % dictées par la page — hors du délestage. Mesuré sur 651840c,
+    page de 120 `<form action="<500 octets nuls>">` + 120 `mailto:` (les
+    plafonds d'extraction en retiennent 100 de chaque) : réponse de 490 631
+    octets, `truncation` à zéro (donc annoncée COMPLÈTE) aux plafonds 1 024,
+    65 536 et 262 144 ; et bout en bout avec
+    `OCULAR_MAX_INTERNAL_JSON_BYTES=262144` (un RESSERREMENT, opération que le
+    code approuve), 0 poll servi sur 3, tous en 502.
+
+    Un champ de volume variable ajouté demain au payload est délesté sans que
+    personne n'ait à relire cette fonction. Ce qui n'est pas une liste ne varie
+    pas avec ce que la page émet : `counts` a autant de clefs que le payload a
+    de listes, `truncation` autant que de compteurs, `verdict` est un mot. La
+    propriété est vérifiée en bout de chaîne, sur la réponse réelle et pour des
+    formes que cette fonction ne connaît pas, par
+    tests/test_session_server_live_bounds.py."""
+    return [key for key, value in payload.items() if isinstance(value, list)]
+
+
 def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
-    """Ramène la réponse `/live` sérialisée sous `cap` octets, en délestant les
-    fenêtres affichées (console -> réseau -> détections) et en COMPTANT tout dans
-    `truncation`. Mesure avec `json.dumps` par défaut (`ensure_ascii=True`) :
-    Starlette sérialise en `ensure_ascii=False`, toujours plus compact, donc la
-    mesure est pessimiste — jamais optimiste."""
-    for _ in range(8):
+    """Ramène la réponse `/live` sérialisée sous `cap` octets en délestant TOUTES
+    ses fenêtres (cf. `_sheddable_windows`) et en COMPTANT tout dans
+    `truncation`, sous un compteur DÉRIVÉ du nom du champ (`<champ>_dropped`) :
+    les trois compteurs du modèle (`network_dropped`, `console_dropped`,
+    `findings_dropped`) sont ceux de ses trois premières listes, un champ ajouté
+    apporte le sien. Côté UI, `truncationNotice` (web/ui/filter.js) énumère les
+    compteurs REÇUS et non une liste écrite d'avance : un compteur neuf atteint
+    l'analyste sans passer par personne.
+
+    Mesure avec `json.dumps` par défaut (`ensure_ascii=True`) : Starlette
+    sérialise en `ensure_ascii=False`, toujours plus compact, donc la mesure est
+    pessimiste — jamais optimiste.
+
+    TERMINAISON, sans compteur de tours : tant que la réponse dépasse `cap`, le
+    ratio vaut `(cap/size) * 0.9`, donc STRICTEMENT moins de 1 — chaque passe
+    retire donc au moins une entrée de chaque liste non vide. Le nombre
+    d'entrées est fini et décroît strictement : la boucle s'arrête, soit sous le
+    plafond, soit quand il n'y a plus rien à délester."""
+    truncation = payload.setdefault("truncation", {})
+    while True:
         size = len(json.dumps(payload))
         if size <= cap:
             return payload
         ratio = max(0.0, (cap / size) * 0.9)
-        emptied = True
-        for key, counter in (("console", "console_dropped"),
-                             ("network", "network_dropped"),
-                             ("findings", "findings_dropped")):
+        shed = 0
+        for key in _sheddable_windows(payload):
             entries = payload[key]
             kept = int(len(entries) * ratio)
             if kept < len(entries):
-                payload["truncation"][counter] += len(entries) - kept
+                counter = f"{key}_dropped"
+                truncation[counter] = truncation.get(counter, 0) + len(entries) - kept
                 payload[key] = entries[:kept]
-            emptied = emptied and not payload[key]
-        if emptied:
-            break
-    return payload
+                shed += len(entries) - kept
+        if not shed:
+            return payload
 
 
 @app.get("/live", dependencies=[Depends(require_session_secret)])
@@ -521,12 +592,17 @@ async def live() -> dict[str, Any]:
     dit explicitement par `truncation`, jamais tu : sans ce marqueur, un POST
     d'exfiltration écarté par le plafond disparaissait sans trace côté analyste.
 
-    La réponse entière est bornée par `OCULAR_MAX_LIVE_JSON_BYTES`, SOUS le
-    plafond de lecture du web : une page hostile ne peut donc pas se rendre
-    illisible et provoquer un `502` à chaque poll pour le restant de la session.
+    La réponse entière est ramenée sous `OCULAR_MAX_LIVE_JSON_BYTES` par
+    `_fit_live_payload`, qui délestre TOUTES les listes du payload — celles
+    d'aujourd'hui comme celles d'après-demain, cf. `_sheddable_windows`. Ce
+    budget est lui-même tenu sous le plafond de lecture du web par
+    `engine.limits` : une page hostile ne peut donc pas se rendre illisible et
+    provoquer un `502` à chaque poll pour le restant de la session.
 
     L'analyse passe par `_live_analysis` : mémoïsée sur l'empreinte du DOM,
-    exécutée dans le threadpool, et à une seule analyse en vol par empreinte."""
+    exécutée dans le threadpool, à une seule analyse en vol pour tout le
+    conteneur, et `analysis_stale` dit quand le résultat rendu vient d'un tour
+    précédent."""
     page, cap = _state["page"], _state["cap"]
     empty_truncation = Truncation().model_dump(mode="json")
     if page is None:
@@ -534,6 +610,7 @@ async def live() -> dict[str, Any]:
             "network": [], "console": [], "findings": [],
             "counts": {"network": 0, "findings": 0, "console": 0},
             "truncation": empty_truncation,
+            "analysis_stale": False,
             "verdict": "benign",
         }
 
@@ -542,7 +619,7 @@ async def live() -> dict[str, Any]:
     except Exception:  # pragma: no cover - dépend de l'état réel de la page
         dom = ""
 
-    analysis = await _live_analysis(dom)
+    analysis, stale = await _live_analysis(dom)
     network = cap.network if cap else []
     console = cap.console if cap else []
     forms, mailtos = analysis["forms"], analysis["mailtos"]
@@ -574,6 +651,9 @@ async def live() -> dict[str, Any]:
                    "console": len(console) + truncation["console_dropped"],
                    "forms": len(forms), "mailtos": len(mailtos)},
         "truncation": truncation,
+        # L'analyse rendue n'est pas celle du DOM de CE poll : la place unique
+        # d'analyse était prise (cf. `_live_analysis`). Dit, jamais absorbé.
+        "analysis_stale": stale,
         "verdict": analysis["verdict"],
     }
     return _fit_live_payload(payload, _max_live_json_bytes())
