@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Severity = Literal["critical", "high", "medium", "low"]
 Verdict = Literal["benign", "suspicious", "malicious", "unknown"]
@@ -34,20 +34,48 @@ class Screenshot(BaseModel):
 POST_DATA_MAX_CHARS = 65536
 
 
-class NetworkEntry(BaseModel):
+class TruncatableEntry(BaseModel):
+    """Toute entrée dont un champ texte peut être coupé par les plafonds
+    anti-OOM. `truncated_fields` NOMME les champs amputés de CETTE entrée.
+
+    Pourquoi par entrée et pas seulement en compteur global : `truncation`
+    répond à « ce résultat est-il complet ? », jamais à « CETTE ligne-là
+    est-elle complète ? ». Une URL coupée était rendue à l'analyste avec
+    exactement l'apparence d'une URL entière — sur une balise GET de kit de
+    phishing, les identifiants volés vivent dans la query string, et c'est
+    précisément la fin de l'URL qui disparaissait."""
+    truncated_fields: list[str] = Field(default_factory=list)
+
+    def truncated(self, field: str) -> bool:
+        return field in self.truncated_fields
+
+
+class NetworkEntry(TruncatableEntry):
     url: str
     method: str
     status: Optional[int] = None
     headers: dict[str, str] = Field(default_factory=dict)
     post_data: Optional[str] = Field(default=None, max_length=POST_DATA_MAX_CHARS)
-    # Marqueur par entrée : ce corps a été coupé, ce n'est pas celui qu'a émis
-    # la page. Compté aussi dans `OcularResult.truncation`.
+    # Alias HISTORIQUE de `"post_data" in truncated_fields`, conservé pour les
+    # payloads 1.0 déjà en base et pour l'UI. DÉRIVÉ, jamais posé de son côté :
+    # deux marqueurs indépendants finissent toujours par diverger.
     post_data_truncated: bool = False
     resource_type: Optional[str] = None
     initiator: Optional[str] = None
 
+    @model_validator(mode="after")
+    def _reconcile_post_data_marker(self) -> "NetworkEntry":
+        """Réconcilie l'alias dans LES DEUX SENS, en un seul endroit : un payload
+        neuf ne porte que `truncated_fields`, un payload déjà stocké ne porte que
+        `post_data_truncated`, et les deux se relisent pareil."""
+        if self.post_data_truncated and "post_data" not in self.truncated_fields:
+            self.truncated_fields = [*self.truncated_fields, "post_data"]
+        elif "post_data" in self.truncated_fields and not self.post_data_truncated:
+            self.post_data_truncated = True
+        return self
 
-class ConsoleEntry(BaseModel):
+
+class ConsoleEntry(TruncatableEntry):
     level: str
     text: str
     location: Optional[str] = None
@@ -74,7 +102,7 @@ class DynamicStep(BaseModel):
     error: Optional[str] = None
 
 
-class DomInfo(BaseModel):
+class DomInfo(TruncatableEntry):
     title: str = ""
     final_url: str = ""
     redirect_chain: list[str] = Field(default_factory=list)

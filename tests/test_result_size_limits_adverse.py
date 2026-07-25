@@ -23,8 +23,11 @@ Ce que ce fichier verrouille :
   5. les plafonds eux-mêmes ne sont pas retirables, et une valeur illisible ou
      hors bornes est journalisée, jamais substituée en silence.
 
-Les valeurs écrites en dur ici (8192 octets, 32 Mio…) sont les DÉFAUTS PUBLIÉS de
-docs/DEPLOY-SECURITY.md §2.10 : le test est le garde-fou de la doc.
+Les valeurs écrites en dur ici (32 768 octets, 32 Mio…) sont les DÉFAUTS PUBLIÉS
+de docs/DEPLOY-SECURITY.md §2.10 : le test est le garde-fou de la doc. Elles
+servent AUSSI à construire le pire cas ; les relever rend donc ce fichier PLUS
+sévère, pas moins — les charges adverses ci-dessous sont dimensionnées sur elles
+et non sur des constantes figées à côté.
 """
 import json
 import logging
@@ -36,9 +39,9 @@ from engine.wrapper import NetworkCapture, ResultBuilder, _max_console_entries, 
 
 # Défauts publiés (§2.10). Écrits en dur : si un défaut change, ce test doit
 # changer AVEC la doc, jamais en silence.
-DOC_POST_DATA_BYTES = 8192
-DOC_CONSOLE_TEXT_BYTES = 8192
-DOC_URL_BYTES = 4096
+DOC_POST_DATA_BYTES = 32768
+DOC_CONSOLE_TEXT_BYTES = 32768
+DOC_URL_BYTES = 32768
 DOC_RESULT_JSON_BYTES = 32 * 1024 * 1024
 
 
@@ -173,13 +176,13 @@ def test_static_findings_cardinality_is_capped_and_counted(monkeypatch):
 # --- 3. garantie MESURÉE sur le JSON sérialisé ------------------------------
 
 @pytest.mark.parametrize("hostile", [
-    pytest.param(lambda: {"console": [{"level": "log", "text": "\x00" * 8192} for _ in range(5000)]},
+    pytest.param(lambda: {"console": [{"level": "log", "text": "\x00" * DOC_CONSOLE_TEXT_BYTES} for _ in range(5000)]},
                  id="console-nuls-echappement-x6"),
     pytest.param(lambda: {"network": [{"url": "https://e.test/x", "method": "POST",
-                                       "post_data": "\x00" * 8192} for _ in range(5000)]},
+                                       "post_data": "\x00" * DOC_POST_DATA_BYTES} for _ in range(5000)]},
                  id="post-data-nuls-echappement-x6"),
-    pytest.param(lambda: {"network": [{"url": "https://e.test/" + "u" * 4096, "method": "POST",
-                                       "post_data": "p" * 8192,
+    pytest.param(lambda: {"network": [{"url": "https://e.test/" + "u" * DOC_URL_BYTES, "method": "POST",
+                                       "post_data": "p" * DOC_POST_DATA_BYTES,
                                        "headers": {"h": "v" * 8192}} for _ in range(5000)]},
                  id="tout-au-plafond"),
 ])
@@ -213,9 +216,9 @@ def test_worst_case_capture_payload_fits_the_internal_read_cap():
     result, blobs = builder.build(
         job_id="j", profile="capture", target="https://x.test/", input_hash=None,
         verdict="unknown",
-        console=[{"level": "log", "text": "\x00" * 8192} for _ in range(5000)],
-        network=[{"url": "https://e.test/" + "u" * 4096, "method": "POST",
-                  "post_data": "\x00" * 8192, "headers": {"h": "v" * 8192}}
+        console=[{"level": "log", "text": "\x00" * DOC_CONSOLE_TEXT_BYTES} for _ in range(5000)],
+        network=[{"url": "https://e.test/" + "u" * DOC_URL_BYTES, "method": "POST",
+                  "post_data": "\x00" * DOC_POST_DATA_BYTES, "headers": {"h": "v" * 8192}}
                  for _ in range(5000)],
     )
     payload = len(json.dumps(wrapper_payload(result, blobs)))
@@ -227,7 +230,7 @@ def test_worst_case_capture_payload_fits_the_internal_read_cap():
 
 
 def test_shedding_is_counted_never_silent():
-    result = _build(console=[{"level": "log", "text": "\x00" * 8192} for _ in range(5000)])
+    result = _build(console=[{"level": "log", "text": "\x00" * DOC_CONSOLE_TEXT_BYTES} for _ in range(5000)])
     assert result.truncation != Truncation(), (
         "des entrées ont été délestées sans que le résultat le dise"
     )

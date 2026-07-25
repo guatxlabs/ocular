@@ -66,13 +66,20 @@ def test_post_data_is_truncated_and_flagged(monkeypatch):
     page.fire("request", _FakeRequest("https://evil.example/ok", post_data="court"))
 
     assert len(cap.network[0]["post_data"]) == 64, "corps de requête stocké sans plafond"
-    assert cap.network[0]["post_data_truncated"] is True
+    # Marqueur PAR ENTRÉE, posé par le point unique de coupe : il NOMME le champ
+    # amputé, là où `truncation` ne désigne aucune entrée.
+    assert cap.network[0]["truncated_fields"] == ["post_data"]
+    assert NetworkEntry(**cap.network[0]).post_data_truncated is True, (
+        "l'alias historique doit rester servi pour les payloads déjà stockés"
+    )
     # ... et une requête normale n'est PAS marquée (pas de faux positif). Le
     # marqueur est POSÉ UNIQUEMENT quand il y a troncature : une entrée intacte
     # garde exactement la forme historique du dict.
     assert cap.network[1]["post_data"] == "court"
+    assert "truncated_fields" not in cap.network[1]
     assert "post_data_truncated" not in cap.network[1]
     assert NetworkEntry(**cap.network[1]).post_data_truncated is False
+    assert NetworkEntry(**cap.network[1]).truncated_fields == []
     assert cap.truncation().post_data_truncated == 1
 
 

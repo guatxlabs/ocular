@@ -304,6 +304,11 @@ footer{padding:12px 20px;color:var(--mut);font-size:12px;border-top:1px solid va
 /* badge de dédup natif (×N occurrences) — réseau + console */
 .dupbadge{display:inline-block;margin-left:8px;padding:0 6px;border-radius:var(--pill,10px);
   font-size:10px;font-weight:600;color:var(--mut);background:var(--card2);border:1px solid var(--bd);vertical-align:middle}
+/* champ COUPÉ par un plafond anti-OOM — même gabarit que .dupbadge mais teinte
+   d'alerte : la valeur affichée n'est pas celle qu'a émise la page. */
+.truncbadge{display:inline-block;margin-left:8px;padding:0 6px;border-radius:var(--pill,10px);
+  font-size:10px;font-weight:700;color:var(--warn,#b45309);background:var(--card2);
+  border:1px solid var(--warn,#b45309);vertical-align:middle;white-space:nowrap}
 /* formulaires + mailto (exfiltration) */
 .exfil-group{margin-bottom:12px}
 .exfil-group:last-child{margin-bottom:0}

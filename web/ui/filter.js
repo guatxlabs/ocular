@@ -88,6 +88,27 @@ export const SEV_CLASS = { critical: 'sev-4', high: 'sev-3', medium: 'sev-2', lo
 export const VERDICT_CLASS = { benign: 'v-benign', suspicious: 'v-suspicious', malicious: 'v-malicious', unknown: 'v-unknown' };
 
 // Rangée <tr> réseau (méthode/statut/type/url + badge ×N de dédup).
+// Une coupe se DIT à l'endroit où l'analyste regarde. `truncation` en tête de
+// vue répond à « ce résultat est-il complet ? » ; il ne désigne AUCUNE ligne.
+// Une URL amputée avait donc exactement l'apparence d'une URL entière — et sur
+// une balise GET de kit de phishing, ce qui disparaît est la fin de la query
+// string, c'est-à-dire la pièce à conviction.
+export function truncatedFields(entry) {
+  const f = entry && entry.truncated_fields;
+  const list = Array.isArray(f) ? f.slice() : [];
+  // Alias historique : un payload déjà stocké ne porte que le booléen.
+  if (entry && entry.post_data_truncated && !list.includes('post_data')) list.push('post_data');
+  return list;
+}
+
+export function truncatedBadge(el, entry, field) {
+  if (!truncatedFields(entry).includes(field)) return null;
+  return el('span.truncbadge', {
+    title: 'ce champ a été COUPÉ par un plafond anti-OOM — ce n\'est pas la '
+      + 'valeur émise par la page, la fin manque',
+  }, '✂ coupé');
+}
+
 export function networkRow(el, n) {
   return el('tr', {}, [
     el('td', {}, n.method || ''),
@@ -95,6 +116,8 @@ export function networkRow(el, n) {
     el('td', {}, n.resource_type || ''),
     el('td', { title: n.url || '' }, [
       el('span', {}, n.url || ''),
+      truncatedBadge(el, n, 'url'),
+      truncatedBadge(el, n, 'post_data'),
       n._count > 1 ? el('span.dupbadge', { title: n._count + ' occurrences' }, '×' + n._count) : null,
     ]),
   ]);
@@ -105,6 +128,7 @@ export function consoleLine(el, esc, c) {
   return el('div.consline', {}, [
     el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
     el('span.ctext', {}, c.text || ''),
+    truncatedBadge(el, c, 'text'),
     c._count > 1 ? el('span.dupbadge', { title: c._count + ' occurrences' }, '×' + c._count) : null,
   ]);
 }

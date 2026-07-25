@@ -422,7 +422,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
 
     # BUG 2 parity check : la console capturée pendant la session survit dans
     # le résultat léger stocké par /capture.
-    assert cap.json()["console"] == [{"level": "error", "text": "boom", "location": None}]
+    assert cap.json()["console"] == [{"level": "error", "text": "boom", "location": None, "truncated_fields": []}]
 
     saved = client.post("/saved", json={"job_id": job_id, "label": "itest"})
     assert saved.status_code == 200
@@ -434,7 +434,7 @@ def test_capture_then_save_succeeds_for_interactive_result(monkeypatch, tmp_path
 
     saved_result = client.get(f"/saved/{sid}/result")
     assert saved_result.status_code == 200
-    assert saved_result.json()["console"] == [{"level": "error", "text": "boom", "location": None}]
+    assert saved_result.json()["console"] == [{"level": "error", "text": "boom", "location": None, "truncated_fields": []}]
 
 
 def test_capture_session_server_error_returns_502(monkeypatch):

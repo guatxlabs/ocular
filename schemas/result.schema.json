@@ -32,6 +32,13 @@
     },
     "ConsoleEntry": {
       "properties": {
+        "truncated_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Truncated Fields",
+          "type": "array"
+        },
         "level": {
           "title": "Level",
           "type": "string"
@@ -62,6 +69,13 @@
     },
     "DomInfo": {
       "properties": {
+        "truncated_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Truncated Fields",
+          "type": "array"
+        },
         "title": {
           "default": "",
           "title": "Title",
@@ -168,6 +182,13 @@
     },
     "NetworkEntry": {
       "properties": {
+        "truncated_fields": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Truncated Fields",
+          "type": "array"
+        },
         "url": {
           "title": "Url",
           "type": "string"
