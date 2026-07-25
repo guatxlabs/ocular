@@ -15,10 +15,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import os
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from pydantic import BaseModel
 
 from engine.result import (
     POST_DATA_MAX_CHARS,
@@ -30,15 +31,17 @@ from engine.result import (
     OcularResult,
     Screenshot,
     StealthInfo,
+    TruncatableEntry,
     Truncation,
+    residual_paths,
+    shed_targets,
 )
-from engine.limits import env_cap as _env_cap_impl, source_budget
+from engine.limits import artifact_cap, env_cap as _env_cap_impl, source_budget
 from engine.static import HtmlScan
 from engine.triage import compute_triage
 from ocular_logging import get_logger
 
 _log = get_logger("wrapper")
-_DEFAULT_MAX_ARTIFACT_BYTES = 32 * 1024 * 1024  # 32 MiB
 _DEFAULT_MAX_POST_DATA_BYTES = 32 * 1024        # 32 KiB — même échelle que l'URL
                                                 # (un corps de formulaire porte la
                                                 # même preuve qu'une query string)
@@ -57,9 +60,18 @@ _DEFAULT_MAX_CONSOLE_ENTRIES = 5000
 #     p50 = 39 o · p95 = 89 o · p99 = 110 o · p99,9 = 126 o · p99,99 = 9 639 o
 #     max = 12 703 o — toute la queue est faite d'URI `data:` (images inline,
 #     que Playwright rapporte ENTIÈRES dans `request.url`)
-# À 4 096 o, 8 de ces 34 335 URL réelles étaient coupées ; à 16 384 o, zéro. Le
-# plafond retenu est 32 768 o, soit ~2× la plus grande observation réelle
-# CONNUE (16 030 o, mesurée indépendamment sur une image inline).
+# À 4 096 o, 8 de ces 34 335 URL réelles étaient coupées ; à 16 384 o, zéro.
+#
+# CONTRE-MESURE, sur un corpus PLUS LARGE de la même machine (24 009 fichiers
+# HTML réels, 23 644 pages porteuses d'au moins une URL, 1 531 962 URL, mêmes
+# attributs) : p50 = 45 o · p95 = 89 o · p99 = 113 o · p99,9 = 139 o ·
+# p99,99 = 210 o · max = 242 002 o. Le corps de la distribution concorde ; la
+# QUEUE, non — à 16 384 o, 110 de ces 1 531 962 URL sont coupées, et 99 le sont
+# encore à 32 768 o (0,0065 %). « Zéro coupée » n'est donc pas une propriété du
+# plafond, c'est une propriété du corpus qui l'a mesuré : aucun plafond par
+# entrée ne rend la queue vide, parce que la queue est faite d'URI `data:` dont
+# la taille est celle de l'image inline. C'est ce qui justifie le BUDGET CUMULÉ
+# ci-dessous plutôt qu'un plafond par entrée toujours plus haut.
 #
 # Console : la taille du texte émis à l'exécution n'est pas bornée par la taille
 # du code source, donc mesurer les appels `console.*` du corpus (n=576, max
@@ -79,18 +91,61 @@ _DEFAULT_MAX_CONSOLE_TEXT_BYTES = 32 * 1024     # 32 KiB — cf. ci-dessus
 _DEFAULT_MAX_TITLE_BYTES = 32 * 1024            # 32 KiB — `final_url` suit la
                                                 # distribution des URL ci-dessus
 _DEFAULT_MAX_FINDINGS = 5000
+# Budget CUMULÉ du tampon de session — la borne qui manquait.
+#
+# Les plafonds par entrée bornent CHAQUE entrée, jamais leur SOMME : le produit
+# « cardinalité × taille par entrée » est ce que la page retient dans le
+# conteneur de session, pour TOUTE la durée de la session interactive (le
+# délestage du résultat, lui, n'a lieu qu'au `/capture`). Mesuré par le
+# haut-de-marque NOYAU (`resource.getrusage(...).ru_maxrss`), tampons remplis via
+# les vrais listeners de `NetworkCapture.attach`, 5 000 requêtes + 5 000 messages
+# console au plafond, trois exécutions par ligne :
+#   - plafonds par entrée à 4 096 / 8 192 / 8 192 o. : 97,7 Mio retenus,
+#     ru_maxrss 31 -> 153 Mio (153/153/153) ;
+#   - plafonds par entrée à 32 768 o. (les actuels), SANS budget cumulé :
+#     468,8 Mio retenus, ru_maxrss 31 -> 503-505 Mio ;
+#   - mêmes plafonds AVEC le budget cumulé ci-dessous : 63,9 Mio retenus,
+#     ru_maxrss 31 -> 96-97 Mio.
+# Relever les plafonds par entrée pour ne plus couper de contenu légitime a donc
+# multiplié par 4,8 la mémoire que la page dicte, dans un conteneur à
+# `--memory 2g` PARTAGÉ avec Camoufox. Ce coût-là n'avait pas été mesuré.
+#
+# Le budget cumulé borne la SOMME sans rendre son plafond à la première entrée
+# venue : au dépassement, ce sont des entrées ENTIÈRES qui sortent (côté le moins
+# probant selon `keep`), comptées comme tout le reste. Valeur retenue : 32 Mio
+# PAR TAMPON (réseau et console en ont chacun un), soit un texte retenu borné par
+# 64 Mio.
+#
+# Calibrage sur le SOUS-ENSEMBLE REQUÊTE du corpus réel — `src`/`srcset`/`poster`
+# /`data`, `href` d'un `<link>`, `action` d'un `<form>`. Un `<a href>` est une
+# NAVIGATION, pas une requête : le compter surestimerait le tampon (une page de
+# documentation à 20 832 liens n'émet pas 20 832 requêtes). 266 142 URL de
+# requête sur 23 137 pages réelles :
+#     par page : p50 = 180 o · p95 = 537 o · p99 = 1 340 o · p99,9 = 1 630 o
+#     max = 6 205 374 o (87 requêtes, dont des URI `data:` de 242 002 o)
+#     nombre de requêtes par page : p50 = 11 · p99,9 = 50 · max = 87
+# 32 Mio = 5,4× la page réelle la plus lourde du corpus. Ce corpus ne mesure PAS
+# le texte console (il n'est pas lisible dans le HTML source) : pour la console,
+# ce budget est une borne d'exploitation, pas une calibration — dit comme tel.
+_DEFAULT_MAX_CAPTURE_BUFFER_BYTES = 32 * 1024 * 1024
 # Budget du résultat SÉRIALISÉ. Les plafonds par entrée ne suffisent pas à le
 # garantir : `json.dumps` échappe un octet de contrôle en `\u00XX`, soit ×6 — une
-# page qui remplit 5000 entrées d'octets nuls produit 246 Mio à partir de 40 Mio
-# de texte. La garantie est donc MESURÉE (`_shed_to_json_cap`), pas arithmétique.
+# page qui remplit 5000 entrées d'octets nuls au plafond par entrée en vigueur
+# (32 768 o.) produit 937,5 Mio de JSON à partir de 156,2 Mio de texte.
+# La garantie est donc MESURÉE (`_shed_to_json_cap`), pas arithmétique.
 # Dimensionné pour que `wrapper_payload` reste sous le plafond de lecture de
 # `/capture` (128 Mio) : 32 Mio de résultat + 2 artefacts au défaut de 32 Mio
-# encodés en base64 (85,4 Mio) = 117,4 Mio. Cf. docs/DEPLOY-SECURITY.md §2.10.
+# encodés en base64 (2 × 44 739 244 o. = 85,3 Mio) = 123 032 920 o. = 117,3 Mio.
+# Cf. docs/DEPLOY-SECURITY.md §2.10.
 _DEFAULT_MAX_RESULT_JSON_BYTES = 32 * 1024 * 1024
 # Bornes hautes : une configuration ne doit pas pouvoir RETIRER un plafond (cf.
 # §2.10). Les relever augmente proportionnellement l'empreinte mémoire du runner.
 _HARD_MAX_ENTRIES = 20000
 _HARD_MAX_TEXT_BYTES = 64 * 1024
+# Borne haute du budget cumulé : 128 Mio par tampon, soit 256 Mio de texte retenu
+# au maximum autorisé — sous les 468,8 Mio mesurés ci-dessus, qui étaient
+# atteignables SANS aucune configuration.
+_HARD_MAX_CAPTURE_BUFFER_BYTES = 128 * 1024 * 1024
 _HARD_MAX_RESULT_JSON_BYTES = 128 * 1024 * 1024
 # Tours de délestage. Chaque tour vise directement le ratio mesuré, donc converge
 # en 1-2 tours ; la borne existe pour qu'un cas pathologique termine, pas pour
@@ -103,11 +158,14 @@ def _max_artifact_bytes() -> int:
     Anti-OOM : une page HOSTILE peut gonfler son DOM (`body.innerHTML =
     'x'.repeat(5e8)`) et produire un blob de centaines de Mo que le broker
     (mem_limit 1g) lirait en entier depuis stdout du runner. `0` = illimité.
-    Réglable via `OCULAR_MAX_ARTIFACT_BYTES`."""
-    try:
-        return max(0, int(os.environ.get("OCULAR_MAX_ARTIFACT_BYTES", str(_DEFAULT_MAX_ARTIFACT_BYTES))))
-    except ValueError:
-        return _DEFAULT_MAX_ARTIFACT_BYTES
+    Réglable via `OCULAR_MAX_ARTIFACT_BYTES`.
+
+    Résolu par `engine.limits`, seul propriétaire de la paire `/capture` : les
+    blobs occupent une part du plafond de LECTURE, et cette part était lue ici
+    sans jamais être confrontée à ce plafond. Une configuration où les blobs
+    seuls dépassent la lecture est corrigée ICI AUSSI, pas seulement sur le
+    budget du résultat."""
+    return artifact_cap()
 
 
 def _env_cap(name: str, default: int, hard_max: int) -> int:
@@ -148,38 +206,53 @@ def _clip_utf8(text: Any, cap: int) -> tuple[Any, bool]:
 
 def _max_post_data_bytes() -> int:
     """Taille max CONSERVÉE du corps d'une requête capturée, en OCTETS UTF-8.
-    `OCULAR_MAX_POST_DATA_BYTES`, défaut 8192, borné par `POST_DATA_MAX_CHARS`
-    (65536, le plafond du modèle — un plafond en octets borne aussi les
-    caractères, donc le modèle ne peut pas être mis en défaut). Au dépassement le
-    corps est TRONQUÉ, l'entrée marquée `post_data_truncated` et comptée dans
-    `OcularResult.truncation`."""
+    `OCULAR_MAX_POST_DATA_BYTES`, défaut `_DEFAULT_MAX_POST_DATA_BYTES` (32 768
+    octets), borné par `POST_DATA_MAX_CHARS` (65 536, le plafond du modèle — un
+    plafond en octets borne aussi les caractères, donc le modèle ne peut pas être
+    mis en défaut). Au dépassement le corps est TRONQUÉ, l'entrée marquée
+    `post_data_truncated` et comptée dans `OcularResult.truncation`."""
     return _env_cap("OCULAR_MAX_POST_DATA_BYTES", _DEFAULT_MAX_POST_DATA_BYTES, POST_DATA_MAX_CHARS)
 
 
 def _max_url_bytes() -> int:
-    """`OCULAR_MAX_URL_BYTES`, défaut 4096 octets. L'URL vient de la page : la
-    revue a mesuré 5000 entrées à 20 Ko d'URL = 96,2 Mio de résultat, linéaire
-    (200 Ko/URL ≈ 1 Gio). 4 Kio dépassent déjà la limite pratique des navigateurs
-    et des serveurs — la valeur de preuve au-delà est nulle."""
+    """`OCULAR_MAX_URL_BYTES`, défaut `_DEFAULT_MAX_URL_BYTES` (32 768 octets ; la
+    distribution qui l'a calibré est en tête de module). L'URL vient de la page :
+    AVANT tout plafond, 5000 entrées à 20 Ko d'URL avaient été mesurées à 96,2 Mio
+    de résultat, linéaire (200 Ko/URL ≈ 1 Gio). Aujourd'hui ce même trafic reste
+    sous le budget du résultat — c'est ce que vérifie
+    tests/test_result_size_limits_adverse.py::test_five_thousand_fat_urls_stay_under_the_published_budget."""
     return _env_cap("OCULAR_MAX_URL_BYTES", _DEFAULT_MAX_URL_BYTES, _HARD_MAX_TEXT_BYTES)
 
 
 def _max_headers_bytes() -> int:
-    """`OCULAR_MAX_HEADERS_BYTES`, défaut 8192 octets pour TOUT le dict d'en-têtes
-    d'une entrée (clés + valeurs)."""
+    """`OCULAR_MAX_HEADERS_BYTES`, défaut `_DEFAULT_MAX_HEADERS_BYTES` (8 192
+    octets) pour TOUT le dict d'en-têtes d'une entrée (clés + valeurs)."""
     return _env_cap("OCULAR_MAX_HEADERS_BYTES", _DEFAULT_MAX_HEADERS_BYTES, _HARD_MAX_TEXT_BYTES)
 
 
 def _max_console_text_bytes() -> int:
-    """`OCULAR_MAX_CONSOLE_TEXT_BYTES`, défaut 8192 octets par message."""
+    """`OCULAR_MAX_CONSOLE_TEXT_BYTES`, défaut `_DEFAULT_MAX_CONSOLE_TEXT_BYTES`
+    (32 768 octets) par message."""
     return _env_cap("OCULAR_MAX_CONSOLE_TEXT_BYTES", _DEFAULT_MAX_CONSOLE_TEXT_BYTES,
                     _HARD_MAX_TEXT_BYTES)
 
 
 def _max_title_bytes() -> int:
-    """`OCULAR_MAX_TITLE_BYTES`, défaut 4096 octets — `document.title` et
-    `final_url` sont écrits par la page au même titre que le reste."""
+    """`OCULAR_MAX_TITLE_BYTES`, défaut `_DEFAULT_MAX_TITLE_BYTES` (32 768
+    octets) — `document.title` et `final_url` sont écrits par la page au même
+    titre que le reste."""
     return _env_cap("OCULAR_MAX_TITLE_BYTES", _DEFAULT_MAX_TITLE_BYTES, _HARD_MAX_TEXT_BYTES)
+
+
+def _max_capture_buffer_bytes() -> int:
+    """Budget CUMULÉ, en octets UTF-8, du tampon retenu par UN `NetworkCapture`
+    pour UNE famille d'entrées (réseau, console). `OCULAR_MAX_CAPTURE_BUFFER_BYTES`,
+    défaut `_DEFAULT_MAX_CAPTURE_BUFFER_BYTES` (33 554 432 octets), borné par
+    `_HARD_MAX_CAPTURE_BUFFER_BYTES` (134 217 728). Les plafonds par entrée
+    bornent chaque entrée, jamais leur somme : c'est ce budget-ci qui borne la
+    mémoire que la page dicte pendant TOUTE la session (cf. tête de module)."""
+    return _env_cap("OCULAR_MAX_CAPTURE_BUFFER_BYTES", _DEFAULT_MAX_CAPTURE_BUFFER_BYTES,
+                    _HARD_MAX_CAPTURE_BUFFER_BYTES)
 
 
 def _max_findings() -> int:
@@ -284,19 +357,44 @@ def sha256_ref(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _entry_bytes(value: Any) -> int:
+    """Coût MÉMOIRE d'une entrée collectée, en octets UTF-8, DÉRIVÉ de son
+    contenu : toute chaîne compte, où qu'elle soit dans le dict. Un champ ajouté
+    demain au dict d'entrée (`_on_request` en pose quatre aujourd'hui) est compté
+    sans que personne ne relise cette fonction. Les scalaires non-texte ne sont
+    pas dictés par la page (statut HTTP, booléens) : ils ne comptent pas."""
+    if isinstance(value, str):
+        return len(value.encode("utf-8", "replace"))
+    if isinstance(value, dict):
+        return sum(_entry_bytes(k) + _entry_bytes(v) for k, v in value.items())
+    if isinstance(value, (list, tuple, set)):
+        return sum(_entry_bytes(v) for v in value)
+    return 0
+
+
 class NetworkCapture:
     """Arme les listeners `page.on("request"/"response"/"console")` communs aux
     deux moteurs (Playwright sync pour Chromium, Playwright async pour Camoufox
     partagent la même API d'événements). Collecte dans des listes de DICTS
     neutres — pas de dépendance au moteur, pas de conversion Pydantic ici (elle
     se fait dans `ResultBuilder.build`, au moment de composer l'`OcularResult`).
-    """
+
+    DEUX bornes, appliquées au MÊME endroit (`_admit`) pour les deux familles
+    d'entrées : la CARDINALITÉ (combien d'entrées) et le VOLUME CUMULÉ (combien
+    d'octets retenus). La première seule laissait la page dicter
+    `cardinalité × plafond par entrée` de mémoire résidente pendant toute la
+    session — 468,8 Mio mesurés aux plafonds actuels (cf. tête de module)."""
 
     def __init__(self, keep: str = "first") -> None:
         self.network: list[dict[str, Any]] = []
         self.console: list[dict[str, Any]] = []
         self._req_index: dict[Any, dict[str, Any]] = {}
         self._req_order: list[Any] = []
+        # Coût mémoire de chaque entrée RETENUE, par famille. Tenu à jour à
+        # l'insertion et à l'éviction ; re-dérivé si la liste a été modifiée
+        # ailleurs (les runners y ajoutent leurs propres messages console).
+        self._costs: dict[str, list[int]] = {"network": [], "console": []}
+        self._bytes: dict[str, int] = {"network": 0, "console": 0}
         # Ce qui a été REJETÉ ou coupé, reporté dans `OcularResult.truncation`
         # via `truncation()` : le résultat dit ce qu'il ne contient pas.
         self.dropped_network = 0
@@ -325,12 +423,69 @@ class NetworkCapture:
             text_truncated=self.truncated_text,
         )
 
+    def retained_bytes(self, bucket: str) -> int:
+        """Octets de texte actuellement RETENUS pour cette famille d'entrées.
+        Exposé parce qu'un budget qu'on ne peut pas lire ne se mesure pas."""
+        self._resync(bucket)
+        return self._bytes[bucket]
+
+    def _resync(self, bucket: str) -> None:
+        """Re-dérive le coût du tampon si la liste a bougé hors de `_admit` — les
+        runners y ajoutent leurs propres messages (`runner_analysis/render.py`,
+        `runner_recon/capture.py`). Sans ça, la comptabilité dériverait de la
+        réalité, et un budget qui compte faux ne borne rien."""
+        entries = getattr(self, bucket)
+        if len(self._costs[bucket]) != len(entries):
+            self._costs[bucket] = [_entry_bytes(e) for e in entries]
+            self._bytes[bucket] = sum(self._costs[bucket])
+
+    def _evict_oldest(self, bucket: str) -> None:
+        entries = getattr(self, bucket)
+        entries.pop(0)
+        self._bytes[bucket] -= self._costs[bucket].pop(0)
+        if bucket == "network" and self._req_order:
+            # La clé d'index sort AVEC l'entrée — `_req_index` reste donc borné
+            # par la liste, exactement comme en mode `first` où la requête
+            # n'était jamais indexée.
+            self._req_index.pop(self._req_order.pop(0), None)
+        setattr(self, f"dropped_{bucket}", getattr(self, f"dropped_{bucket}") + 1)
+
+    def _admit(self, bucket: str, entry: dict[str, Any], count_cap: int) -> bool:
+        """SEUL point d'insertion dans un tampon, pour les deux familles.
+
+        Deux bornes y sont appliquées ensemble : la CARDINALITÉ (`count_cap`) et
+        le VOLUME CUMULÉ (`_max_capture_buffer_bytes`). Séparées, la première ne
+        bornait rien en mémoire — 5000 entrées au plafond par entrée de 32 Kio
+        font 468,8 Mio retenus, mesurés au `ru_maxrss`, pour toute la durée de la
+        session interactive.
+
+        `keep` décide QUI sort : en mode `last` (tier interactif) on évince les
+        plus ANCIENNES pour faire de la place à la preuve tardive ; en mode
+        `first` (tier batch) on refuse la nouvelle. Dans les deux cas c'est
+        COMPTÉ (`dropped_*` -> `truncation`), jamais silencieux. Renvoie True si
+        l'entrée est retenue."""
+        self._resync(bucket)
+        entries = getattr(self, bucket)
+        cost = _entry_bytes(entry)
+        budget = _max_capture_buffer_bytes()
+        while len(entries) >= count_cap or self._bytes[bucket] + cost > budget:
+            if not entries or self.keep != "last":
+                # Plus rien à évincer (entrée plus lourde que le budget entier),
+                # ou tier batch : c'est la nouvelle entrée qui ne rentre pas.
+                setattr(self, f"dropped_{bucket}", getattr(self, f"dropped_{bucket}") + 1)
+                return False
+            self._evict_oldest(bucket)
+        entries.append(entry)
+        self._costs[bucket].append(cost)
+        self._bytes[bucket] += cost
+        return True
+
     def attach(self, page: Any) -> None:
         def _on_request(req: Any) -> None:
-            # Plafond de CARDINALITÉ (anti-OOM, même justification que les
-            # artefacts) : une page hostile peut émettre des requêtes sans fin.
-            # Plafonds de TAILLE par champ : elle peut aussi bien n'en émettre
-            # qu'une seule, énorme — la cardinalité ne borne alors rien.
+            # Plafonds de TAILLE par champ : une page hostile n'a pas besoin
+            # d'émettre beaucoup d'entrées, il lui suffit d'en émettre une seule,
+            # énorme. La cardinalité et le volume cumulé sont appliqués par
+            # `_admit`.
             entry = {
                 "url": req.url,
                 "method": req.method,
@@ -340,18 +495,8 @@ class NetworkCapture:
             if _truncate_post_data(entry, _max_post_data_bytes()):
                 self.truncated_post_data += 1
             self.truncated_text += _clip_entry_text(entry, _max_url_bytes(), _max_headers_bytes())
-            cap = _max_network_entries()
-            if len(self.network) >= cap:
-                if self.keep != "last":
-                    self.dropped_network += 1
-                    return
-                # Fenêtre glissante : la plus ancienne sort, avec sa clé d'index
-                # — `_req_index` reste donc borné par la liste, exactement comme
-                # dans le mode `first` où la requête n'était jamais indexée.
-                self.network.pop(0)
-                self._req_index.pop(self._req_order.pop(0), None)
-                self.dropped_network += 1
-            self.network.append(entry)
+            if not self._admit("network", entry, _max_network_entries()):
+                return
             self._req_index[req] = entry
             self._req_order.append(req)
 
@@ -364,22 +509,32 @@ class NetworkCapture:
             entry = {"level": msg.type, "text": msg.text}
             if _clip_field(entry, "text", _max_console_text_bytes()):
                 self.truncated_text += 1
-            cap = _max_console_entries()
-            if len(self.console) >= cap:
-                if self.keep != "last":
-                    self.dropped_console += 1
-                    return
-                self.console.pop(0)
-                self.dropped_console += 1
-            self.console.append(entry)
+            self._admit("console", entry, _max_console_entries())
 
         page.on("request", _on_request)
         page.on("response", _on_response)
         page.on("console", _on_console)
 
 
-def _escaped_cost(result: OcularResult) -> int:
-    """Coût SÉRIALISÉ des champs dictés par la page, mesuré CHAMP PAR CHAMP.
+def _escaped_len(value: Any) -> int:
+    """Coût SÉRIALISÉ d'une valeur, calculé sans jamais matérialiser plus d'un
+    scalaire à la fois. Un modèle est descendu champ par champ, une liste élément
+    par élément : le pic mémoire est celui du plus gros scalaire, pas celui du
+    document. Les 2 octets par conteneur/paire sont les délimiteurs JSON."""
+    if isinstance(value, str):
+        return len(json.dumps(value))
+    if isinstance(value, BaseModel):
+        return sum(_escaped_len(v) for v in value.__dict__.values()) + 2 * len(value.__dict__)
+    if isinstance(value, dict):
+        return sum(_escaped_len(k) + _escaped_len(v) for k, v in value.items()) + 2
+    if isinstance(value, (list, tuple, set)):
+        return sum(_escaped_len(v) for v in value) + 2
+    return len(json.dumps(value, default=str))
+
+
+def _escaped_cost(result: OcularResult, targets: list[tuple[Any, str, str]]) -> int:
+    """Coût SÉRIALISÉ de ce que le délestage PEUT retirer, mesuré élément par
+    élément.
 
     Le pré-élagage comptait auparavant des longueurs de texte BRUT (`len(e.url)`),
     en ignorant à la fois les en-têtes et le facteur d'échappement : `json.dumps`
@@ -389,20 +544,12 @@ def _escaped_cost(result: OcularResult) -> int:
     pic RSS, soit ~22 % du budget mémoire du runner d'analyse, EN PLUS de
     Chromium, et ce pic était déclenché par le contenu de la page.
 
-    Mesurer champ par champ donne la MÊME grandeur que `_json_size` sur la part
-    que la page contrôle, avec un pic mémoire d'UN champ au lieu du document
-    entier. `_json_size` reste le juge final ; il n'est simplement plus le
-    premier appelé."""
-    total = 0
-    for entry in result.network:
-        total += len(json.dumps(entry.url)) + len(json.dumps(entry.post_data or ""))
-        if entry.headers:
-            total += len(json.dumps(entry.headers))
-    for line in result.console:
-        total += len(json.dumps(line.text))
-    for finding in result.static_findings:
-        total += len(json.dumps(finding.match)) + len(json.dumps(finding.context))
-    return total
+    Il énumérait AUSSI les champs à la main (`url`, `post_data`, `headers`,
+    `text`, `match`, `context`), donc il ignorait tout champ neuf exactement
+    comme le délestage ignorait `dom.forms`. Il porte désormais sur les MÊMES
+    cibles que le délestage, dérivées du modèle. `_json_size` reste le juge
+    final ; il n'est simplement plus le premier appelé."""
+    return sum(_escaped_len(getattr(owner, field)) for owner, field, _ in targets)
 
 
 def _json_size(result: OcularResult) -> int:
@@ -419,19 +566,33 @@ def _shed_to_json_cap(result: OcularResult, cap: int) -> Truncation:
 
     Pourquoi mesurer plutôt que calculer : les plafonds par entrée bornent le
     TEXTE, pas le JSON. `json.dumps` échappe un octet de contrôle en `\\u00XX`,
-    soit ×6 — 5000 entrées d'octets nuls au plafond de 8 Kio pèsent 40 Mio de
-    texte mais 246 Mio de JSON. Aucune arithmétique de plafonds ne tient cette
-    promesse ; une mesure suivie d'un délestage, si.
+    soit ×6 — 5000 entrées d'octets nuls au plafond par entrée en vigueur
+    (32 768 o.) pèsent 156,2 Mio de texte et 937,5 Mio de JSON. Aucune
+    arithmétique de plafonds ne tient cette promesse ; une mesure suivie d'un
+    délestage, si — c'est la charge `console-nuls-echappement-x6` de
+    tests/test_result_size_limits_adverse.py.
 
-    Le délestage est PROPORTIONNEL et ordonné du moins vers le plus probant
-    (console, puis réseau, puis détections), et il est COMPTÉ : un résultat
-    allégé le dit. Il ne touche jamais aux `screenshots`, aux `dynamic_steps`
-    (journal d'actions de l'analyste) ni au `triage`."""
+    CE QUI EST DÉLESTÉ EST DÉRIVÉ DU MODÈLE (`engine.result.shed_targets`), pas
+    d'une liste écrite ici. La liste écrite ici — `console`, `network`,
+    `static_findings` — omettait `dom.forms` et `dom.mailtos`, que les quatre
+    tiers remplissent DEPUIS LE CONTENU DE LA PAGE : mesuré avec
+    `OCULAR_MAX_RESULT_JSON_BYTES=262144`, un résultat dont la masse est dans ces
+    deux listes sortait à 725 493 octets, `truncation` à zéro, donc annoncé
+    COMPLET. Un champ de volume variable ajouté demain ne peut plus manquer ici :
+    sans déclaration, `engine.result` refuse de s'importer.
+
+    Le délestage retire la MÊME FRACTION de chaque liste (l'ordre de parcours ne
+    hiérarchise donc rien), il est COMPTÉ dans `Truncation`, et il NOMME le champ
+    dans `truncated_fields` quand le porteur en a un. Il ne touche pas aux champs
+    déclarés `KEEP` (`screenshots`, `dynamic_steps`, `triage.signals`, les
+    marqueurs eux-mêmes). Si le résultat dépasse ENCORE après délestage complet,
+    l'écart est journalisé ET porté dans `truncation.over_cap_bytes` : la garde
+    dit qu'elle n'a pas tenu, au lieu de rendre un résultat qui s'annonce
+    complet."""
     shed = Truncation()
-    if not (result.network or result.console or result.static_findings):
-        return shed
+    targets = shed_targets(result)
     for _ in range(_SHED_MAX_ROUNDS):
-        estimate = _escaped_cost(result)
+        estimate = _escaped_cost(result, targets)
         if estimate > cap:
             ratio = cap / estimate
         else:
@@ -441,22 +602,32 @@ def _shed_to_json_cap(result: OcularResult, cap: int) -> Truncation:
             ratio = cap / size
         # Marge de 10 % : converge en un ou deux tours au lieu de raser la liste.
         keep = max(0.0, ratio * 0.9)
-        for name, counter in (("console", "console_dropped"),
-                              ("network", "network_dropped"),
-                              ("static_findings", "findings_dropped")):
-            entries = getattr(result, name)
+        remaining = 0
+        for owner, field, counter in targets:
+            entries = getattr(owner, field)
             kept = int(len(entries) * keep)
             if kept < len(entries):
-                setattr(result, name, entries[:kept])
+                setattr(owner, field, entries[:kept])
                 setattr(shed, counter, getattr(shed, counter) + len(entries) - kept)
-        if not (result.network or result.console or result.static_findings):
+                if isinstance(owner, TruncatableEntry):
+                    marks = list(owner.truncated_fields)
+                    if field not in marks:
+                        owner.truncated_fields = [*marks, field]
+            remaining += kept
+        if remaining == 0:
             break
     size = _json_size(result)
     if size > cap:
-        # Reste le socle non dicté par la page (identité du job, refs de blobs,
-        # triage). On le journalise au lieu de refuser : un refus durable est
-        # précisément le déni de service qu'on ferme ici.
-        _log.warning("résultat encore à %d octets après délestage complet (plafond %d)", size, cap)
+        # Reste ce que le délestage ne touche pas : le socle d'identité du job et
+        # les champs déclarés KEEP/RESIDUAL (`engine.result.residual_paths()`).
+        # On le MESURE, on le journalise et on le MARQUE, au lieu de refuser : un
+        # refus durable est précisément le déni de service qu'on ferme ici.
+        shed.over_cap_bytes = size - cap
+        _log.warning(
+            "résultat encore à %d octets après délestage complet (plafond %d, "
+            "dépassement %d) — la masse restante est hors des champs délestables : %s",
+            size, cap, size - cap, ", ".join(residual_paths()),
+        )
     return shed
 
 
@@ -568,14 +739,22 @@ class ResultBuilder:
         _findings_dropped = max(0, len(_findings) - _findings_cap)
         _findings = _findings[:_findings_cap]
         _upstream = truncation or Truncation()
-        _truncation = Truncation(
-            network_dropped=_upstream.network_dropped + len(_raw_network) - len(_kept_network),
-            console_dropped=_upstream.console_dropped + len(_raw_console) - len(_kept_console),
-            post_data_truncated=_upstream.post_data_truncated + _body_truncated,
-            findings_dropped=_upstream.findings_dropped + _findings_dropped,
-            text_truncated=_upstream.text_truncated + _text_truncated,
-            html_chars_dropped=_upstream.html_chars_dropped + _html_chars_dropped,
+        # Ce que CE build vient de retirer, puis somme DÉRIVÉE avec l'amont : un
+        # compteur que ce bloc ne connaît pas (parce qu'il vient d'être ajouté au
+        # modèle, ou parce que seul `NetworkCapture` le pose) traverse au lieu
+        # d'être perdu en chemin.
+        _here = Truncation(
+            network_dropped=len(_raw_network) - len(_kept_network),
+            console_dropped=len(_raw_console) - len(_kept_console),
+            post_data_truncated=_body_truncated,
+            findings_dropped=_findings_dropped,
+            text_truncated=_text_truncated,
+            html_chars_dropped=_html_chars_dropped,
         )
+        _truncation = Truncation(**{
+            name: getattr(_upstream, name) + getattr(_here, name)
+            for name in Truncation.model_fields
+        })
         triage = compute_triage(
             _findings, verdict=verdict,
             network=_kept_network, console=_kept_console, dom=_dom,
@@ -610,14 +789,16 @@ class ResultBuilder:
         # de LECTURE côté web de se transformer en refus permanent.
         _shed = _shed_to_json_cap(result, _max_result_json_bytes())
         if _shed != Truncation():
-            _truncation = Truncation(
-                network_dropped=_truncation.network_dropped + _shed.network_dropped,
-                console_dropped=_truncation.console_dropped + _shed.console_dropped,
-                post_data_truncated=_truncation.post_data_truncated,
-                findings_dropped=_truncation.findings_dropped + _shed.findings_dropped,
-                text_truncated=_truncation.text_truncated,
-                html_chars_dropped=_truncation.html_chars_dropped,
-            )
+            # Somme DÉRIVÉE du modèle : la version littérale recopiait six noms
+            # de compteurs et laissait tomber ceux qu'elle ne connaissait pas —
+            # un compteur ajouté à `Truncation` disparaissait donc du résultat
+            # sans que rien ne le signale. `_shed` ne porte que ce que le
+            # délestage vient de faire (tout le reste y vaut 0), la somme est
+            # donc exacte pour chaque compteur, y compris `over_cap_bytes`.
+            _truncation = Truncation(**{
+                name: getattr(_truncation, name) + getattr(_shed, name)
+                for name in Truncation.model_fields
+            })
             result.truncation = _truncation
         if _truncation != Truncation():
             # Dérivé du MODÈLE, jamais réécrit à la main : une liste de champs

@@ -323,10 +323,19 @@ _warned_env: set[str] = set()
 
 
 def max_analyzed_html_chars() -> int:
-    """`OCULAR_MAX_ANALYZED_HTML_CHARS`, défaut 2 097 152 caractères. Plancher 1,
-    borne haute 16 777 216 : ce plafond se baisse, il ne se retire pas. Toute
-    valeur illisible ou hors bornes est journalisée UNE FOIS par variable (le
-    volume de journal ne doit pas être dicté par le trafic de la page)."""
+    """`OCULAR_MAX_ANALYZED_HTML_CHARS`, défaut `_DEFAULT_MAX_ANALYZED_HTML_CHARS`
+    (524 288 caractères). Plancher 1, borne haute `_HARD_MAX_ANALYZED_HTML_CHARS`
+    (16 777 216) : ce plafond se baisse, il ne se retire pas. Toute valeur
+    illisible ou hors bornes est journalisée UNE FOIS par variable (le volume de
+    journal ne doit pas être dicté par le trafic de la page).
+
+    CE QUE CETTE FENÊTRE COÛTE, mesuré sur les documents qui la dépassent
+    vraiment (24 009 fichiers HTML réels de la machine de mesure ; balayage
+    complet vs balayage fenêtré) : 100 fichiers dépassent la fenêtre (0,42 %),
+    7 d'entre eux perdent des détections, le pire à 31 vues sur 376 réelles
+    (91,8 % perdues) et un fichier passe de 4 détections à ZÉRO. `chars_dropped`
+    le dit à chaque fois — cf. docs/DEPLOY-SECURITY.md §2.10 (b bis) pour ce que
+    l'analyste doit en faire."""
     raw = os.environ.get("OCULAR_MAX_ANALYZED_HTML_CHARS")
     if raw is None:
         return _DEFAULT_MAX_ANALYZED_HTML_CHARS
