@@ -69,15 +69,18 @@ def test_every_regex_of_the_module_goes_through_the_guard():
     rouvrirait le trou sans qu'aucun test ne le voie."""
     import engine.static as mod
     source = open(mod.__file__, encoding="utf-8").read()
-    # le seul `re.compile` toléré est celui À L'INTÉRIEUR de `_compile_bounded`
-    compiles = [m for m in re.finditer(r"re\.compile\(", source)]
-    assert len(compiles) == 1, (
-        f"{len(compiles)} appels à re.compile : un seul est admis, celui de "
-        f"`_compile_bounded`. Toute autre regex contourne la garde."
+    # On ne compte pas que `re.compile` : `re.search`/`match`/`findall`/`finditer`/
+    # `sub` compilent aussi (via le cache du module) et contourneraient tout autant
+    # la garde. La propriété porte donc sur TOUT usage du module `re`.
+    usages = [m for m in re.finditer(r"\bre\.(\w+)\(", source)]
+    guard = (source.index("def quantifier_bounds"), source.index("_COMPILED = ["))
+    dehors = [m.group(0) for m in usages if not guard[0] < m.start() < guard[1]]
+    assert not dehors, (
+        f"usages du module `re` hors de la garde : {dehors}. Toute regex de ce "
+        f"module doit passer par `_compile_bounded`, sans quoi elle balaye du "
+        f"contenu hostile sans borne sur le travail par position de départ."
     )
-    guard_start = source.index("def _compile_bounded")
-    guard_end = source.index("_COMPILED = [")
-    assert guard_start < compiles[0].start() < guard_end
+    assert sum(1 for m in usages if m.group(1) == "compile") == 1
 
 
 @pytest.mark.parametrize("bad", [
