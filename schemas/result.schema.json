@@ -462,7 +462,7 @@
       "type": "object"
     },
     "Truncation": {
-      "description": "Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les\nplafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans\nle dire est un angle mort : l'analyste croirait voir tout le trafic d'une\npage qui en a émis cent fois plus. Tous les compteurs à 0 = résultat\ncomplet.\n\nDeux familles distinctes, à ne pas confondre en lisant un résultat :\n  - `*_dropped` = des ÉLÉMENTS ENTIERS manquent (requêtes, messages,\n    détections) — c'est de la preuve absente ;\n  - `text_truncated` = des éléments sont PRÉSENTS mais un de leurs champs\n    texte a été coupé (URL, en-têtes, texte console, titre de page). Le\n    compteur porte sur le nombre de CHAMPS coupés, pas d'entrées ;\n  - `html_chars_dropped` = le document n'a pas été balayé EN ENTIER par\n    l'analyse statique (`engine.static.analysis_window`). Ce n'est ni de la\n    preuve absente ni un champ coupé : c'est une zone du document où AUCUNE\n    détection n'a été cherchée. Sans ce compteur, un verdict « benign » sur\n    un document partiellement analysé serait indiscernable d'un verdict\n    « benign » sur un document lu en entier.",
+      "description": "Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les\nplafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans\nle dire est un angle mort : l'analyste croirait voir tout le trafic d'une\npage qui en a émis cent fois plus. Tous les compteurs à 0 = résultat\ncomplet.\n\nDeux familles distinctes, à ne pas confondre en lisant un résultat :\n  - `*_dropped` = des ÉLÉMENTS ENTIERS manquent (requêtes, messages,\n    détections) — c'est de la preuve absente ;\n  - `text_truncated` = des éléments sont PRÉSENTS mais un de leurs champs\n    texte a été coupé (URL, en-têtes, texte console, titre de page). Le\n    compteur porte sur le nombre de CHAMPS coupés, pas d'entrées ;\n  - `html_chars_dropped` = le document n'a pas été balayé EN ENTIER par\n    l'analyse statique (`engine.static.analysis_window`). Ce n'est ni de la\n    preuve absente ni un champ coupé : c'est une zone du document où AUCUNE\n    détection n'a été cherchée. Sans ce compteur, un verdict « benign » sur\n    un document partiellement analysé serait indiscernable d'un verdict\n    « benign » sur un document lu en entier ;\n  - `over_cap_bytes` = le résultat DÉPASSE ENCORE son plafond après\n    délestage complet. Ce n'est pas une amputation, c'est l'aveu que la\n    garde n'a pas pu tenir sa promesse : ce qui reste vit dans des champs\n    que le délestage ne touche pas (`residual_paths()`).",
       "properties": {
         "network_dropped": {
           "default": 0,
@@ -492,6 +492,16 @@
         "html_chars_dropped": {
           "default": 0,
           "title": "Html Chars Dropped",
+          "type": "integer"
+        },
+        "other_dropped": {
+          "default": 0,
+          "title": "Other Dropped",
+          "type": "integer"
+        },
+        "over_cap_bytes": {
+          "default": 0,
+          "title": "Over Cap Bytes",
           "type": "integer"
         }
       },
