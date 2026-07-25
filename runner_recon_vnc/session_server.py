@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse
 
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard
+from engine.limits import source_budget
 from engine.result import DomInfo, OcularResult, StealthInfo, Truncation
 from engine.static import HtmlScan, extract_forms, extract_mailtos, scan_html
 from engine.urlnorm import url_input_hash
@@ -469,11 +470,15 @@ _DEFAULT_MAX_LIVE_JSON_BYTES = 8 * 1024 * 1024
 
 def _max_live_json_bytes() -> int:
     """Budget de la réponse `/live` SÉRIALISÉE (`OCULAR_MAX_LIVE_JSON_BYTES`,
-    défaut 8 Mio). Volontairement sous `OCULAR_MAX_INTERNAL_JSON_BYTES` (16 Mio,
-    le plafond de LECTURE côté web) : c'est cet écart qui empêche la page
-    analysée de transformer le fail-closed en refus permanent."""
-    return _env_cap("OCULAR_MAX_LIVE_JSON_BYTES", _DEFAULT_MAX_LIVE_JSON_BYTES,
-                    32 * 1024 * 1024)
+    défaut 8 Mio). L'écart avec `OCULAR_MAX_INTERNAL_JSON_BYTES` (16 Mio, le
+    plafond de LECTURE côté web) est ce qui empêche la page analysée de
+    transformer le fail-closed en refus permanent — et cet écart est désormais
+    GARANTI, pas espéré : `engine.limits.resolve` lit les DEUX variables et
+    ramène ce budget sous le plafond de lecture si la configuration l'y fait
+    passer. Mesuré avant, avec `=33554432` (la borne haute que le code
+    AUTORISAIT) : corps `/live` de 23,45 Mio annoncé COMPLET et `502` à chaque
+    poll, sans le moindre WARNING."""
+    return source_budget("live")
 
 
 def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:

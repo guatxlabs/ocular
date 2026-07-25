@@ -286,7 +286,7 @@ def test_entry_caps_cannot_be_raised_past_their_hard_ceiling(monkeypatch, warnin
     """§2.10 affirme « l'exploitation peut baisser ces plafonds, pas les
     retirer » : mesuré, `=999999999999` était accepté tel quel, donc le plafond
     était supprimé de fait."""
-    logged = warnings_of("ocular.wrapper")
+    logged = warnings_of("ocular.limits")
     monkeypatch.setenv("OCULAR_MAX_NETWORK_ENTRIES", "999999999999")
     value = _max_network_entries()
     assert value < 999999999999, "plafond de fait supprimé par la configuration"
@@ -300,7 +300,7 @@ def test_out_of_range_cap_values_are_logged_not_silently_substituted(monkeypatch
     """`0` valait 1 alors que la variable sœur `OCULAR_MAX_ARTIFACT_BYTES`
     documente « 0 = illimité » : un exploitant appliquant la convention voisine
     ne gardait qu'UNE entrée réseau, sans aucun signal."""
-    logged = warnings_of("ocular.wrapper")
+    logged = warnings_of("ocular.limits")
     monkeypatch.setenv("OCULAR_MAX_CONSOLE_ENTRIES", raw)
     _max_console_entries()
     assert any("OCULAR_MAX_CONSOLE_ENTRIES" in m for m in logged), (
@@ -314,12 +314,66 @@ def test_internal_read_caps_have_a_ceiling_too(monkeypatch):
     assert _max_bytes("OCULAR_MAX_INTERNAL_JSON_BYTES", 16 * 1024 * 1024) < 999999999999
 
 
-def test_lowering_the_read_cap_under_the_source_budget_is_flagged(monkeypatch, warnings_of):
-    """Le piège inverse : un plafond de LECTURE serré sous le budget de la
-    source rend la fonction inaccessible en permanence, ce qui est exactement le
-    déni de service que ces plafonds sont censés éviter."""
-    from web.internal_http import _max_bytes
-    logged = warnings_of("ocular.internal_http")
+def test_the_read_cap_and_the_source_budget_are_reconciled_both_ways(monkeypatch, warnings_of):
+    """L'invariant « lecture ≥ source » n'était gardé QUE d'un côté : baisser le
+    plafond de lecture était signalé, RELEVER le budget de la source ne l'était
+    pas — et le code sanctionnait des valeurs qui brisent son propre invariant
+    (la borne haute autorisée pour `OCULAR_MAX_LIVE_JSON_BYTES` valait 2× le
+    plafond de lecture par défaut). Mesuré avec cette valeur pourtant acceptée :
+    corps `/live` de 23,45 Mio annoncé COMPLET, `502` à chaque poll, 0 WARNING.
+
+    Les DEUX sens sont vérifiés ici, et la correction porte toujours sur la
+    SOURCE : produire moins ne peut pas rendre une réponse illisible."""
+    from engine.limits import resolve
+
+    # sens 1 : on RELÈVE le budget de la source à la borne haute AUTORISÉE
+    logged = warnings_of("ocular.limits")
+    monkeypatch.setenv("OCULAR_MAX_LIVE_JSON_BYTES", str(32 * 1024 * 1024))
+    budget = resolve("live")
+    assert budget.clamped is True
+    assert budget.source <= budget.read_cap - budget.reserved, (
+        "la source produit au-dessus de ce que le lecteur accepte : 502 à chaque appel"
+    )
+    assert any("dépasse ce que" in m for m in logged), "configuration approuvée en silence"
+
+    # sens 2 : on BAISSE le plafond de lecture sous le budget de la source
+    monkeypatch.delenv("OCULAR_MAX_LIVE_JSON_BYTES")
     monkeypatch.setenv("OCULAR_MAX_INTERNAL_JSON_BYTES", str(64 * 1024))
-    _max_bytes("OCULAR_MAX_INTERNAL_JSON_BYTES", 16 * 1024 * 1024)
-    assert any("SOUS le budget de la source" in m for m in logged)
+    serre = resolve("live")
+    assert serre.clamped is True
+    assert serre.source <= serre.read_cap - serre.reserved
+
+
+def test_the_capture_pair_accounts_for_the_base64_blobs(monkeypatch):
+    """`/capture` transporte le résultat ET les blobs en base64 : la part des
+    blobs est indisponible pour le JSON. Mesuré avant : tout
+    `OCULAR_MAX_RESULT_JSON_BYTES` au-dessus de ~42,7 Mio cassait `/capture`
+    sans le moindre WARNING, alors que la borne haute autorisée était 128 Mio."""
+    from engine.limits import resolve
+    monkeypatch.setenv("OCULAR_MAX_RESULT_JSON_BYTES", str(128 * 1024 * 1024))
+    b = resolve("capture")
+    assert b.clamped is True
+    assert b.reserved > 0, "la part des blobs doit être comptée"
+    assert b.source + b.reserved <= b.read_cap
+    assert b.headroom >= 0
+
+
+def test_a_configuration_warning_is_not_amplified_by_page_traffic(monkeypatch, warnings_of):
+    """Le WARNING décrit un fait STABLE du processus. Émis à chaque lecture, son
+    volume devenait proportionnel au trafic que la page ANALYSÉE choisit
+    d'émettre — les plafonds par entrée sont relus à chaque requête et à chaque
+    message console. Mesuré avant : 2 000 requêtes de page -> 4 000 lignes de
+    WARNING, sur le cas même que le WARNING doit signaler."""
+    logged = warnings_of("ocular.limits")
+    monkeypatch.setenv("OCULAR_MAX_NETWORK_ENTRIES", "abc")
+    monkeypatch.setenv("OCULAR_MAX_URL_BYTES", "-1")
+    cap, hooks = _attach()
+    for i in range(2000):
+        hooks["request"](_Req(f"https://e.test/{i}"))
+    lignes = [m for m in logged
+              if "OCULAR_MAX_NETWORK_ENTRIES" in m or "OCULAR_MAX_URL_BYTES" in m]
+    assert len(lignes) == 2, (
+        f"{len(lignes)} lignes de WARNING pour 2 000 requêtes de page : le volume "
+        f"de journal est dicté par la page analysée"
+    )
+    assert len(cap.network) >= 1

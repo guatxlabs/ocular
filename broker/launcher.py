@@ -62,6 +62,25 @@ def egress_policy_env() -> list[str]:
     return out
 
 
+def read_cap_env() -> list[str]:
+    """Propage les PLAFONDS DE LECTURE au conteneur qui PRODUIT la réponse.
+
+    L'invariant « plafond de lecture ≥ budget de la source » se vérifie dans
+    `engine.limits.resolve`, qui a besoin des DEUX valeurs. Le budget de la
+    source est lu dans le conteneur de session ; le plafond de lecture est celui
+    du web. Sans ce forwarding, la session réconcilie contre le DÉFAUT du web au
+    lieu de sa valeur réelle : un opérateur qui serre le plafond de lecture côté
+    web verrait la session continuer à produire au-dessus, et chaque appel
+    échouerait. Le sens inverse (session desserrée) est déjà couvert, la source
+    étant ramenée sous ce qu'elle croit lisible."""
+    out: list[str] = []
+    for k in ("OCULAR_MAX_INTERNAL_JSON_BYTES", "OCULAR_MAX_INTERNAL_CAPTURE_BYTES"):
+        v = os.environ.get(k)
+        if v is not None:
+            out += ["-e", f"{k}={v}"]
+    return out
+
+
 # Alias rétro-compat : le stockage d'artefacts vit désormais dans
 # `engine.artifacts.store_blobs` (module neutre, sans Docker/subprocess),
 # réutilisé tel quel par `web.app` pour la capture de session interactive —

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import urllib.error
 import urllib.request
+
+from engine.limits import PAIRS, env_cap, resolve
 
 # Plafonds de LECTURE des réponses internes. Le corps traverse le web (mem_limit
 # 1g) puis Redis, monté sur tmpfs — donc la RAM de l'hôte : un `read()` non borné
@@ -25,52 +26,32 @@ import urllib.request
 # Réglables par `OCULAR_MAX_INTERNAL_CAPTURE_BYTES` / `OCULAR_MAX_INTERNAL_JSON_BYTES`.
 # Au dépassement : `CaptureError` -> 502 côté route, JAMAIS un corps tronqué
 # re-parsé comme s'il était complet.
-_DEFAULT_MAX_CAPTURE_BYTES = 128 * 1024 * 1024
-_DEFAULT_MAX_JSON_BYTES = 16 * 1024 * 1024
-_HARD_MAX_INTERNAL_BYTES = 512 * 1024 * 1024
-
-# Plancher OPÉRATIONNEL, pas de sécurité : ces plafonds de lecture ne protègent
-# que si la SOURCE est déjà bornée sous eux (`engine.wrapper._max_result_json_bytes`
-# = 32 Mio pour `/capture`, `session_server._max_live_json_bytes` = 8 Mio pour
-# `/live`). Descendre le plafond de lecture SOUS le budget de la source rend le
-# refus structurel : la réponse dépasse à chaque appel, et la fonction devient
-# inaccessible pour le restant de la session. On le journalise plutôt que de
-# l'interdire — un exploitant peut avoir une raison de serrer, il doit serrer les
-# DEUX côtés. Cf. docs/DEPLOY-SECURITY.md §2.10.
-_SOURCE_BUDGET = {
-    "OCULAR_MAX_INTERNAL_CAPTURE_BYTES": 32 * 1024 * 1024 + 90 * 1024 * 1024,
-    "OCULAR_MAX_INTERNAL_JSON_BYTES": 8 * 1024 * 1024,
-}
+_DEFAULT_MAX_CAPTURE_BYTES = PAIRS["capture"].read_default
+_DEFAULT_MAX_JSON_BYTES = PAIRS["live"].read_default
+_HARD_MAX_INTERNAL_BYTES = PAIRS["live"].read_hard_max
+# Quelle PAIRE porte chaque plafond de lecture — c'est ce qui interdit de lire
+# l'un des deux côtés sans confronter l'autre.
+_PAIR_OF = {spec.read_var: name for name, spec in PAIRS.items()}
 
 _log = logging.getLogger("ocular.internal_http")
 
 
 def _max_bytes(name: str, default: int) -> int:
-    """Ne lève jamais sur une valeur malformée (même règle qu'`ocular_settings`)
-    mais ne substitue jamais EN SILENCE. Plancher 1 Kio, borne haute
-    `_HARD_MAX_INTERNAL_BYTES` : un plafond de lecture qu'on peut porter à
-    999999999999 n'est plus un plafond."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        val = int(raw)
-    except ValueError:
-        _log.warning("%s=%r illisible — plafond laissé au défaut %d", name, raw, default)
-        return default
-    clamped = min(max(1024, val), _HARD_MAX_INTERNAL_BYTES)
-    if clamped != val:
-        _log.warning("%s=%d hors bornes [1024, %d] — plafond ramené à %d",
-                     name, val, _HARD_MAX_INTERNAL_BYTES, clamped)
-    budget = _SOURCE_BUDGET.get(name)
-    if budget is not None and clamped < budget:
-        _log.warning(
-            "%s=%d est SOUS le budget de la source (%d) : la réponse dépassera à "
-            "chaque appel et la fonction restera inaccessible — baisser aussi le "
-            "budget côté runner/session (cf. DEPLOY-SECURITY §2.10)",
-            name, clamped, budget,
-        )
-    return clamped
+    """Plafond de LECTURE d'une réponse interne. Résolu par `engine.limits`, qui
+    possède la PAIRE « budget de la source / plafond de lecture » et la confronte
+    DANS LES DEUX SENS.
+
+    Avant, l'invariant n'était gardé que d'un côté : baisser ce plafond sous le
+    budget de la source émettait un WARNING, mais RELEVER le budget de la source
+    ne déclenchait rien — et le code sanctionnait des valeurs qui brisent son
+    propre invariant (la borne haute autorisée pour `OCULAR_MAX_LIVE_JSON_BYTES`
+    valait 2× ce plafond-ci par défaut). Mesuré avec cette valeur pourtant
+    acceptée : corps `/live` de 23,45 Mio annoncé COMPLET, `502` à chaque poll,
+    zéro WARNING. La confrontation vit désormais dans `engine.limits.resolve`."""
+    pair = _PAIR_OF.get(name)
+    if pair is None:  # pragma: no cover - toutes les variables lues sont appariées
+        return env_cap(name, default, _HARD_MAX_INTERNAL_BYTES, floor=1024)
+    return resolve(pair).read_cap
 
 
 def session_host(session_id: str) -> str:

@@ -32,6 +32,7 @@ from engine.result import (
     StealthInfo,
     Truncation,
 )
+from engine.limits import env_cap as _env_cap_impl, source_budget
 from engine.static import HtmlScan
 from engine.triage import compute_triage
 from ocular_logging import get_logger
@@ -110,35 +111,12 @@ def _max_artifact_bytes() -> int:
 
 
 def _env_cap(name: str, default: int, hard_max: int) -> int:
-    """Plafond entier de configuration. Ne lève JAMAIS (une valeur illisible
-    retombe sur le défaut — même règle qu'`ocular_settings`), mais ne substitue
-    JAMAIS EN SILENCE : toute valeur illisible ou hors bornes est journalisée en
-    WARNING avec la valeur retenue.
-
-    Plancher 1 et borne haute `hard_max` : contrairement aux artefacts, ces
-    plafonds n'ont PAS de « 0 = illimité », car ce qu'ils bornent est dicté par
-    la page hostile — l'exploitation peut les baisser, jamais les retirer. Le
-    plancher est un piège connu : `OCULAR_MAX_ARTIFACT_BYTES`, la variable
-    voisine, documente bien « 0 = illimité », si bien qu'un exploitant
-    transposant la convention obtiendrait ici l'inverse de son intention (UNE
-    seule entrée conservée). D'où le WARNING, qui nomme la variable."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        val = int(raw)
-    except ValueError:
-        _log.warning("%s=%r illisible — plafond laissé au défaut %d", name, raw, default)
-        return default
-    clamped = min(max(1, val), hard_max)
-    if clamped != val:
-        _log.warning(
-            "%s=%d hors bornes [1, %d] — plafond ramené à %d "
-            "(ces plafonds se baissent, ils ne se retirent pas ; « 0 = illimité » "
-            "ne vaut QUE pour OCULAR_MAX_ARTIFACT_BYTES)",
-            name, val, hard_max, clamped,
-        )
-    return clamped
+    """Plafond entier de configuration. Délègue à `engine.limits.env_cap`, seul
+    propriétaire de la lecture d'un plafond : c'est là que vivent le plancher, la
+    borne haute, et la mémoïsation du WARNING (sans quoi le volume de journal est
+    dicté par le trafic que la page choisit d'émettre — mesuré : 2 000 requêtes
+    de page produisaient 4 000 lignes identiques)."""
+    return _env_cap_impl(name, default, hard_max)
 
 
 def _clip_utf8(text: Any, cap: int) -> tuple[Any, bool]:
@@ -230,9 +208,14 @@ def _max_console_entries() -> int:
 
 def _max_result_json_bytes() -> int:
     """`OCULAR_MAX_RESULT_JSON_BYTES`, défaut 32 Mio : taille max du résultat une
-    fois SÉRIALISÉ (cf. `_shed_to_json_cap`)."""
-    return _env_cap("OCULAR_MAX_RESULT_JSON_BYTES", _DEFAULT_MAX_RESULT_JSON_BYTES,
-                    _HARD_MAX_RESULT_JSON_BYTES)
+    fois SÉRIALISÉ (cf. `_shed_to_json_cap`).
+
+    Résolu par `engine.limits` AVEC son plafond de lecture `/capture` et la part
+    que les blobs base64 y prennent : une valeur qui ferait dépasser la lecture
+    est ramenée, jamais approuvée en silence. Mesuré avant : tout réglage
+    au-dessus de ~42,7 Mio cassait `/capture` sans le moindre WARNING, alors que
+    la borne haute autorisée était 128 Mio."""
+    return source_budget("capture")
 
 
 def _mark_truncated(entry: dict[str, Any], field: str) -> None:

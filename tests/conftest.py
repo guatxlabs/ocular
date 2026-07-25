@@ -15,3 +15,15 @@ def _clear_dependency_overrides():
         app.dependency_overrides.clear()
     except Exception:  # noqa: BLE001 - un test sans FastAPI ne doit pas échouer ici
         pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_limit_warnings():
+    """Les WARNING de configuration sont mémoïsés PAR PROCESSUS (sans quoi leur
+    volume est dicté par le trafic de la page analysée, cf.
+    `engine.limits.warn_once`). Les tests, eux, doivent pouvoir observer
+    l'émission dans chaque cas : on vide la mémoire entre eux."""
+    from engine.limits import reset_warnings
+    reset_warnings()
+    yield
+    reset_warnings()

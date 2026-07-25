@@ -9,6 +9,7 @@ from broker.launcher import (
     CAPTURE_PIDS_LIMIT,
     RECON_SECCOMP,
     egress_policy_env,
+    read_cap_env,
     base_hardening,
 )
 from bus.queue import RESULT_PREFIX
@@ -90,6 +91,9 @@ def build_session_args(
         "-e", f"OCULAR_SESSION_SCREEN={session_screen()}",
         # Politique egress (garde + mode strict) propagée au session_server.
         *egress_policy_env(),
+        # Plafonds de LECTURE du web : le conteneur de session en a besoin pour
+        # réconcilier son propre budget contre eux (cf. engine.limits.resolve).
+        *read_cap_env(),
         image,
     ]
 
