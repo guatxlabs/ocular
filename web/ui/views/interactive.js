@@ -24,8 +24,12 @@ import {
   CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
   networkRow, consoleLine, exfilFormRow, exfilMailtoRow, truncationNotice,
 } from '../filter.js';
+import { createPoller } from '../poll.js';
 
 // Poll du panneau live (C4) : canal de données séparé du flux pixels VNC.
+// Cadence NOMINALE ; la cadence réelle est celle de `createPoller` (poll.js) —
+// un tour n'est armé qu'après la fin du précédent, et un échec la fait reculer
+// au lieu d'éteindre le panneau.
 const POLL_INTERVAL_MS = 2000;
 // Fermeture auto silencieuse (C2) : onglet caché en continu au-delà de ce délai.
 const SESSION_HIDDEN_CLOSE_MS = 60000;
@@ -47,7 +51,7 @@ function wsUrlFor(sessionId) {
 // courantes, et `bar.refresh()` ré-applique les chips DÉJÀ posés par l'analyste
 // sur ces nouvelles données à chaque poll — les chips PERSISTENT (plus de reset
 // toutes les 2s).
-function buildLivePanel(getLastNetwork) {
+function buildLivePanel(getLastNetwork, onRetry) {
   const netCountEl = el('b', {}, '0');
   const findCountEl = el('b', {}, '0');
   const consCountEl = el('b', {}, '0');
@@ -67,6 +71,32 @@ function buildLivePanel(getLastNetwork) {
   // sans quoi un POST d'exfiltration écarté par le plafond de cardinalité
   // disparaîtrait sans trace côté analyste.
   const truncWrap = el('div.trunc-notice-slot');
+
+  // ÉTAT DU DIRECT. Deux dégradations peuvent frapper ce panneau, et aucune ne
+  // doit ressembler à « la page est calme » :
+  //   • le poll échoue (conteneur qui ne répond pas, réseau) — les compteurs
+  //     ci-dessus datent alors du dernier tour RÉUSSI, puisque `update()` n'est
+  //     appelée que sur succès ;
+  //   • l'analyse rendue vient d'un tour précédent (`analysis_stale`, posé par
+  //     `/live` quand la place unique d'analyse du conteneur était prise).
+  // Le premier est un état de la BOUCLE (setPollState), le second un état de la
+  // RÉPONSE (update). Ils s'affichent dans la même bande, jamais silencieux.
+  const pollWrap = el('div.poll-state-slot');
+  const staleWrap = el('div.poll-state-slot');
+
+  function setPollState(s) {
+    if (!s || s.ok) { pollWrap.replaceChildren(); return; }
+    const secs = Math.max(1, Math.round((s.nextDelayMs || 0) / 1000));
+    const kids = [
+      el('span', {}, `Direct interrompu (${s.failures} échec`
+        + `${s.failures > 1 ? 's' : ''} d'affilée) — nouvelle tentative dans ${secs} s. `
+        + 'Les compteurs ci-dessous datent du dernier tour réussi.'),
+    ];
+    if (typeof onRetry === 'function') {
+      kids.push(el('button.btn-ghost', { type: 'button', onclick: onRetry }, 'Réessayer'));
+    }
+    pollWrap.replaceChildren(el('div.errbox', { role: 'status' }, kids));
+  }
 
   const findWrap = el('div.livefindings');
   // Console live (parité 3b/3c avec le résultat statique, cf. detail.js::
@@ -170,6 +200,11 @@ function buildLivePanel(getLastNetwork) {
     const notice = truncationNotice(data && data.truncation);
     truncWrap.replaceChildren(
       ...(notice ? [el('div.card.trunc-notice', {}, [el('p', {}, notice)])] : []));
+    staleWrap.replaceChildren(...(data && data.analysis_stale ? [
+      el('div.card.trunc-notice', {}, [el('p', {}, 'Analyse statique : résultat d\'un tour '
+        + 'précédent (une autre analyse occupait la session). Détections, verdict, '
+        + 'formulaires et mailto peuvent dater ; réseau et console sont ceux de ce tour.')]),
+    ] : []));
     refreshNetwork();
     renderFindings(findings);
     refreshConsole(console_);
@@ -178,6 +213,8 @@ function buildLivePanel(getLastNetwork) {
 
   const node = el('div.livepanel', {}, [
     summary,
+    pollWrap,
+    staleWrap,
     truncWrap,
     // Formulaires & mailto AVANT le réseau (signal d'exfiltration prioritaire).
     el('div.detsec', {}, [el('h3', {}, 'Formulaires & mailto'), el('div.card', {}, [exfilWrap])]),
@@ -190,7 +227,7 @@ function buildLivePanel(getLastNetwork) {
     ]),
   ]);
 
-  return { node, update };
+  return { node, update, setPollState };
 }
 
 export function renderInteractive(app) {
@@ -199,15 +236,16 @@ export function renderInteractive(app) {
   let sessionId = null;    // id de la session côté serveur
   let token = null;        // token capability — MÉMOIRE UNIQUEMENT, jamais persisté
   let closed = false;      // garde anti-double-nettoyage
-  let pollTimer = null;    // setInterval du panneau live (/live, C4)
+  let poller = null;       // boucle de poll du panneau live (/live, C4)
   let lastNetwork = [];    // dernier réseau reçu par le poll (closure pour buildFilterBar)
   let livePanel = null;    // panneau live courant (recréé à chaque ouverture de session)
   let hiddenTimer = null;  // setTimeout de fermeture auto (C2, onglet caché)
 
-  // Arrête le poll du panneau live — jamais de setInterval fantôme entre deux
-  // sessions/vues. Idempotent.
+  // Arrête le poll du panneau live — jamais de boucle fantôme entre deux
+  // sessions/vues. Idempotent. C'est le SEUL arrêt du poll : un échec de
+  // requête, lui, ne l'arrête plus (cf. `pollLive`).
   function stopPoll() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (poller) { poller.stop(); poller = null; }
   }
 
   // teardownRfb() est LE point de coupure du flux VNC (nav de vue, fermeture
@@ -296,17 +334,22 @@ export function renderInteractive(app) {
   window.addEventListener('pagehide', onPageHide);
 
   // ---- C4 : poll du panneau live (/sessions/{id}/live, canal données séparé
-  // du flux pixels VNC). Une erreur (session fermée -> 404, conteneur en panne
-  // -> 502, 401) arrête proprement le poll sans jamais casser l'UI existante.
+  // du flux pixels VNC).
+  //
+  // UN TOUR, RIEN D'AUTRE : ni cadence, ni garde d'appel en vol, ni rattrapage
+  // d'erreur ici — tout cela appartient à `createPoller` (web/ui/poll.js), qui
+  // est le seul à déclencher cette fonction. L'erreur REMONTE volontairement :
+  // c'est la boucle qui décide de reculer et de le dire. Avant, ce `catch`
+  // appelait `stopPoll()` et un seul 502 éteignait le panneau pour de bon.
+  //
+  // Cas 401 : `authFetch` (api.js) a déjà purgé le token et navigué vers
+  // `#/login` ; le routeur démonte alors cette vue et son `cleanup` arrête la
+  // boucle. Rien à traiter ici — aucune erreur n'a de sort particulier.
   async function pollLive() {
     if (!sessionId || !livePanel) return;
-    try {
-      const data = await liveSession(sessionId);
-      lastNetwork = Array.isArray(data.network) ? data.network : [];
-      livePanel.update(data);
-    } catch {
-      stopPoll();
-    }
+    const data = await liveSession(sessionId);
+    lastNetwork = Array.isArray(data.network) ? data.network : [];
+    livePanel.update(data);
   }
 
   // ---- en-tête + bandeau d'avertissement (héros de la vue) ----
@@ -557,7 +600,7 @@ export function renderInteractive(app) {
 
     // Panneau live (C4) : réseau + findings en continu, canal séparé du flux
     // pixels VNC ci-dessous — démarré indépendamment de la connexion RFB.
-    livePanel = buildLivePanel(() => lastNetwork);
+    livePanel = buildLivePanel(() => lastNetwork, () => { if (poller) poller.now(); });
 
     stage.replaceChildren(
       el('div.livebar', {}, [
@@ -572,8 +615,11 @@ export function renderInteractive(app) {
     stage.hidden = false;
 
     stopPoll(); // garde anti-doublon si openStage() était rappelée
-    pollLive();
-    pollTimer = setInterval(pollLive, POLL_INTERVAL_MS);
+    poller = createPoller(pollLive, {
+      intervalMs: POLL_INTERVAL_MS,
+      onState: (s) => { if (livePanel) livePanel.setPollState(s); },
+    });
+    poller.start();
 
     // Chargement paresseux du module RFB embarqué localement (aucun CDN, CSP-safe).
     let RFB;

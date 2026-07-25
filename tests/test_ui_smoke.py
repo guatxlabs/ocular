@@ -331,8 +331,53 @@ def test_interactive_imports_filter_js_and_polls_live():
     assert "from '../filter.js'" in js
     assert "buildFilterBar" in js
     assert "liveSession" in js
-    assert "setInterval(pollLive, POLL_INTERVAL_MS)" in js
     assert "POLL_INTERVAL_MS = 2000" in js
+
+
+def test_the_live_poll_has_exactly_one_scheduler_and_no_second_entry_point():
+    """La garde d'appel en vol ne vaut que si la boucle est le SEUL chemin qui
+    déclenche un tour. `setInterval` armait un tour toutes les 2 s sans jamais
+    regarder si le précédent était rentré : la file grandissait sans borne dès
+    que la durée d'un tour dépassait l'intervalle divisé par le nombre
+    d'onglets. On vérifie donc qu'il ne reste aucun ordonnanceur périodique dans
+    la vue, et que `pollLive` n'a qu'un appelant : la boucle.
+
+    Le COMPORTEMENT de la boucle (jamais deux appels en vol, recul, reprise) est
+    verrouillé par tests/poll_test.mjs ; ce qui est vérifié ici est qu'aucune
+    autre porte n'a été laissée à côté."""
+    js = open("web/ui/views/interactive.js").read()
+    # Commentaires retirés (le `(?<!:)` épargne les `https://` des chaînes) :
+    # ce qui est compté est du CODE.
+    code = re.sub(r"(?m)(?<!:)//.*$", "", js)
+    assert "setInterval" not in code, (
+        "un ordonnanceur périodique est revenu dans la vue : il n'attend pas la "
+        "fin du tour précédent"
+    )
+    assert "createPoller(pollLive" in code
+    # définition + passage à la boucle, rien d'autre.
+    assert code.count("pollLive") == 2, (
+        f"pollLive a {code.count('pollLive')} occurrences dans le code : un "
+        f"appelant contourne la boucle et sa garde d'appel en vol"
+    )
+
+
+def test_a_failed_live_poll_does_not_kill_the_panel():
+    """UN SEUL 502 arrêtait définitivement le panneau live, sans message : le
+    coût de l'attaque n'était pas « un 502 par poll », c'était « un poll ». Le
+    tour ne rattrape donc plus rien — c'est la boucle qui recule et le dit, et
+    l'état est rendu à l'écran (`setPollState`).
+
+    Le rendu réel de cet état est mesuré sur un DOM par
+    tests/interactive_live_test.mjs."""
+    js = open("web/ui/views/interactive.js").read()
+    body = re.search(r"async function pollLive\(\)\s*\{.*?\n  \}\n", js, re.S)
+    assert body, "pollLive introuvable dans interactive.js"
+    assert "catch" not in body.group(0), (
+        "pollLive rattrape encore l'erreur : la boucle ne peut plus décider de "
+        "reculer, et un échec redevient un arrêt"
+    )
+    assert "stopPoll" not in body.group(0)
+    assert "setPollState" in js and "Direct interrompu" in js
 
 
 def test_filter_bar_exposes_refresh_backcompat():
@@ -408,7 +453,7 @@ def test_interactive_teardown_clears_timers_and_listeners():
     # vue : le poll live, le timer de fermeture auto et les listeners globaux
     # (visibilitychange/beforeunload) doivent tous être nettoyés au teardown.
     js = open("web/ui/views/interactive.js").read()
-    assert "clearInterval(pollTimer)" in js
+    assert "poller.stop()" in js
     assert "clearTimeout(hiddenTimer)" in js
     assert "removeEventListener('visibilitychange', onVisibilityChange)" in js
     assert "removeEventListener('beforeunload', onBeforeUnload)" in js
