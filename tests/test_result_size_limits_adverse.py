@@ -193,6 +193,39 @@ def test_serialized_result_always_fits_the_budget(hostile):
     )
 
 
+def test_worst_case_capture_payload_fits_the_internal_read_cap():
+    """Le maillon suivant : `/capture` transporte le résultat ET les blobs en
+    base64, et le web REFUSE (502) au-delà d'`OCULAR_MAX_INTERNAL_CAPTURE_BYTES`.
+    Si le pire cas ne tient pas sous ce plafond, une page hostile reprend le
+    pouvoir de rendre la capture irrécupérable — le défaut même qu'on ferme.
+
+    Pire cas aux DÉFAUTS : deux artefacts au plafond (screenshot + DOM) plus un
+    résultat saturé d'octets nuls (échappement JSON ×6). Mesuré : 114,10 Mio
+    pour un plafond de 128 Mio, soit 13,90 Mio de marge."""
+    import os
+    from engine.wrapper import _max_artifact_bytes, wrapper_payload
+    from web.internal_http import _max_bytes
+
+    builder = ResultBuilder()
+    art = _max_artifact_bytes()
+    builder.add_screenshot(0, "interactive", b"\x89PNG" + os.urandom(art - 4))
+    builder.set_dom(b"<html>" + os.urandom(art - 6))
+    result, blobs = builder.build(
+        job_id="j", profile="capture", target="https://x.test/", input_hash=None,
+        verdict="unknown",
+        console=[{"level": "log", "text": "\x00" * 8192} for _ in range(5000)],
+        network=[{"url": "https://e.test/" + "u" * 4096, "method": "POST",
+                  "post_data": "\x00" * 8192, "headers": {"h": "v" * 8192}}
+                 for _ in range(5000)],
+    )
+    payload = len(json.dumps(wrapper_payload(result, blobs)))
+    cap = _max_bytes("OCULAR_MAX_INTERNAL_CAPTURE_BYTES", 128 * 1024 * 1024)
+    assert payload <= cap, (
+        f"payload /capture de {payload} octets > plafond de lecture {cap} : "
+        f"la capture serait refusée en 502, donc irrécupérable"
+    )
+
+
 def test_shedding_is_counted_never_silent():
     result = _build(console=[{"level": "log", "text": "\x00" * 8192} for _ in range(5000)])
     assert result.truncation != Truncation(), (
