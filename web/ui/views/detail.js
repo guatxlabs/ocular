@@ -15,7 +15,7 @@ import {
 import {
   buildFilterBar, dedupEntries, networkKey, consoleKey,
   CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
-  networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
+  networkRow, consoleLine, exfilFormRow, exfilMailtoRow, truncationNotice,
 } from '../filter.js';
 import { triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL } from '../triage.js';
 
@@ -180,6 +180,12 @@ function mount(app, id, src) {
 
     // ---- screenshot(s) (blob) — inclut aussi les `capture` du script (même liste) ----
     frag.appendChild(buildScreenshot(r));
+
+    // ---- résultat amputé : le dire AVANT tout ce que l'analyste va compter
+    // (détections, formulaires, réseau, console). Un compteur sans ce bandeau
+    // se lit comme un total, alors que c'est un reste.
+    const notice = truncationNotice(r.truncation);
+    if (notice) frag.appendChild(el('div.card.trunc-notice', {}, [el('p', {}, notice)]));
 
     // ---- détections statiques groupées par sévérité ----
     frag.appendChild(buildFindings(findings));

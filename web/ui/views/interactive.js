@@ -22,7 +22,7 @@ import { getToken } from '../state.js';
 import {
   buildFilterBar, filterEntries, dedupEntries, networkKey, consoleKey,
   CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
-  networkRow, consoleLine, exfilFormRow, exfilMailtoRow,
+  networkRow, consoleLine, exfilFormRow, exfilMailtoRow, truncationNotice,
 } from '../filter.js';
 
 // Poll du panneau live (C4) : canal de données séparé du flux pixels VNC.
@@ -61,6 +61,12 @@ function buildLivePanel(getLastNetwork) {
     el('span.livesumsep', {}, '·'),
     verdictEl,
   ]);
+
+  // Bandeau de troncature du panneau live. Les compteurs du résumé ci-dessus
+  // sont des TOTAUX émis ; ce bandeau dit ce que le tampon ne contient plus,
+  // sans quoi un POST d'exfiltration écarté par le plafond de cardinalité
+  // disparaîtrait sans trace côté analyste.
+  const truncWrap = el('div.trunc-notice-slot');
 
   const findWrap = el('div.livefindings');
   // Console live (parité 3b/3c avec le résultat statique, cf. detail.js::
@@ -161,6 +167,9 @@ function buildLivePanel(getLastNetwork) {
     const verdict = (data && data.verdict) || 'unknown';
     verdictEl.textContent = verdict;
     verdictEl.className = 'livesumverdict ' + (VERDICT_CLASS[verdict] || 'v-unknown');
+    const notice = truncationNotice(data && data.truncation);
+    truncWrap.replaceChildren(
+      ...(notice ? [el('div.card.trunc-notice', {}, [el('p', {}, notice)])] : []));
     refreshNetwork();
     renderFindings(findings);
     refreshConsole(console_);
@@ -169,6 +178,7 @@ function buildLivePanel(getLastNetwork) {
 
   const node = el('div.livepanel', {}, [
     summary,
+    truncWrap,
     // Formulaires & mailto AVANT le réseau (signal d'exfiltration prioritaire).
     el('div.detsec', {}, [el('h3', {}, 'Formulaires & mailto'), el('div.card', {}, [exfilWrap])]),
     netSection,

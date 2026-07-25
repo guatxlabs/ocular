@@ -133,6 +133,37 @@ export function exfilMailtoRow(el, mailto) {
   ]);
 }
 
+// Libellé du marqueur `OcularResult.truncation` — helper PUR (aucun DOM), donc
+// testable dans tests/filter_test.mjs.
+//
+// Sans lui, un résultat amputé s'affichait exactement comme un résultat complet :
+// l'analyste croyait voir tout le trafic d'une page qui en avait émis cent fois
+// plus. C'est l'angle mort que le champ était censé fermer, et que personne ne
+// lisait. Rend `null` quand rien n'a été coupé — l'absence de bandeau signifie
+// alors « complet », pas « on ne sait pas ».
+//
+// Deux familles distinctes, jamais confondues dans le libellé : `*_dropped` =
+// des éléments ENTIERS manquent (preuve absente) ; `text_truncated` = les
+// éléments sont là mais un champ texte a été coupé.
+const TRUNCATION_LABELS = [
+  ['network_dropped', 'appels réseau non conservés'],
+  ['console_dropped', 'messages console non conservés'],
+  ['findings_dropped', 'détections non conservées'],
+  ['post_data_truncated', 'corps de requête coupés'],
+  ['text_truncated', 'champs texte coupés'],
+];
+
+export function truncationNotice(truncation) {
+  if (!truncation || typeof truncation !== 'object') return null;
+  const parts = [];
+  for (const [key, label] of TRUNCATION_LABELS) {
+    const n = Number(truncation[key]) || 0;
+    if (n > 0) parts.push(`${n} ${label}`);
+  }
+  if (!parts.length) return null;
+  return `Résultat incomplet : ${parts.join(', ')} — les plafonds anti-OOM ont mordu.`;
+}
+
 export function matchChip(entry, chip) {
   if (!chip) return false;
   const val = fieldValue(entry, chip.field);

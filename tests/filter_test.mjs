@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { entryHost, entryMime, matchChip, filterEntries, dedupEntries, networkKey, consoleKey } from '../web/ui/filter.js';
+import { entryHost, entryMime, matchChip, filterEntries, dedupEntries, networkKey, consoleKey, truncationNotice } from '../web/ui/filter.js';
 
 const E = [
   { url: 'https://a.example.com/x.js', method:'GET', status:200, resource_type:'script', headers:{'content-type':'application/javascript; charset=utf-8'} },
@@ -57,5 +57,31 @@ assert.equal(dc.find((c) => c.level === 'error')._count, 2);
 assert.equal(filterEntries(C, [{field:'level',op:'equals',value:'error',exclude:false}]).length, 2);
 assert.equal(filterEntries(C, [{field:'text',op:'contains',value:'boom',exclude:false}]).length, 2);
 assert.equal(filterEntries(C, [{field:'level',op:'equals',value:'error',exclude:true}]).length, 1);
+
+// --- truncationNotice : le marqueur doit ATTEINDRE l'analyste ---------------
+// Sans consommateur, un résultat amputé s'affiche comme un résultat complet.
+// `null` == « complet », jamais « on ne sait pas » : c'est l'absence de bandeau
+// qui porte l'information, elle doit donc être fiable.
+assert.equal(truncationNotice(null), null, 'pas de marqueur -> pas de bandeau');
+assert.equal(truncationNotice(undefined), null);
+assert.equal(truncationNotice({}), null, 'objet vide -> pas de bandeau');
+assert.equal(
+  truncationNotice({ network_dropped: 0, console_dropped: 0, post_data_truncated: 0,
+                     findings_dropped: 0, text_truncated: 0 }),
+  null, 'tous les compteurs à zéro -> résultat complet, pas de bandeau');
+
+const n1 = truncationNotice({ network_dropped: 1200 });
+assert.ok(n1 && n1.includes('1200'), 'le bandeau porte le compte réel');
+assert.ok(n1.includes('appels réseau'), 'le bandeau nomme ce qui manque');
+
+// les deux familles ne sont pas confondues : éléments ABSENTS vs champs COUPÉS
+const n2 = truncationNotice({ network_dropped: 3, text_truncated: 7 });
+assert.ok(n2.includes('3 appels réseau non conservés'), n2);
+assert.ok(n2.includes('7 champs texte coupés'), n2);
+
+// robustesse : valeurs non numériques ou négatives ne fabriquent pas de bandeau
+assert.equal(truncationNotice({ network_dropped: 'beaucoup' }), null);
+assert.equal(truncationNotice({ network_dropped: -1 }), null);
+assert.equal(truncationNotice('tronqué'), null, 'non-objet -> pas de bandeau');
 
 console.log('filter_test OK');

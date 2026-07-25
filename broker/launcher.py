@@ -72,7 +72,21 @@ _store_blobs = store_blobs
 def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
     wrapper = json.loads(stdout)
     _store_blobs(wrapper.get("blobs", {}), artifacts_dir)
-    return json.dumps(wrapper["result"])          # résultat léger, sans blobs
+    result = wrapper["result"]
+    # Le runner journalise déjà « résultat tronqué … », mais sur STDERR — que
+    # `run_job` capture puis JETTE quand `returncode == 0` (stderr n'est lu qu'en
+    # cas d'échec). Pour un job qui réussit, ce WARNING n'atteignait donc
+    # personne, et le marqueur restait un champ JSON que rien ne lisait. Ici,
+    # c'est le seul point du broker qui voit le résultat : un résultat amputé
+    # doit laisser une trace côté exploitant, pas seulement dans le payload.
+    truncation = result.get("truncation") or {}
+    if any(truncation.values()):
+        log.warning(
+            "résultat tronqué à la réception job_id=%s %s",
+            result.get("job_id"),
+            " ".join(f"{k}={v}" for k, v in sorted(truncation.items()) if v),
+        )
+    return json.dumps(result)                     # résultat léger, sans blobs
 
 
 def base_hardening(name: str, rm: bool = True) -> list[str]:
