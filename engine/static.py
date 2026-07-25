@@ -232,12 +232,35 @@ def quantifier_bounds(pattern: str) -> list[Optional[int]]:
         elif c == "(":
             stack.append([])
             i += 1
-            if i < n and pattern[i] == "?":      # (?: (?= (?! (?<= (?P<n> ...
+            if i < n and pattern[i] == "?":
+                # On ne consomme QUE le préfixe qui dit le type de groupe, puis on
+                # rend la main à la boucle : le CORPS doit être analysé comme
+                # n'importe quel autre. Sauter jusqu'au premier `:` ou `)` avalait
+                # le corps des assertions — `(?=a*)` et `(?!x+)` passaient donc la
+                # garde, qui aurait dû les refuser.
                 i += 1
-                while i < n and pattern[i] not in ":)":
-                    i += 2 if pattern[i] == "\\" else 1
-                if i < n and pattern[i] == ":":
+                rest = pattern[i:]
+                if rest[:1] == "#":              # commentaire : pas de motif dedans
+                    while i < n and pattern[i] != ")":
+                        i += 2 if pattern[i] == "\\" else 1
+                elif rest[:2] in ("<=", "<!"):   # lookbehind
+                    i += 2
+                elif rest[:1] in ("=", "!", ":", ">"):  # lookahead, groupe, atomique
                     i += 1
+                elif (m := re.match(r"P?<\w+>", rest)):        # groupe nommé
+                    i += m.end()
+                elif (m := re.match(r"P=\w+(?=\))", rest)):    # backref nommée
+                    i += m.end()
+                elif (m := re.match(r"[aiLmsuxt]*(?:-[imsx]+)?(?=[:)])", rest)):
+                    i += m.end() + (1 if rest[m.end()] == ":" else 0)   # drapeaux
+                else:
+                    # FAIL-CLOSED : une construction que la garde ne sait pas lire
+                    # est refusée, jamais sautée en silence — sauter, c'est
+                    # exactement ce qui a laissé passer les assertions.
+                    raise UnboundedPatternError(
+                        f"construction `(?...)` non reconnue dans {pattern!r} : la "
+                        f"garde refuse ce qu'elle ne sait pas analyser"
+                    )
         elif c == ")":
             inner = stack.pop() if len(stack) > 1 else []
             i += 1
