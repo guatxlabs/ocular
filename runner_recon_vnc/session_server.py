@@ -32,6 +32,7 @@ import secrets
 from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS
@@ -341,6 +342,42 @@ async def load(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True}
 
 
+# Mémo d'analyse de `/live`, clefé par empreinte du DOM. `/live` est pollé
+# toutes les 2 s PAR SESSION (web/ui/views/interactive.js) et `analyze_html`
+# balaye 64 regex sur le document ENTIER : ~59 ms pour 100 Kio, ~590 ms pour
+# 1 Mio, ~2,9 s pour 5 Mio (= le plafond `OCULAR_MAX_HTML_BYTES` par défaut).
+# Recalculer à chaque tour, c'est offrir à la page ANALYSÉE — donc hostile — un
+# cœur en permanence par session ; à 5 Mio le tour dépasse même la période de
+# poll et gèle `/health`, ce qui fait détruire par le web une session saine.
+# Un conteneur = une page : une seule entrée suffit (DOM inchangé -> zéro coût).
+_LIVE_ANALYSIS: dict[str, dict[str, Any]] = {}
+
+
+def _analyze_dom(dom: str) -> dict[str, Any]:
+    """Analyse statique complète du DOM courant. SYNCHRONE et pure : appelée via
+    `run_in_threadpool` pour ne jamais tenir la boucle d'évènements (celle qui
+    pilote Camoufox et sert `/health`, `/goto`, `/capture`)."""
+    findings = analyze_html(dom)
+    return {
+        "findings": [f.model_dump(mode="json") for f in findings],
+        "forms": extract_forms(dom),
+        "mailtos": extract_mailtos(dom),
+        "verdict": compute_verdict(findings),
+    }
+
+
+async def _live_analysis(dom: str) -> dict[str, Any]:
+    """`_analyze_dom` mémoïsé sur `sha256(dom)` et déporté hors de la boucle."""
+    digest = hashlib.sha256(dom.encode("utf-8", "replace")).hexdigest()
+    cached = _LIVE_ANALYSIS.get(digest)
+    if cached is not None:
+        return cached
+    analysis = await run_in_threadpool(_analyze_dom, dom)
+    _LIVE_ANALYSIS.clear()  # une seule entrée : le DOM courant
+    _LIVE_ANALYSIS[digest] = analysis
+    return analysis
+
+
 @app.get("/live", dependencies=[Depends(require_session_secret)])
 async def live() -> dict[str, Any]:
     """Panneau live (canal données séparé du flux pixels VNC, ~C4) : appels
@@ -348,7 +385,9 @@ async def live() -> dict[str, Any]:
     figée à la dernière `/capture`). Réutilise `analyze_html`/`compute_verdict`
     exactement comme `/capture` — aucune duplication de la mécanique.
     Bornage `[-500:]` sur le réseau ET la console (charge/DoS ; le compte
-    total non borné reste dans `counts`)."""
+    total reste dans `counts`). L'analyse passe par `_live_analysis` :
+    mémoïsée sur l'empreinte du DOM et exécutée dans le threadpool (cf. le
+    commentaire de `_LIVE_ANALYSIS`)."""
     page, cap = _state["page"], _state["cap"]
     if page is None:
         return {
@@ -362,20 +401,19 @@ async def live() -> dict[str, Any]:
     except Exception:  # pragma: no cover - dépend de l'état réel de la page
         dom = ""
 
-    findings = analyze_html(dom)
+    analysis = await _live_analysis(dom)
     network = cap.network if cap else []
     console = cap.console if cap else []
-    forms = extract_forms(dom)
-    mailtos = extract_mailtos(dom)
+    findings, forms, mailtos = analysis["findings"], analysis["forms"], analysis["mailtos"]
     return {
         "network": network[-500:],
         "console": console[-500:],
-        "findings": [f.model_dump(mode="json") for f in findings],
+        "findings": findings,
         "forms": forms,
         "mailtos": mailtos,
         "counts": {"network": len(network), "findings": len(findings), "console": len(console),
                    "forms": len(forms), "mailtos": len(mailtos)},
-        "verdict": compute_verdict(findings),
+        "verdict": analysis["verdict"],
     }
 
 
