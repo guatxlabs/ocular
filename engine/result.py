@@ -18,12 +18,26 @@ class Screenshot(BaseModel):
     viewport: str
 
 
+# Plafond DUR, en caractères, du corps d'une requête capturée. `post_data` vient
+# de la page ANALYSÉE : une page hostile peut y mettre des mégaoctets PAR requête,
+# qui traversent ensuite stdout du runner, le broker, Redis (monté sur tmpfs, donc
+# en RAM de l'hôte) puis SQLite. Le plafond d'EXPLOITATION est
+# `OCULAR_MAX_POST_DATA_BYTES` (cf. `engine.wrapper._max_post_data_chars`, défaut
+# 8192) ; celui-ci est le plafond que le MODÈLE refuse de dépasser, quel que soit
+# le producteur du résultat — quelques Kio suffisent à établir un indice
+# d'exfiltration (même esprit que `match[:200]` dans engine/static.py).
+POST_DATA_MAX_CHARS = 65536
+
+
 class NetworkEntry(BaseModel):
     url: str
     method: str
     status: Optional[int] = None
     headers: dict[str, str] = Field(default_factory=dict)
-    post_data: Optional[str] = None
+    post_data: Optional[str] = Field(default=None, max_length=POST_DATA_MAX_CHARS)
+    # Marqueur par entrée : ce corps a été coupé, ce n'est pas celui qu'a émis
+    # la page. Compté aussi dans `OcularResult.truncation`.
+    post_data_truncated: bool = False
     resource_type: Optional[str] = None
     initiator: Optional[str] = None
 
@@ -101,6 +115,17 @@ class Artifacts(BaseModel):
     dom_html_ref: Optional[str] = None
 
 
+class Truncation(BaseModel):
+    """Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les
+    plafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans
+    le dire est un angle mort : l'analyste croirait voir tout le trafic d'une
+    page qui en a émis cent fois plus. Tous les compteurs à 0 = résultat
+    complet."""
+    network_dropped: int = 0
+    console_dropped: int = 0
+    post_data_truncated: int = 0
+
+
 class OcularResult(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     job_id: str
@@ -118,6 +143,9 @@ class OcularResult(BaseModel):
     stealth: Optional[StealthInfo] = None
     triage: Optional[Triage] = None
     artifacts: Artifacts = Field(default_factory=Artifacts)
+    # Compteurs à 0 par défaut : un payload 1.0 antérieur (déjà en base) reste
+    # valide et se lit comme « rien n'a été tronqué ».
+    truncation: Truncation = Field(default_factory=Truncation)
 
     @classmethod
     def model_json_schema(cls, *args, **kwargs):

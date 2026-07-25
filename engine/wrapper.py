@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from engine.result import (
+    POST_DATA_MAX_CHARS,
     Artifacts,
     ConsoleEntry,
     DomInfo,
@@ -29,12 +30,16 @@ from engine.result import (
     OcularResult,
     Screenshot,
     StealthInfo,
+    Truncation,
 )
 from engine.triage import compute_triage
 from ocular_logging import get_logger
 
 _log = get_logger("wrapper")
 _DEFAULT_MAX_ARTIFACT_BYTES = 32 * 1024 * 1024  # 32 MiB
+_DEFAULT_MAX_POST_DATA_BYTES = 8 * 1024         # 8 KiB
+_DEFAULT_MAX_NETWORK_ENTRIES = 5000
+_DEFAULT_MAX_CONSOLE_ENTRIES = 5000
 
 
 def _max_artifact_bytes() -> int:
@@ -47,6 +52,55 @@ def _max_artifact_bytes() -> int:
         return max(0, int(os.environ.get("OCULAR_MAX_ARTIFACT_BYTES", str(_DEFAULT_MAX_ARTIFACT_BYTES))))
     except ValueError:
         return _DEFAULT_MAX_ARTIFACT_BYTES
+
+
+def _env_cap(name: str, default: int, hard_max: Optional[int] = None) -> int:
+    """Plafond entier de configuration. Ne lève JAMAIS (une valeur illisible
+    retombe sur le défaut — même règle qu'`ocular_settings`). Plancher 1 :
+    contrairement aux artefacts, ces plafonds n'ont PAS de « 0 = illimité », car
+    ce qu'ils bornent est dicté par la page hostile — l'exploitation peut les
+    baisser, jamais les retirer."""
+    try:
+        val = int(os.environ.get(name, str(default)))
+    except ValueError:
+        val = default
+    val = max(1, val)
+    return min(val, hard_max) if hard_max is not None else val
+
+
+def _max_post_data_chars() -> int:
+    """Taille max CONSERVÉE du corps d'une requête capturée.
+    `OCULAR_MAX_POST_DATA_BYTES`, défaut 8192, borné par `POST_DATA_MAX_CHARS`
+    (65536, le plafond du modèle). Au dépassement le corps est TRONQUÉ, l'entrée
+    marquée `post_data_truncated` et comptée dans `OcularResult.truncation`."""
+    return _env_cap("OCULAR_MAX_POST_DATA_BYTES", _DEFAULT_MAX_POST_DATA_BYTES, POST_DATA_MAX_CHARS)
+
+
+def _max_network_entries() -> int:
+    """Nombre max d'entrées réseau conservées. `OCULAR_MAX_NETWORK_ENTRIES`,
+    défaut 5000. Au dépassement, les entrées SUIVANTES sont rejetées — on garde
+    les PREMIÈRES (la chaîne de chargement initiale est ce qui documente la
+    page ; c'est aussi ce qui garde `_req_index` borné) — et comptées dans
+    `OcularResult.truncation.network_dropped`."""
+    return _env_cap("OCULAR_MAX_NETWORK_ENTRIES", _DEFAULT_MAX_NETWORK_ENTRIES)
+
+
+def _max_console_entries() -> int:
+    """Idem pour le journal console : `OCULAR_MAX_CONSOLE_ENTRIES`, défaut 5000,
+    surplus compté dans `OcularResult.truncation.console_dropped`."""
+    return _env_cap("OCULAR_MAX_CONSOLE_ENTRIES", _DEFAULT_MAX_CONSOLE_ENTRIES)
+
+
+def _truncate_post_data(entry: dict[str, Any], cap: int) -> bool:
+    """Tronque `entry["post_data"]` au cap EN PLACE ; renvoie True s'il l'a été.
+    Le marqueur n'est posé QUE dans ce cas (une entrée intacte garde la forme
+    historique du dict ; `NetworkEntry.post_data_truncated` vaut False)."""
+    body = entry.get("post_data")
+    if isinstance(body, str) and len(body) > cap:
+        entry["post_data"] = body[:cap]
+        entry["post_data_truncated"] = True
+        return True
+    return False
 
 
 def sha256_ref(data: bytes) -> str:
@@ -66,15 +120,37 @@ class NetworkCapture:
         self.network: list[dict[str, Any]] = []
         self.console: list[dict[str, Any]] = []
         self._req_index: dict[Any, dict[str, Any]] = {}
+        # Ce qui a été REJETÉ ou coupé, reporté dans `OcularResult.truncation`
+        # via `truncation()` : le résultat dit ce qu'il ne contient pas.
+        self.dropped_network = 0
+        self.dropped_console = 0
+        self.truncated_post_data = 0
+
+    def truncation(self) -> Truncation:
+        """État de troncature de CETTE capture, à passer à `ResultBuilder.build`."""
+        return Truncation(
+            network_dropped=self.dropped_network,
+            console_dropped=self.dropped_console,
+            post_data_truncated=self.truncated_post_data,
+        )
 
     def attach(self, page: Any) -> None:
         def _on_request(req: Any) -> None:
+            # Plafond de CARDINALITÉ (anti-OOM, même justification que les
+            # artefacts) : une page hostile peut émettre des requêtes sans fin.
+            # Au-delà on rejette et on compte — et on n'indexe pas la requête,
+            # ce qui borne `_req_index` avec la liste.
+            if len(self.network) >= _max_network_entries():
+                self.dropped_network += 1
+                return
             entry = {
                 "url": req.url,
                 "method": req.method,
                 "resource_type": getattr(req, "resource_type", None),
                 "post_data": getattr(req, "post_data", None),
             }
+            if _truncate_post_data(entry, _max_post_data_chars()):
+                self.truncated_post_data += 1
             self.network.append(entry)
             self._req_index[req] = entry
 
@@ -84,6 +160,9 @@ class NetworkCapture:
                 entry["status"] = resp.status
 
         def _on_console(msg: Any) -> None:
+            if len(self.console) >= _max_console_entries():
+                self.dropped_console += 1
+                return
             self.console.append({"level": msg.type, "text": msg.text})
 
         page.on("request", _on_request)
@@ -143,12 +222,39 @@ class ResultBuilder:
         network: Optional[list[dict[str, Any]]] = None,
         console: Optional[list[dict[str, Any]]] = None,
         dynamic_steps: Optional[list] = None,
+        truncation: Optional[Truncation] = None,
     ) -> tuple[OcularResult, dict[str, bytes]]:
         _findings = static_findings or []
         _dom = dom_info or DomInfo()
+        # Choke-point des plafonds réseau/console, symétrique de celui des
+        # artefacts (`add_screenshot`/`set_dom`) : la garantie tient pour TOUT
+        # `OcularResult`, quelle que soit l'origine des listes. `truncation`
+        # reporte ce qu'un `NetworkCapture` a déjà rejeté en amont ; ce qui est
+        # déjà borné ne l'est pas deux fois (les compteurs ne doublent pas).
+        _raw_network = list(network or [])
+        _raw_console = list(console or [])
+        _body_cap = _max_post_data_chars()
+        _kept_network: list[dict[str, Any]] = []
+        _body_truncated = 0
+        for _n in _raw_network[: _max_network_entries()]:
+            _entry = dict(_n)
+            if _truncate_post_data(_entry, _body_cap):
+                _body_truncated += 1
+            _kept_network.append(_entry)
+        _kept_console = _raw_console[: _max_console_entries()]
+        _upstream = truncation or Truncation()
+        _truncation = Truncation(
+            network_dropped=_upstream.network_dropped + len(_raw_network) - len(_kept_network),
+            console_dropped=_upstream.console_dropped + len(_raw_console) - len(_kept_console),
+            post_data_truncated=_upstream.post_data_truncated + _body_truncated,
+        )
+        if _truncation != Truncation():
+            _log.warning("résultat tronqué network_dropped=%d console_dropped=%d post_data_truncated=%d",
+                         _truncation.network_dropped, _truncation.console_dropped,
+                         _truncation.post_data_truncated)
         triage = compute_triage(
             _findings, verdict=verdict,
-            network=network or [], console=console or [], dom=_dom,
+            network=_kept_network, console=_kept_console, dom=_dom,
         )
         result = OcularResult(
             job_id=job_id,
@@ -158,8 +264,8 @@ class ResultBuilder:
             timestamp=datetime.now(timezone.utc).isoformat(),
             verdict=verdict,
             screenshots=self.screenshots,
-            network=[NetworkEntry(**n) for n in (network or [])],
-            console=[ConsoleEntry(**c) for c in (console or [])],
+            network=[NetworkEntry(**n) for n in _kept_network],
+            console=[ConsoleEntry(**c) for c in _kept_console],
             dom=_dom,
             static_findings=_findings,
             # 3c : journal du mode scripté (déjà des `DynamicStep`, construits
@@ -172,6 +278,7 @@ class ResultBuilder:
             stealth=stealth,
             triage=triage,
             artifacts=self.artifacts,
+            truncation=_truncation,
         )
         return result, self.blobs
 

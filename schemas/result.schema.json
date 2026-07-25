@@ -198,6 +198,7 @@
         "post_data": {
           "anyOf": [
             {
+              "maxLength": 65536,
               "type": "string"
             },
             {
@@ -206,6 +207,11 @@
           ],
           "default": null,
           "title": "Post Data"
+        },
+        "post_data_truncated": {
+          "default": false,
+          "title": "Post Data Truncated",
+          "type": "boolean"
         },
         "resource_type": {
           "anyOf": [
@@ -433,6 +439,28 @@
       ],
       "title": "TriageSignal",
       "type": "object"
+    },
+    "Truncation": {
+      "description": "Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les\nplafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans\nle dire est un angle mort : l'analyste croirait voir tout le trafic d'une\npage qui en a émis cent fois plus. Tous les compteurs à 0 = résultat\ncomplet.",
+      "properties": {
+        "network_dropped": {
+          "default": 0,
+          "title": "Network Dropped",
+          "type": "integer"
+        },
+        "console_dropped": {
+          "default": 0,
+          "title": "Console Dropped",
+          "type": "integer"
+        },
+        "post_data_truncated": {
+          "default": 0,
+          "title": "Post Data Truncated",
+          "type": "integer"
+        }
+      },
+      "title": "Truncation",
+      "type": "object"
     }
   },
   "properties": {
@@ -547,6 +575,9 @@
     },
     "artifacts": {
       "$ref": "#/$defs/Artifacts"
+    },
+    "truncation": {
+      "$ref": "#/$defs/Truncation"
     }
   },
   "required": [

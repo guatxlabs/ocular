@@ -79,6 +79,7 @@ def render_html(html: str, job_id: str, render_timeout_ms: int = 15000) -> tuple
         static_findings=static_findings,
         network=capture.network,
         console=capture.console,
+        truncation=capture.truncation(),
     )
     duration_ms = int((time.monotonic() - started) * 1000)
     log.info("job_id=%s render done verdict=%s duration_ms=%d",

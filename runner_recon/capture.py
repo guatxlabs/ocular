@@ -33,7 +33,7 @@ log = get_logger("runner-recon")
 
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS  # noqa: E402
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard  # noqa: E402
-from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo  # noqa: E402
+from engine.result import DomInfo, DynamicStep, OcularResult, StealthInfo, Truncation  # noqa: E402
 from engine.static import analyze_html, extract_forms, extract_mailtos  # noqa: E402
 from engine.steps import validate_steps  # noqa: E402
 from engine.urlnorm import url_input_hash  # noqa: E402
@@ -141,11 +141,16 @@ def build_result(
     title: str,
     final_url: str,
     turnstile_solved: bool,
+    truncation: Optional[Truncation] = None,
 ) -> tuple[OcularResult, dict[str, bytes]]:
     """Logique pure (aucune dépendance navigateur) : compose l'`OcularResult`
     profil `capture` à partir de données déjà capturées. Testable directement
     sans Camoufox — c'est `capture_url` qui pilote le navigateur et lui fournit
-    ces données."""
+    ces données.
+
+    `truncation` : ce que les plafonds anti-OOM de `NetworkCapture` ont déjà
+    rejeté (cf. `NetworkCapture.truncation()`), reporté tel quel dans le
+    résultat pour que l'analyste sache qu'il ne voit pas tout."""
     builder = ResultBuilder()
     for step, phase, png in screenshots:
         builder.add_screenshot(step, phase, png)
@@ -164,6 +169,7 @@ def build_result(
         static_findings=findings,
         network=network,
         console=console,
+        truncation=truncation,
     )
 
 
@@ -459,7 +465,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
 
     return build_result(
         url, screenshots, capture.network, capture.console, dom_html, title,
-        final_url, turnstile_solved,
+        final_url, turnstile_solved, truncation=capture.truncation(),
     )
 
 
@@ -598,6 +604,7 @@ async def capture_scripted(
         network=capture.network,
         console=capture.console,
         dynamic_steps=journal_to_dynamic_steps(journal, capture_refs),
+        truncation=capture.truncation(),
     )
 
 

@@ -471,6 +471,21 @@ OCULAR_BIND=0.0.0.0   # dans deploy/.env — UNIQUEMENT derrière un reverse-pro
 
 **Conséquence à connaître :** l'API voit désormais l'IP du frontal comme IP cliente (le log `session create ... client_ip=`). En déploiement nominal — derrière le reverse-proxy authentifiant du §2.5 — cette IP était **déjà** celle du proxy amont ; la perte d'information ne concerne donc que l'accès direct en loopback.
 
+### 2.10 Plafonds de taille du résultat (anti-OOM) — ✅ FERMÉ DANS LE CODE
+
+Tout ce qui compose un `OcularResult` est dicté par la **page analysée**, donc par l'attaquant, et traverse ensuite le broker (`mem_limit 1g`), Redis **sur tmpfs — donc la RAM de l'hôte** (§2.8) puis SQLite. Chaque champ de volume variable est donc plafonné. Les plafonds sont des **choix d'exploitation** : réglables, avec un défaut sûr.
+
+| Variable | Défaut | Ce qui se passe au dépassement |
+|---|---|---|
+| `OCULAR_MAX_ARTIFACT_BYTES` | `33554432` (32 Mio) | Screenshot hors-cap **ignoré** (un PNG tronqué serait invalide) ; DOM **tronqué** au cap. `0` = illimité. |
+| `OCULAR_MAX_POST_DATA_BYTES` | `8192` (8 Kio) | Corps de requête **tronqué** ; l'entrée porte `post_data_truncated: true`. Borné par le plafond du modèle (65536). |
+| `OCULAR_MAX_NETWORK_ENTRIES` | `5000` | Entrées réseau **suivantes rejetées** (on garde les premières : la chaîne de chargement initiale), comptées dans `truncation.network_dropped`. |
+| `OCULAR_MAX_CONSOLE_ENTRIES` | `5000` | Idem pour la console -> `truncation.console_dropped`. |
+| `OCULAR_MAX_INTERNAL_CAPTURE_BYTES` | `134217728` (128 Mio) | Réponse `/capture` du `session_server` **refusée** -> `502`. Doit rester > 2 artefacts encodés en base64 (~85 Mio au défaut ci-dessus). |
+| `OCULAR_MAX_INTERNAL_JSON_BYTES` | `16777216` (16 Mio) | Réponse `/live` **refusée** -> `502`. |
+
+Deux propriétés à ne pas régresser : (1) **jamais de troncature muette** — tout résultat amputé porte `OcularResult.truncation` (compteurs à 0 = complet) et le runner journalise `résultat tronqué …` ; (2) **fail-closed sur la lecture** — une réponse interne hors plafond est une **erreur** rendue à l'appelant, jamais un corps coupé re-parsé comme s'il était complet. Ni `_ENTRIES` ni `_POST_DATA` n'acceptent « 0 = illimité » : l'exploitation peut baisser ces plafonds, pas les retirer.
+
 ---
 
 ## 3. Checklist de déploiement en réseau sensible
@@ -486,6 +501,7 @@ OCULAR_BIND=0.0.0.0   # dans deploy/.env — UNIQUEMENT derrière un reverse-pro
 - [ ] **Redis** avec `requirepass` : poser `OCULAR_REDIS_PASSWORD` dans `deploy/.env` (mécanisme câblé, défaut = pas d'auth) — §2.4.
 - [ ] **`OCULAR_DOCKER_GID`** posé à la valeur réelle de l'hôte (`stat -c '%g' /var/run/docker.sock`) — sinon le broker perd le socket et **toutes les sessions interactives échouent** — §2.8.
 - [ ] **`OCULAR_BIND`** laissé sur la loopback, sauf reverse-proxy authentifiant en amont — §2.9.
+- ~~**Plafonds de taille du résultat**~~ — ✅ fermé dans le code (défauts sûrs, §2.10). À ne réviser que si un tier manque de mémoire ; ne **jamais** tenter de les dé-plafonner.
 - ~~**Durcissement des conteneurs du plan de contrôle** (`read_only`/`cap_drop`/`no-new-privileges`/non-root)~~ — ✅ fermé dans le code, §2.8. **Ne ferme PAS** l'évasion via le socket Docker (§2.8), seulement ses étapes intermédiaires.
 - [ ] `web` **jamais exposé en direct** : derrière un reverse-proxy authentifié qui strippe les en-têtes d'identité clients ; garder `OCULAR_TOKEN` comme filet ; pare-feu session→web — §2.5.
 - [ ] Dépendances **épinglées** + checksum Camoufox — §2.6.

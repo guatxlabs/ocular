@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 
 from engine.browser_js import CF_INDICATOR_JS, SCROLL_TO_LOAD_JS
 from engine.egress_policy import hardened_launch_kwargs, maybe_start_egress_guard
-from engine.result import DomInfo, OcularResult, StealthInfo
+from engine.result import DomInfo, OcularResult, StealthInfo, Truncation
 from engine.static import analyze_html, extract_forms, extract_mailtos
 from engine.urlnorm import url_input_hash
 from engine.verdict import compute_verdict
@@ -150,6 +150,7 @@ def build_capture_result(
     console: Optional[list[dict[str, Any]]] = None,
     turnstile_solved: Optional[bool] = None,
     challenge: Optional[str] = None,
+    truncation: Optional[Truncation] = None,
 ) -> tuple[OcularResult, dict[str, bytes]]:
     """Logique pure (aucune dépendance Camoufox) : compose l'`OcularResult`
     à partir de données déjà capturées par le pilotage du navigateur. Miroir
@@ -198,6 +199,9 @@ def build_capture_result(
         static_findings=findings,
         network=network,
         console=console,
+        # Ce que les plafonds anti-OOM de `NetworkCapture` ont déjà rejeté :
+        # reporté dans le résultat, jamais tu (cf. `engine.result.Truncation`).
+        truncation=truncation,
     )
 
 
@@ -468,5 +472,6 @@ async def capture(body: dict[str, Any]) -> dict[str, Any]:
         console=cap.console if cap else [],
         turnstile_solved=turnstile_solved,
         challenge=challenge,
+        truncation=cap.truncation() if cap else None,
     )
     return wrapper_payload(result, blobs)
