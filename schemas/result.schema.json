@@ -441,7 +441,7 @@
       "type": "object"
     },
     "Truncation": {
-      "description": "Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les\nplafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans\nle dire est un angle mort : l'analyste croirait voir tout le trafic d'une\npage qui en a émis cent fois plus. Tous les compteurs à 0 = résultat\ncomplet.",
+      "description": "Marqueur EXPLICITE de ce que le résultat NE contient pas, parce que les\nplafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans\nle dire est un angle mort : l'analyste croirait voir tout le trafic d'une\npage qui en a émis cent fois plus. Tous les compteurs à 0 = résultat\ncomplet.\n\nDeux familles distinctes, à ne pas confondre en lisant un résultat :\n  - `*_dropped` = des ÉLÉMENTS ENTIERS manquent (requêtes, messages,\n    détections) — c'est de la preuve absente ;\n  - `text_truncated` = des éléments sont PRÉSENTS mais un de leurs champs\n    texte a été coupé (URL, en-têtes, texte console, titre de page). Le\n    compteur porte sur le nombre de CHAMPS coupés, pas d'entrées.",
       "properties": {
         "network_dropped": {
           "default": 0,
@@ -456,6 +456,16 @@
         "post_data_truncated": {
           "default": 0,
           "title": "Post Data Truncated",
+          "type": "integer"
+        },
+        "findings_dropped": {
+          "default": 0,
+          "title": "Findings Dropped",
+          "type": "integer"
+        },
+        "text_truncated": {
+          "default": 0,
+          "title": "Text Truncated",
           "type": "integer"
         }
       },

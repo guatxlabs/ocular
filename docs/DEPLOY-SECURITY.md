@@ -473,18 +473,50 @@ OCULAR_BIND=0.0.0.0   # dans deploy/.env — UNIQUEMENT derrière un reverse-pro
 
 ### 2.10 Plafonds de taille du résultat (anti-OOM) — ✅ FERMÉ DANS LE CODE
 
-Tout ce qui compose un `OcularResult` est dicté par la **page analysée**, donc par l'attaquant, et traverse ensuite le broker (`mem_limit 1g`), Redis **sur tmpfs — donc la RAM de l'hôte** (§2.8) puis SQLite. Chaque champ de volume variable est donc plafonné. Les plafonds sont des **choix d'exploitation** : réglables, avec un défaut sûr.
+Tout ce qui compose un `OcularResult` est dicté par la **page analysée**, donc par l'attaquant, et traverse ensuite le broker (`mem_limit 1g`), Redis **sur tmpfs — donc la RAM de l'hôte** (§2.8) puis SQLite. Les plafonds sont des **choix d'exploitation** : réglables, avec un défaut sûr.
+
+Trois familles, parce que **borner la cardinalité ne borne rien** : une page n'a pas besoin d'émettre beaucoup d'entrées, il lui suffit d'en émettre **une seule énorme** (un `console.log` de 20 Mio produisait un résultat de 20,0 Mio qui s'annonçait *complet*).
+
+**(a) Cardinalité** — combien d'éléments sont conservés.
 
 | Variable | Défaut | Ce qui se passe au dépassement |
 |---|---|---|
-| `OCULAR_MAX_ARTIFACT_BYTES` | `33554432` (32 Mio) | Screenshot hors-cap **ignoré** (un PNG tronqué serait invalide) ; DOM **tronqué** au cap. `0` = illimité. |
-| `OCULAR_MAX_POST_DATA_BYTES` | `8192` (8 Kio) | Corps de requête **tronqué** ; l'entrée porte `post_data_truncated: true`. Borné par le plafond du modèle (65536). |
-| `OCULAR_MAX_NETWORK_ENTRIES` | `5000` | Entrées réseau **suivantes rejetées** (on garde les premières : la chaîne de chargement initiale), comptées dans `truncation.network_dropped`. |
-| `OCULAR_MAX_CONSOLE_ENTRIES` | `5000` | Idem pour la console -> `truncation.console_dropped`. |
-| `OCULAR_MAX_INTERNAL_CAPTURE_BYTES` | `134217728` (128 Mio) | Réponse `/capture` du `session_server` **refusée** -> `502`. Doit rester > 2 artefacts encodés en base64 (~85 Mio au défaut ci-dessus). |
+| `OCULAR_MAX_NETWORK_ENTRIES` | `5000` | Entrées réseau **suivantes rejetées** (on garde les premières : la chaîne de chargement initiale documente la page). Compté dans `truncation.network_dropped`. |
+| `OCULAR_MAX_CONSOLE_ENTRIES` | `5000` | Idem -> `truncation.console_dropped`. |
+| `OCULAR_MAX_FINDINGS` | `5000` | Détections statiques **suivantes rejetées** -> `truncation.findings_dropped`. Un DOM de 2 Mio fait de `document.cookie;` répété produit 131 072 détections, soit 21,9 Mio de JSON. |
+
+**(b) Taille de chaque champ, en OCTETS UTF-8** — appliqués à l'insertion (`NetworkCapture`) *et* dans `ResultBuilder.build`. L'unité est l'octet et non le caractère : un plafond en caractères laissait passer 2 à 4× le budget annoncé selon l'encodage (mesuré : `OCULAR_MAX_POST_DATA_BYTES=8192` conservait 16 384 octets pour un corps de « é », jusqu'à 256 Kio au plafond du modèle).
+
+| Variable | Défaut | Champ borné |
+|---|---|---|
+| `OCULAR_MAX_ARTIFACT_BYTES` | `33554432` (32 Mio) | Screenshot hors-cap **ignoré** (un PNG tronqué serait invalide) ; DOM **tronqué**. Seule variable de cette page à accepter `0` = illimité (cf. l'avertissement plus bas). |
+| `OCULAR_MAX_POST_DATA_BYTES` | `8192` (8 Kio) | `network[].post_data` ; l'entrée porte `post_data_truncated: true`. Borné par `POST_DATA_MAX_CHARS` (65536), le plafond du modèle. |
+| `OCULAR_MAX_URL_BYTES` | `4096` (4 Kio) | `network[].url`. Mesuré : 5000 entrées à 20 Ko d'URL = 96,2 Mio de résultat, linéaire (200 Ko/URL ≈ 1 Gio). |
+| `OCULAR_MAX_HEADERS_BYTES` | `8192` (8 Kio) | `network[].headers`, budget **global** du dict (clés + valeurs). |
+| `OCULAR_MAX_CONSOLE_TEXT_BYTES` | `8192` (8 Kio) | `console[].text`. |
+| `OCULAR_MAX_TITLE_BYTES` | `4096` (4 Kio) | `dom.title` et `dom.final_url` (`document.title = 'x'.repeat(1e7)`). |
+
+Toute coupe de (b) est comptée dans `truncation.text_truncated` — nombre de **champs** coupés, pas d'entrées.
+
+**(c) Budget MESURÉ du résultat sérialisé** — parce que (a) et (b) bornent le *texte*, pas le *JSON*. `json.dumps` échappe un octet de contrôle en `\u00XX`, soit **×6** : 5000 entrées remplies d'octets nuls au plafond de 8 Kio pèsent 40 Mio de texte mais **246 Mio** de JSON. Aucune arithmétique de plafonds ne tient cette promesse ; une mesure suivie d'un délestage, si.
+
+| Variable | Défaut | Ce qui se passe au dépassement |
+|---|---|---|
+| `OCULAR_MAX_RESULT_JSON_BYTES` | `33554432` (32 Mio) | `build()` **mesure** le résultat sérialisé et délester proportionnellement console -> réseau -> détections jusqu'à repasser sous le plafond, en comptant tout dans `truncation`. |
+| `OCULAR_MAX_INTERNAL_CAPTURE_BYTES` | `134217728` (128 Mio) | Réponse `/capture` du `session_server` **refusée** -> `502`. Doit rester > budget résultat (32 Mio) + 2 artefacts en base64 (85,4 Mio) = 117,4 Mio. |
 | `OCULAR_MAX_INTERNAL_JSON_BYTES` | `16777216` (16 Mio) | Réponse `/live` **refusée** -> `502`. |
 
-Deux propriétés à ne pas régresser : (1) **jamais de troncature muette** — tout résultat amputé porte `OcularResult.truncation` (compteurs à 0 = complet) et le runner journalise `résultat tronqué …` ; (2) **fail-closed sur la lecture** — une réponse interne hors plafond est une **erreur** rendue à l'appelant, jamais un corps coupé re-parsé comme s'il était complet. Ni `_ENTRIES` ni `_POST_DATA` n'acceptent « 0 = illimité » : l'exploitation peut baisser ces plafonds, pas les retirer.
+**Ce qui est garanti, et par quelle mesure.** Après `ResultBuilder.build`, `len(json.dumps(result))` ≤ `OCULAR_MAX_RESULT_JSON_BYTES`, quoi qu'émette la page — c'est vérifié sur trois entrées adverses (octets nuls en console, en `post_data`, et tous les champs au plafond) par `tests/test_result_size_limits_adverse.py`. Le délestage ne touche jamais aux `screenshots`, au journal `dynamic_steps` (actions de l'analyste) ni au `triage`.
+
+**Ce qui n'est PAS garanti.** Le délestage ne sait alléger que `network`, `console` et `static_findings`. `dom.redirect_chain`, `dom.links` et `stealth.challenge` ne sont bornés par rien : aujourd'hui **aucun producteur ne les remplit** depuis du contenu de page (`challenge` est le littéral `"cloudflare-turnstile"` ou `null`, les deux autres restent vides), donc la garantie tient — mais un futur producteur qui y verserait du texte de page la romprait sans qu'aucun test ne s'en aperçoive. Le code journalise alors `résultat encore à N octets après délestage complet`. De même, `OCULAR_MAX_ARTIFACT_BYTES=0` (« illimité ») rend les blobs non bornés et peut donc repousser `/capture` au-delà de son plafond de lecture : c'est un choix d'exploitation explicite, pas un défaut.
+
+Trois propriétés à ne pas régresser :
+
+1. **Jamais de troncature muette** — tout résultat amputé porte `OcularResult.truncation` (compteurs à 0 = complet) et le runner journalise `résultat tronqué …`.
+2. **Fail-closed sur la lecture** — une réponse interne hors plafond est une **erreur** rendue à l'appelant, jamais un corps coupé re-parsé comme s'il était complet.
+3. **Un plafond ne doit jamais devenir un refus permanent** — c'est la contrepartie de (2). Les bornes de (a)/(b)/(c) sont posées **à la source**, de sorte que la réponse interne ne PUISSE PAS dépasser le plafond de lecture ; sans cela, le fail-closed transforme un dépassement en `502` à chaque appel pour le restant de la session, depuis le contenu analysé. L'invariant à préserver est donc : **plafond de lecture ≥ budget de la source**. Le baisser sous le budget de la source est journalisé en WARNING.
+
+**Les plafonds se baissent, ils ne se retirent pas** — et cette phrase est désormais appliquée, pas seulement écrite. Chaque variable de (a), (b) et (c) a une **borne haute** (`20000` entrées, `65536` octets par champ, `128 Mio` de résultat, `512 Mio` de lecture interne) : `OCULAR_MAX_NETWORK_ENTRIES=999999999999` était auparavant accepté tel quel, donc le plafond était supprimé de fait. Aucune de ces variables n'accepte « `0` = illimité » — **seul** `OCULAR_MAX_ARTIFACT_BYTES` suit cette convention, et transposer l'habitude donne ici l'inverse de l'intention (`0` était ramené à `1`, soit **une seule** entrée conservée). Toute valeur illisible ou hors bornes est maintenant **journalisée en WARNING** avec la valeur retenue, jamais substituée en silence.
 
 ---
 

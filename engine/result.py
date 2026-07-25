@@ -18,14 +18,19 @@ class Screenshot(BaseModel):
     viewport: str
 
 
-# Plafond DUR, en caractères, du corps d'une requête capturée. `post_data` vient
-# de la page ANALYSÉE : une page hostile peut y mettre des mégaoctets PAR requête,
-# qui traversent ensuite stdout du runner, le broker, Redis (monté sur tmpfs, donc
-# en RAM de l'hôte) puis SQLite. Le plafond d'EXPLOITATION est
-# `OCULAR_MAX_POST_DATA_BYTES` (cf. `engine.wrapper._max_post_data_chars`, défaut
-# 8192) ; celui-ci est le plafond que le MODÈLE refuse de dépasser, quel que soit
-# le producteur du résultat — quelques Kio suffisent à établir un indice
-# d'exfiltration (même esprit que `match[:200]` dans engine/static.py).
+# Plafond DUR, en CARACTÈRES, du corps d'une requête capturée — c'est l'unité de
+# `max_length` en pydantic, et elle diffère de celle du plafond d'exploitation.
+# `post_data` vient de la page ANALYSÉE : une page hostile peut y mettre des
+# mégaoctets PAR requête, qui traversent ensuite stdout du runner, le broker,
+# Redis (monté sur tmpfs, donc en RAM de l'hôte) puis SQLite.
+#
+# Le plafond d'EXPLOITATION, lui, est `OCULAR_MAX_POST_DATA_BYTES` (défaut 8192)
+# et s'applique en OCTETS UTF-8 (cf. `engine.wrapper._max_post_data_bytes`) :
+# c'est la seule unité qui borne réellement la mémoire, un caractère pouvant
+# valoir jusqu'à 4 octets. Comme un plafond en octets borne aussi le nombre de
+# caractères, `build()` ne peut jamais produire un `post_data` que ce modèle
+# refuserait. Quelques Kio suffisent à établir un indice d'exfiltration (même
+# esprit que `match[:200]` dans engine/static.py).
 POST_DATA_MAX_CHARS = 65536
 
 
@@ -120,10 +125,19 @@ class Truncation(BaseModel):
     plafonds anti-OOM ont mordu (cf. `engine.wrapper`). Un résultat amputé sans
     le dire est un angle mort : l'analyste croirait voir tout le trafic d'une
     page qui en a émis cent fois plus. Tous les compteurs à 0 = résultat
-    complet."""
+    complet.
+
+    Deux familles distinctes, à ne pas confondre en lisant un résultat :
+      - `*_dropped` = des ÉLÉMENTS ENTIERS manquent (requêtes, messages,
+        détections) — c'est de la preuve absente ;
+      - `text_truncated` = des éléments sont PRÉSENTS mais un de leurs champs
+        texte a été coupé (URL, en-têtes, texte console, titre de page). Le
+        compteur porte sur le nombre de CHAMPS coupés, pas d'entrées."""
     network_dropped: int = 0
     console_dropped: int = 0
     post_data_truncated: int = 0
+    findings_dropped: int = 0
+    text_truncated: int = 0
 
 
 class OcularResult(BaseModel):

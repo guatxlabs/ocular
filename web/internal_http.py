@@ -9,6 +9,7 @@ noms `_préfixés` historiques (compat monkeypatch des tests)."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -26,15 +27,50 @@ import urllib.request
 # re-parsé comme s'il était complet.
 _DEFAULT_MAX_CAPTURE_BYTES = 128 * 1024 * 1024
 _DEFAULT_MAX_JSON_BYTES = 16 * 1024 * 1024
+_HARD_MAX_INTERNAL_BYTES = 512 * 1024 * 1024
+
+# Plancher OPÉRATIONNEL, pas de sécurité : ces plafonds de lecture ne protègent
+# que si la SOURCE est déjà bornée sous eux (`engine.wrapper._max_result_json_bytes`
+# = 32 Mio pour `/capture`, `session_server._max_live_json_bytes` = 8 Mio pour
+# `/live`). Descendre le plafond de lecture SOUS le budget de la source rend le
+# refus structurel : la réponse dépasse à chaque appel, et la fonction devient
+# inaccessible pour le restant de la session. On le journalise plutôt que de
+# l'interdire — un exploitant peut avoir une raison de serrer, il doit serrer les
+# DEUX côtés. Cf. docs/DEPLOY-SECURITY.md §2.10.
+_SOURCE_BUDGET = {
+    "OCULAR_MAX_INTERNAL_CAPTURE_BYTES": 32 * 1024 * 1024 + 90 * 1024 * 1024,
+    "OCULAR_MAX_INTERNAL_JSON_BYTES": 8 * 1024 * 1024,
+}
+
+_log = logging.getLogger("ocular.internal_http")
 
 
 def _max_bytes(name: str, default: int) -> int:
-    """Ne lève jamais sur une valeur malformée (même règle qu'`ocular_settings`) ;
-    plancher 1 Kio pour qu'une coquille ne rende pas l'appel toujours refusé."""
-    try:
-        return max(1024, int(os.environ.get(name, str(default))))
-    except ValueError:
+    """Ne lève jamais sur une valeur malformée (même règle qu'`ocular_settings`)
+    mais ne substitue jamais EN SILENCE. Plancher 1 Kio, borne haute
+    `_HARD_MAX_INTERNAL_BYTES` : un plafond de lecture qu'on peut porter à
+    999999999999 n'est plus un plafond."""
+    raw = os.environ.get(name)
+    if raw is None:
         return default
+    try:
+        val = int(raw)
+    except ValueError:
+        _log.warning("%s=%r illisible — plafond laissé au défaut %d", name, raw, default)
+        return default
+    clamped = min(max(1024, val), _HARD_MAX_INTERNAL_BYTES)
+    if clamped != val:
+        _log.warning("%s=%d hors bornes [1024, %d] — plafond ramené à %d",
+                     name, val, _HARD_MAX_INTERNAL_BYTES, clamped)
+    budget = _SOURCE_BUDGET.get(name)
+    if budget is not None and clamped < budget:
+        _log.warning(
+            "%s=%d est SOUS le budget de la source (%d) : la réponse dépassera à "
+            "chaque appel et la fonction restera inaccessible — baisser aussi le "
+            "budget côté runner/session (cf. DEPLOY-SECURITY §2.10)",
+            name, clamped, budget,
+        )
+    return clamped
 
 
 def session_host(session_id: str) -> str:
