@@ -101,23 +101,60 @@ export function truncatedFields(entry) {
   return list;
 }
 
-export function truncatedBadge(el, entry, field) {
-  if (!truncatedFields(entry).includes(field)) return null;
-  return el('span.truncbadge', {
-    title: 'ce champ a été COUPÉ par un plafond anti-OOM — ce n\'est pas la '
-      + 'valeur émise par la page, la fin manque',
-  }, '✂ coupé');
+const TRUNC_TITLE = 'ce champ a été COUPÉ par un plafond anti-OOM — ce n\'est pas la '
+  + 'valeur émise par la page, la fin manque';
+
+// Marqueurs de coupe d'UNE entrée, DÉRIVÉS de `truncated_fields`.
+//
+// Le rendu ne part plus d'une liste de champs écrite ici : il part des noms que
+// l'entrée PORTE. `badge(field)` marque un champ que l'appelant affiche ;
+// `rest()` rend le complément — tout nom coupé qu'AUCUN rendu n'a réclamé.
+// Un champ que le moteur se met à couper demain atteint donc l'analyste sans
+// qu'aucun appelant n'ait à être modifié.
+//
+// CE QUE ÇA FERME, mesuré sur 651840c : `engine.wrapper._clip_field` peut
+// nommer `url`, `post_data`, `headers`, `text`, `title` et `final_url` ;
+// `grep -rn truncatedBadge web/ui/` ne rendait que trois appels — `url`,
+// `post_data`, `text`. Avec `dom.truncated_fields = ['title', 'final_url']`,
+// `detail.js` affichait `addRow('URL finale', dom.final_url)` SANS marqueur :
+// une URL d'atterrissage amputée avait exactement l'apparence d'une URL
+// entière. `headers`, lui, n'a même pas de ligne où se poser dans l'UI —
+// c'est `rest()` qui le porte.
+//
+// Sens de défaillance : `rest()` calcule le complément des champs RÉCLAMÉS au
+// moment où on l'appelle. Appelé trop tôt, il en nomme trop ; il ne peut pas en
+// taire. Un marqueur en trop se voit, un marqueur manquant ne se voit pas.
+export function truncationMarks(entry) {
+  const claimed = new Set();
+  const cut = truncatedFields(entry);
+  return {
+    badge(el, field) {
+      claimed.add(field);
+      if (!cut.includes(field)) return null;
+      return el('span.truncbadge', { title: TRUNC_TITLE }, '✂ coupé');
+    },
+    rest(el) {
+      const left = cut.filter((f) => !claimed.has(f)).sort();
+      if (!left.length) return null;
+      return el('span.truncbadge', {
+        title: TRUNC_TITLE + ' (champ non affiché ailleurs dans cette vue)',
+      }, '✂ coupé : ' + left.join(', '));
+    },
+  };
 }
 
 export function networkRow(el, n) {
+  const marks = truncationMarks(n);
   return el('tr', {}, [
     el('td', {}, n.method || ''),
     el('td', {}, n.status != null ? String(n.status) : '—'),
     el('td', {}, n.resource_type || ''),
     el('td', { title: n.url || '' }, [
       el('span', {}, n.url || ''),
-      truncatedBadge(el, n, 'url'),
-      truncatedBadge(el, n, 'post_data'),
+      marks.badge(el, 'url'),
+      marks.badge(el, 'post_data'),
+      // `headers` et tout champ coupé qui n'a pas de colonne ici.
+      marks.rest(el),
       n._count > 1 ? el('span.dupbadge', { title: n._count + ' occurrences' }, '×' + n._count) : null,
     ]),
   ]);
@@ -125,10 +162,12 @@ export function networkRow(el, n) {
 
 // Ligne console (niveau/texte + badge ×N). `esc` injecté (classe CSS du niveau).
 export function consoleLine(el, esc, c) {
+  const marks = truncationMarks(c);
   return el('div.consline', {}, [
     el('span', { class: 'lvl ' + esc(c.level || '') }, c.level || ''),
     el('span.ctext', {}, c.text || ''),
-    truncatedBadge(el, c, 'text'),
+    marks.badge(el, 'text'),
+    marks.rest(el),
     c._count > 1 ? el('span.dupbadge', { title: c._count + ' occurrences' }, '×' + c._count) : null,
   ]);
 }
@@ -169,21 +208,52 @@ export function exfilMailtoRow(el, mailto) {
 // Deux familles distinctes, jamais confondues dans le libellé : `*_dropped` =
 // des éléments ENTIERS manquent (preuve absente) ; `text_truncated` = les
 // éléments sont là mais un champ texte a été coupé.
-const TRUNCATION_LABELS = [
+//
+// Cette table est un DICTIONNAIRE DE LIBELLÉS, plus une liste de ce qui est
+// rendu : le bandeau parcourt les compteurs REÇUS (cf. `truncationNotice`).
+// Un compteur qui n'y figure pas est quand même annoncé, sous un libellé
+// dérivé de son nom. `/live` en produit désormais qui ne sont dans aucun
+// modèle : `_fit_live_payload` (runner_recon_vnc/session_server.py) délestre
+// toutes les listes du payload et nomme son compteur `<champ>_dropped` — donc
+// `forms_dropped` et `mailtos_dropped` aujourd'hui, d'autres demain.
+const TRUNCATION_LABELS = new Map([
   ['network_dropped', 'appels réseau non conservés'],
   ['console_dropped', 'messages console non conservés'],
   ['findings_dropped', 'détections non conservées'],
+  ['forms_dropped', 'formulaires non conservés'],
+  ['mailtos_dropped', 'cibles mailto non conservées'],
+  ['other_dropped', 'éléments non conservés (fenêtres sans compteur dédié)'],
   ['post_data_truncated', 'corps de requête coupés'],
   ['text_truncated', 'champs texte coupés'],
   ['html_chars_dropped', 'caractères de page non analysés'],
-];
+  ['over_cap_bytes', 'octets au-delà du plafond, que le délestage n\'a pas pu retirer'],
+]);
+
+// Libellé d'un compteur inconnu, dérivé de son NOM : `<quoi>_dropped` = des
+// éléments entiers manquent, `<quoi>_truncated` = des champs ont été coupés.
+// Le nom brut est conservé dans le libellé — c'est le vocabulaire du payload,
+// et il vaut mieux qu'un compteur affiché sous son nom technique qu'un
+// compteur tu.
+function truncationLabel(key) {
+  const known = TRUNCATION_LABELS.get(key);
+  if (known) return known;
+  if (key.endsWith('_dropped')) return `« ${key.slice(0, -8)} » non conservés`;
+  if (key.endsWith('_truncated')) return `« ${key.slice(0, -10)} » coupés`;
+  return `« ${key} »`;
+}
 
 export function truncationNotice(truncation) {
   if (!truncation || typeof truncation !== 'object') return null;
+  // Ordre : les compteurs connus d'abord, dans l'ordre du dictionnaire (stable
+  // d'un rendu à l'autre), puis les autres, triés. Ce qui est PARCOURU est la
+  // liste des clefs REÇUES : aucun compteur ne peut arriver sans être annoncé.
+  const received = Object.keys(truncation);
+  const known = [...TRUNCATION_LABELS.keys()].filter((k) => received.includes(k));
+  const unknown = received.filter((k) => !TRUNCATION_LABELS.has(k)).sort();
   const parts = [];
-  for (const [key, label] of TRUNCATION_LABELS) {
+  for (const key of [...known, ...unknown]) {
     const n = Number(truncation[key]) || 0;
-    if (n > 0) parts.push(`${n} ${label}`);
+    if (n > 0) parts.push(`${n} ${truncationLabel(key)}`);
   }
   if (!parts.length) return null;
   return `Résultat incomplet : ${parts.join(', ')} — les plafonds anti-OOM ont mordu.`;

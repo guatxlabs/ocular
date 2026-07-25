@@ -1,5 +1,5 @@
 import assert from 'node:assert';
-import { entryHost, entryMime, matchChip, filterEntries, dedupEntries, networkKey, consoleKey, truncationNotice } from '../web/ui/filter.js';
+import { entryHost, entryMime, matchChip, filterEntries, dedupEntries, networkKey, consoleKey, truncationNotice, truncationMarks, truncatedFields, networkRow, consoleLine } from '../web/ui/filter.js';
 
 const E = [
   { url: 'https://a.example.com/x.js', method:'GET', status:200, resource_type:'script', headers:{'content-type':'application/javascript; charset=utf-8'} },
@@ -83,5 +83,75 @@ assert.ok(n2.includes('7 champs texte coupés'), n2);
 assert.equal(truncationNotice({ network_dropped: 'beaucoup' }), null);
 assert.equal(truncationNotice({ network_dropped: -1 }), null);
 assert.equal(truncationNotice('tronqué'), null, 'non-objet -> pas de bandeau');
+
+// --- compteurs INCONNUS : le bandeau parcourt ce qu'il REÇOIT ---------------
+// `/live` produit des compteurs qui ne sont dans aucun modèle : son délestage
+// est dérivé de la structure du payload et nomme `<champ>_dropped` (cf.
+// runner_recon_vnc/session_server.py::_fit_live_payload). Un compteur que
+// personne n'a déclaré ici doit quand même atteindre l'analyste.
+const n3 = truncationNotice({ forms_dropped: 4, mailtos_dropped: 2 });
+assert.ok(n3.includes('4 formulaires non conservés'), n3);
+assert.ok(n3.includes('2 cibles mailto non conservées'), n3);
+// ... y compris sous un nom que ce dépôt n'a jamais écrit :
+const n4 = truncationNotice({ websockets_dropped: 9 });
+assert.ok(n4 && n4.includes('9') && n4.includes('websockets'), n4);
+const n5 = truncationNotice({ cookies_truncated: 5 });
+assert.ok(n5 && n5.includes('5') && n5.includes('cookies'), n5);
+// ... et un compteur au nom hors convention n'est pas tu non plus :
+const n6 = truncationNotice({ bizarre: 7 });
+assert.ok(n6 && n6.includes('7') && n6.includes('bizarre'), n6);
+// ordre stable : les compteurs connus d'abord, dans l'ordre du dictionnaire.
+const n7 = truncationNotice({ zzz_dropped: 1, network_dropped: 2, console_dropped: 3 });
+assert.ok(n7.indexOf('2 appels réseau') < n7.indexOf('3 messages console'), n7);
+assert.ok(n7.indexOf('3 messages console') < n7.indexOf('zzz'), n7);
+
+// --- marqueur PAR ENTRÉE : dérivé de `truncated_fields` ---------------------
+// Fabrique de nœuds minimale (filter.js ne dépend jamais du DOM : `el` est
+// injecté). On lit le texte rendu, pas les appels effectués.
+const mk = (tag, attrs = {}, kids = []) => {
+  const node = { tag, attrs, kids: (Array.isArray(kids) ? kids : [kids]).filter((k) => k != null) };
+  node.text = () => node.kids.map((k) => (typeof k === 'string' ? k : k.text())).join('');
+  return node;
+};
+
+// alias historique : le booléen seul vaut le nom du champ
+assert.deepEqual(truncatedFields({ post_data_truncated: true }), ['post_data']);
+assert.deepEqual(truncatedFields({}), []);
+
+// un champ RENDU porte son badge parce qu'il est nommé, pas parce qu'on l'a prévu
+const m1 = truncationMarks({ truncated_fields: ['url'] });
+assert.ok(m1.badge(mk, 'url'), 'champ nommé -> badge');
+assert.equal(m1.badge(mk, 'post_data'), null, 'champ non nommé -> pas de badge');
+assert.equal(m1.rest(mk), null, 'tous les champs coupés sont rendus -> pas de résidu');
+
+// un champ nommé qu'AUCUN rendu ne réclame sort par `rest()` — c'est le cas de
+// `headers` aujourd'hui, et de n'importe quel champ ajouté demain.
+const m2 = truncationMarks({ truncated_fields: ['url', 'headers'] });
+m2.badge(mk, 'url');
+const rest2 = m2.rest(mk);
+assert.ok(rest2 && rest2.text().includes('headers'), 'headers coupé et non rendu -> résidu muet');
+
+const m3 = truncationMarks({ truncated_fields: ['champ_jamais_vu_2027', 'autre_inconnu'] });
+const rest3 = m3.rest(mk);
+assert.ok(rest3.text().includes('champ_jamais_vu_2027') && rest3.text().includes('autre_inconnu'),
+  'un champ que ce dépôt ne connaît pas doit quand même être nommé');
+
+// sens de défaillance : appelé trop tôt, `rest()` en montre trop, jamais moins.
+const m4 = truncationMarks({ truncated_fields: ['url'] });
+assert.ok(m4.rest(mk).text().includes('url'));
+
+// la rangée réseau porte les deux : le badge des champs qu'elle affiche ET le
+// résidu de ceux qu'elle n'affiche pas.
+const row = networkRow(mk, { url: 'https://x/y', method: 'GET', status: 200,
+  resource_type: 'xhr', truncated_fields: ['url', 'headers'] });
+assert.ok(row.text().includes('✂ coupé'), 'rangée réseau sans marqueur');
+assert.ok(row.text().includes('headers'), 'rangée réseau : coupe de `headers` invisible');
+const rowClean = networkRow(mk, { url: 'https://x/y', method: 'GET', status: 200, resource_type: 'xhr' });
+assert.ok(!rowClean.text().includes('coupé'), 'entrée complète marquée à tort');
+
+const line = consoleLine(mk, (s) => s, { level: 'error', text: 'boum',
+  truncated_fields: ['text', 'location'] });
+assert.ok(line.text().includes('✂ coupé'), 'ligne console sans marqueur');
+assert.ok(line.text().includes('location'), 'ligne console : coupe de `location` invisible');
 
 console.log('filter_test OK');
