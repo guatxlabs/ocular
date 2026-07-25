@@ -16,6 +16,7 @@ import {
   buildFilterBar, dedupEntries, networkKey, consoleKey,
   CONSOLE_FIELD_DEFS, SEV_CLASS, VERDICT_CLASS,
   networkRow, consoleLine, exfilFormRow, exfilMailtoRow, truncationNotice,
+  truncationMarks,
 } from '../filter.js';
 import { triageBadgeText, triageDiverges, triageSignalRows, TRIAGE_BAND_LABEL } from '../triage.js';
 
@@ -612,10 +613,27 @@ function mount(app, id, src) {
     const artifacts = r.artifacts || {};
     const sec = el('div.detsec', {}, [el('h3', {}, 'DOM')]);
     const kv = el('dl.kvdetail');
-    const addRow = (k, v) => { kv.appendChild(el('dt', {}, k)); kv.appendChild(el('dd', {}, v == null || v === '' ? '—' : v)); };
-    addRow('Titre', dom.title);
-    addRow('URL finale', dom.final_url);
-    addRow('Chaîne de redirection', (dom.redirect_chain && dom.redirect_chain.length) ? dom.redirect_chain.join(' → ') : '—');
+    // Le marqueur suit le CHAMP, pas la ligne de code : chaque ligne déclare le
+    // champ du modèle qu'elle affiche, et `truncationMarks` décide s'il porte
+    // « ✂ coupé » à partir de `dom.truncated_fields`. Ce que le moteur coupe
+    // sans que rien ne l'affiche ici sort par `rest()`, ligne suivante — sans
+    // quoi une valeur amputée s'affiche avec l'apparence d'une valeur entière
+    // (mesuré : `truncated_fields = ['title', 'final_url']`, deux lignes sans
+    // le moindre signe).
+    const marks = truncationMarks(dom);
+    const addRow = (k, v, field) => {
+      const badge = field ? marks.badge(el, field) : null;
+      const shown = v == null || v === '' ? '—' : v;
+      kv.appendChild(el('dt', {}, k));
+      kv.appendChild(el('dd', {}, badge ? [el('span', {}, shown), badge] : shown));
+    };
+    addRow('Titre', dom.title, 'title');
+    addRow('URL finale', dom.final_url, 'final_url');
+    addRow('Chaîne de redirection',
+      (dom.redirect_chain && dom.redirect_chain.length) ? dom.redirect_chain.join(' → ') : '—',
+      'redirect_chain');
+    const restMark = marks.rest(el);
+    if (restMark) addRow('Champs coupés', restMark);
     const card = el('div.card', {}, [kv]);
     if (artifacts.dom_html_ref) {
       const dl = el('button.domdl', {
