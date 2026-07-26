@@ -180,12 +180,19 @@ def test_live_findings_cardinality_is_capped(live_client, monkeypatch):
 # --- 1 bis. le délestage porte sur TOUTES les fenêtres, pas sur trois noms ---
 
 def _hostile_payload() -> dict:
-    """Charge hostile qui exerce LES DEUX NATURES de volume variable du payload —
-    des listes ET des chaînes, y compris sous un dictionnaire. Trois de ces
-    fenêtres ne sont nommées NULLE PART dans le code de production
-    (`fenetre_inventee_2027`, `titre_invente_2027`, `meta.description`) : si la
-    garde redevient une liste de noms — ou une liste de FORMES, ce qu'elle était
-    encore — elles survivent au plafond et le test le dit."""
+    """Charge hostile qui exerce LES TROIS NATURES de volume variable du payload,
+    et les deux MOITIÉS d'un objet. Quatre de ces fenêtres ne sont nommées NULLE
+    PART dans le code de production (`fenetre_inventee_2027`, `titre_invente_2027`,
+    `tuple_invente_2027`, `meta`) : si la garde redevient une liste de noms — ou
+    de FORMES, ce qu'elle était encore (`list, str`) — elles survivent au plafond
+    et le test le dit.
+
+    L'objet `meta` porte le défaut FERMÉ ce tour-ci : une CLEF de 300 000
+    caractères dictée par la page, aussi grosse que la valeur voisine. Descendre
+    dans les valeurs la laissait dans la charpente ; bornée comme un tout
+    (clef+valeur, cf. `engine.wrapper._clip_mapping`), la réponse rétrécit au lieu
+    de doubler. Et `tuple_invente_2027` est un TABLEAU JSON qui traversait
+    `isinstance(value, list)`."""
     return {
         "network": [{"url": "u" * 1000} for _ in range(300)],
         "console": [{"text": "c" * 1000} for _ in range(300)],
@@ -193,9 +200,14 @@ def _hostile_payload() -> dict:
         "forms": [{"action": "a" * 500, "method": "POST"} for _ in range(100)],
         "mailtos": ["m" * 320 for _ in range(100)],
         "fenetre_inventee_2027": ["z" * 1000 for _ in range(300)],
-        # NATURE VOISINE, celle qui traversait : une chaîne dictée par la page.
+        # NATURE VOISINE, celle qui traversait d'abord : une chaîne dictée par la page.
         "titre_invente_2027": "T" * 300_000,
-        "meta": {"description": "D" * 300_000, "generator": "x" * 200_000},
+        # UN TABLEAU JSON qui n'est pas une `list` Python : la garde `list, str`
+        # le manquait, `json.dumps` le rend pourtant comme un tableau.
+        "tuple_invente_2027": tuple("g" * 1000 for _ in range(300)),
+        # UN OBJET dicté par la page sur SES DEUX MOITIÉS : une valeur énorme ET
+        # une clef énorme. La clef traversait la garde (elle restait charpente).
+        "meta": {"description": "D" * 300_000, "N" * 300_000: "x"},
         "counts": {"network": 300, "findings": 300, "console": 300},
         "truncation": Truncation().model_dump(mode="json"),
         "analysis_stale": False,
@@ -203,29 +215,33 @@ def _hostile_payload() -> dict:
     }
 
 
-def _windows_of(payload: dict, path: tuple = ()) -> dict:
-    """Taille de CHAQUE fenêtre de volume variable, par chemin — engendrée depuis
-    la structure du payload, pas depuis une liste écrite à la main."""
-    out = {}
-    for key, value in payload.items():
-        if isinstance(value, dict):
-            out.update(_windows_of(value, path + (key,)))
-        elif isinstance(value, (list, str)):
-            out[".".join(path + (key,))] = len(value)
-    return out
+def _windows_of(payload: dict) -> dict:
+    """Taille de CHAQUE fenêtre de volume variable — engendrée depuis la structure
+    du payload comme `_variable_windows`, et comme elle sans DESCENDRE dans un
+    objet : un objet est mesuré par son NOMBRE DE PAIRES (clef+valeur bornées
+    ensemble), une chaîne par ses caractères, un tableau — `list` ou `tuple` —
+    par ses éléments."""
+    return {
+        key: len(value)
+        for key, value in payload.items()
+        if isinstance(value, (str, list, tuple, dict))
+    }
 
 
 @pytest.mark.parametrize("cap", [1024, 65536, 262144, 1024 * 1024])
 def test_every_variable_volume_window_is_bounded_and_says_what_it_lost(cap):
-    """La propriété, pour les DEUX natures : la réponse repasse sous le plafond,
-    et TOUTE fenêtre réduite dit EXACTEMENT ce qu'elle a perdu.
+    """La propriété, pour les TROIS natures ET les deux moitiés d'un objet : la
+    réponse repasse sous le plafond, et TOUTE fenêtre réduite dit EXACTEMENT ce
+    qu'elle a perdu.
 
-    Mesuré sur 5d37457 : la garde ne rendait que `isinstance(value, list)`, donc
-    une clef scalaire dictée par la page la traversait — corps `/live` de
-    20 000 374 octets pour un budget de 8 388 608, 502 à chaque poll, AU DÉFAUT.
-    Le comptage est vérifié à l'élément près : « délesté sans le dire » est le
-    défaut d'origine, et un compteur approximatif le rouvrirait à moitié."""
-    avant = _windows_of(_hostile_payload())
+    Mesuré sur 28ddf1c : la garde rendait `isinstance(value, (list, str))` et
+    descendait les objets, donc une CLEF scalaire dictée par la page (comme un
+    `tuple`) la traversait — corps `/live` de 40 000 422 octets pour un budget de
+    8 388 608, il DOUBLAIT, 502 à chaque poll, AU DÉFAUT. Le comptage est vérifié
+    à l'unité près : « délesté sans le dire » est le défaut d'origine, et un
+    compteur approximatif le rouvrirait à moitié."""
+    src = _hostile_payload()
+    avant = _windows_of(src)
     fitted = ss._fit_live_payload(_hostile_payload(), cap)
     apres = _windows_of({k: v for k, v in fitted.items() if k != "truncation"})
 
@@ -235,11 +251,12 @@ def test_every_variable_volume_window_is_bounded_and_says_what_it_lost(cap):
         f"échappe à la garde"
     )
     for chemin, taille in avant.items():
-        if chemin.startswith("truncation"):
+        if chemin == "truncation":
             continue
         perdu = taille - apres[chemin]
-        suffixe = "_chars_dropped" if isinstance(
-            _hostile_payload().get(chemin.split(".")[0]), (str, dict)) else "_dropped"
+        # `str` -> caractères coupés ; `list`/`tuple`/`dict` -> unités retirées
+        # (éléments ou paires). Dérivé de la NATURE, pas d'un nom écrit.
+        suffixe = "_chars_dropped" if isinstance(src[chemin], str) else "_dropped"
         annonce = fitted["truncation"].get(chemin + suffixe, 0)
         assert annonce == perdu, (
             f"cap={cap} : `{chemin}` a perdu {perdu} et en annonce {annonce} — "
@@ -254,6 +271,42 @@ def test_a_window_that_fits_is_left_intact():
     fitted = ss._fit_live_payload(_hostile_payload(), 512 * 1024)
     assert fitted["verdict"] == "benign"
     assert fitted["counts"]["network"] == 300, "un compteur n'est pas une fenêtre"
+
+
+def test_a_page_dictated_object_key_cannot_double_the_response():
+    """Le défaut FERMÉ ce tour-ci, isolé. Une CLEF d'objet dictée par la page —
+    `<meta name="AAA…20 Mio">` — restait dans la charpente : `/live` rendait
+    40 000 422 octets (il DOUBLAIT) pour un budget de 8 388 608, 502 permanent AU
+    DÉFAUT. Elle emportait `verdict` avec elle : la charpente seule dépassait le
+    plafond, toutes les parts tombaient à zéro, et la chaîne de 6 caractères
+    dictée par le CODE était amputée aussi complètement que la masse de la page.
+
+    Bornée comme un tout (clef+valeur, `_clip_mapping`), la réponse RÉTRÉCIT au
+    lieu de doubler, `verdict` survit, et un `tuple` — un tableau JSON qui n'est
+    pas une `list` — est réduit comme une liste."""
+    cap = 8 * 1024 * 1024
+    for nom, fenetre in (
+        ("clef géante", {"A" * 20_000_000: "x"}),
+        ("valeur géante", {"description": "D" * 20_000_000}),
+        ("tuple géant", None),
+    ):
+        payload = {
+            "network": [], "console": [], "findings": [], "forms": [], "mailtos": [],
+            "counts": {"network": 0, "findings": 0, "console": 0},
+            "truncation": Truncation().model_dump(mode="json"),
+            "analysis_stale": False, "verdict": "benign",
+        }
+        payload["fen"] = (
+            tuple("z" * 1000 for _ in range(20_000)) if fenetre is None else fenetre
+        )
+        avant = len(json.dumps(payload))
+        fitted = ss._fit_live_payload(payload, cap)
+        apres = len(json.dumps(fitted))
+        assert apres <= cap, f"{nom} : réponse de {apres} octets (avant {avant}) — le refus permanent est de retour"
+        assert fitted["verdict"] == "benign", (
+            f"{nom} : `verdict` amputé — la charpente dictée par la page a écrasé "
+            f"la chaîne dictée par le CODE"
+        )
 
 
 def test_the_live_response_stays_under_its_budget_whatever_the_page_emits(live_client, monkeypatch):

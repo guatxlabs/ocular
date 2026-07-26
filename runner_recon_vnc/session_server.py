@@ -557,40 +557,44 @@ def _max_live_json_bytes() -> int:
 
 
 def _variable_windows(
-    payload: dict[str, Any], path: tuple[str, ...] = (),
-) -> list[tuple[dict[str, Any], str, tuple[str, ...]]]:
+    payload: dict[str, Any],
+) -> list[tuple[dict[str, Any], str]]:
     """Fenêtres de VOLUME VARIABLE du payload `/live`, LUES SUR LA STRUCTURE :
     toute valeur dont la taille sérialisée n'est pas bornée par sa NATURE. Aucun
     nom de champ n'est écrit ici.
 
-    DEUX natures, parce que JSON n'en a que deux qui varient avec ce que la page
-    émet : une LISTE (on en retire des éléments) et une CHAÎNE (on la coupe). Un
-    dictionnaire est descendu — ses valeurs retombent dans les mêmes deux
-    natures. Un entier, un booléen, `null` : la nature les borne, ils ne peuvent
-    pas grandir avec la page. L'ensemble des natures JSON est CLOS par le format,
-    contrairement à un ensemble de noms de champs : c'est ce qui rend cette
-    énumération-ci légitime là où celle des noms ne l'était pas.
+    TROIS natures que JSON laisse varier avec ce que la page émet, et TROIS
+    seulement — l'ensemble est CLOS par le format, contrairement à un ensemble de
+    noms de champs : c'est ce qui rend cette énumération-ci légitime là où celle
+    des noms ne l'était pas.
 
-    CE QUE ÇA FERME, et c'est le troisième déplacement du même défaut :
-    la version précédente ne rendait que `isinstance(value, list)`. Une clef
-    SCALAIRE dictée par la page — la plus évidente étant `dom.title`, que le tier
-    voisin `/capture` porte déjà — la traversait. Mesuré sur 5d37457, en
-    configuration PAR DÉFAUT, page portant un `<title>` de 20 000 000 de
-    caractères : corps `/live` de 20 000 374 octets pour un budget de 8 388 608,
-    donc 502 aux polls 1, 2 et 3 — le refus PERMANENT était de retour, au défaut,
-    et la suite restait verte parce que la page hostile du test ne contenait que
-    des listes.
+      - une CHAÎNE (`str`) : on la coupe en octets ;
+      - un TABLEAU JSON, qu'il vienne d'une `list` OU d'un `tuple` Python : on en
+        retire des éléments. `json.dumps` rend les deux comme un tableau, donc
+        les deux grandissent identiquement avec la page — le tampon Python est
+        indifférent, et un `tuple` traversait la garde `isinstance(value, list)` ;
+      - un OBJET JSON (`dict`) : ses CLEFS AUTANT que ses valeurs sont dictées
+        par la page — une balise `<meta name="…">` dicte le nom autant que le
+        contenu. On le borne comme un TOUT, sur clef+valeur, en retirant des
+        paires : exactement la règle que `engine.wrapper._clip_mapping` applique
+        déjà à `NetworkEntry.headers`. C'est son pendant dans le chemin `/live`.
 
-    On ne descend PAS dans les éléments d'une liste : la masse d'une liste se
-    réduit en retirant des éléments, et c'est compté comme tel. Deux leviers sur
-    la même masse compteraient deux fois la même perte."""
-    out: list[tuple[dict[str, Any], str, tuple[str, ...]]] = []
-    for key, value in payload.items():
-        if isinstance(value, dict):
-            out.extend(_variable_windows(value, path + (key,)))
-        elif isinstance(value, (list, str)):
-            out.append((payload, key, path + (key,)))
-    return out
+    Un entier, un booléen, `null` : la nature les borne, ils ne peuvent pas
+    grandir avec la page.
+
+    On ne DESCEND PAS dans un objet pour en réduire les valeurs une à une : la
+    CLEF échapperait alors à la borne — elle resterait dans la charpente, dictée
+    par la page. Mesuré sur 28ddf1c, en configuration PAR DÉFAUT, page portant un
+    `<meta name="AAA…20 000 000">` : corps `/live` de 40 000 422 octets (il
+    DOUBLAIT) pour un budget de 8 388 608, donc 502 aux polls 1, 2 et 3 — le refus
+    PERMANENT était de retour, au défaut, et la suite restait verte parce que la
+    page hostile du test n'exerçait que des VALEURS, jamais une clef ni un tuple.
+    Une paire est bornée sur ses deux moitiés à la fois, ou pas du tout."""
+    return [
+        (payload, key)
+        for key, value in payload.items()
+        if isinstance(value, (str, list, tuple, dict))
+    ]
 
 
 def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
@@ -632,10 +636,10 @@ def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
         size = len(json.dumps(payload))
         if size <= cap:
             return payload
-        fenetres = [(owner, key, chemin)
-                    for owner, key, chemin in _variable_windows(payload)
-                    if owner is not truncation]   # les compteurs ne sont pas une fenêtre
-        couts = [len(json.dumps(owner[key])) for owner, key, _ in fenetres]
+        fenetres = [(owner, key)
+                    for owner, key in _variable_windows(payload)
+                    if owner[key] is not truncation]   # les compteurs ne sont pas une fenêtre
+        couts = [len(json.dumps(owner[key])) for owner, key in fenetres]
         # Budget des fenêtres = le plafond moins la charpente (clefs, compteurs,
         # scalaires bornés). Marge de 10 % : converge en un ou deux tours.
         allouable = max(0.0, (cap - (size - sum(couts))) * 0.9)
@@ -647,16 +651,35 @@ def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
             reste -= part
             restantes -= 1
         reduit = 0
-        for rang, (owner, key, chemin) in enumerate(fenetres):
-            value, cout = owner[key], couts[rang]
-            kept = int(len(value) * parts[rang] / cout) if cout else 0
-            if kept >= len(value):
-                continue
-            perdu = len(value) - kept
-            suffixe = "_dropped" if isinstance(value, list) else "_chars_dropped"
-            counter = ".".join(chemin) + suffixe
-            truncation[counter] = truncation.get(counter, 0) + perdu
-            owner[key] = value[:kept]
+        for rang, (owner, key) in enumerate(fenetres):
+            value, cout, part = owner[key], couts[rang], parts[rang]
+            if isinstance(value, dict):
+                # Objet JSON : on retient les premières paires tant que clef+valeur
+                # tient dans la part (règle `_clip_mapping`), et on retire les
+                # autres. La clef géante est ainsi dans la fenêtre, pas dans la
+                # charpente — elle rétrécit au lieu de doubler la réponse.
+                kept: dict[Any, Any] = {}
+                used = 0
+                for k, v in value.items():
+                    cout_paire = len(json.dumps(k)) + len(json.dumps(v))
+                    if used + cout_paire > part:
+                        break
+                    kept[k] = v
+                    used += cout_paire
+                perdu = len(value) - len(kept)
+                if not perdu:
+                    continue
+                owner[key], suffixe = kept, "_dropped"
+            else:
+                # Chaîne (octets coupés) ou tableau — `list` ou `tuple` : `[:n]`
+                # rend le même type, donc un tuple est réduit comme une liste.
+                n = int(len(value) * part / cout) if cout else 0
+                if n >= len(value):
+                    continue
+                perdu = len(value) - n
+                owner[key] = value[:n]
+                suffixe = "_chars_dropped" if isinstance(value, str) else "_dropped"
+            truncation[key + suffixe] = truncation.get(key + suffixe, 0) + perdu
             reduit += perdu
         if not reduit:
             return payload
