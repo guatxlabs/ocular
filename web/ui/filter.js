@@ -230,13 +230,17 @@ const TRUNCATION_LABELS = new Map([
 ]);
 
 // Libellé d'un compteur inconnu, dérivé de son NOM : `<quoi>_dropped` = des
-// éléments entiers manquent, `<quoi>_truncated` = des champs ont été coupés.
-// Le nom brut est conservé dans le libellé — c'est le vocabulaire du payload,
-// et il vaut mieux qu'un compteur affiché sous son nom technique qu'un
-// compteur tu.
+// éléments entiers manquent, `<quoi>_truncated` = des champs ont été coupés,
+// `<quoi>_chars_dropped` = une CHAÎNE a été coupée et voici de combien (les
+// deux natures de volume variable du payload `/live` : une liste se déleste,
+// une chaîne se coupe). Le suffixe le plus long est reconnu d'abord, sans quoi
+// `_chars_dropped` se lirait comme un `_dropped`. Le nom brut est conservé dans
+// le libellé — c'est le vocabulaire du payload, et il vaut mieux un compteur
+// affiché sous son nom technique qu'un compteur tu.
 function truncationLabel(key) {
   const known = TRUNCATION_LABELS.get(key);
   if (known) return known;
+  if (key.endsWith('_chars_dropped')) return `caractères coupés dans « ${key.slice(0, -14)} »`;
   if (key.endsWith('_dropped')) return `« ${key.slice(0, -8)} » non conservés`;
   if (key.endsWith('_truncated')) return `« ${key.slice(0, -10)} » coupés`;
   return `« ${key} »`;

@@ -445,6 +445,43 @@ def _analyze_dom(dom: str) -> dict[str, Any]:
 # N=1 -> 1/1 servi ; N=2 -> 2/2 ; N=4 -> 0/4 ; N=20 -> 0/20 (toutes en 502).
 _LIVE_INFLIGHT: dict[str, "asyncio.Future[dict[str, Any]]"] = {}
 
+# LA PLACE UNIQUE DU TRAVAIL COÛTEUX, pour TOUT le conteneur. `_LIVE_INFLIGHT`
+# borne les analyses de `/live` ; il ne bornait pas l'AUTRE porte du même
+# balayage — `build_capture_result` appelle `scan_html` + `extract_forms` +
+# `extract_mailtos`, et `/capture` l'appelait EN LIGNE dans sa coroutine, donc
+# sans threadpool et sans borne. Mesuré sur 5d37457 (uvicorn + le vrai client
+# interne et son échéance de 5,0 s, page de 512 Kio de contenu hostile) :
+#   1 /capture concurrent -> polls /live servis 4/4 (pire latence 3 960 ms)
+#   6 /capture concurrents -> polls /live servis 0/4, tous en 502 « timed out »
+# Le symptôme opérationnel fermé côté `/live` était donc reproductible par une
+# route du même fichier.
+#
+# Toute analyse coûteuse passe désormais par `_bounded_scan` : une à la fois,
+# toujours hors de la boucle d'évènements. Un appelant ajouté demain hérite de la
+# borne, et une garde dérivée d'`engine.static` refuse tout balayage qui
+# court-circuiterait ce passage (tests/test_session_server_capture_bounds.py).
+_SCAN_SLOT = asyncio.Lock()
+
+
+async def _bounded_scan(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """SEUL chemin d'exécution d'un balayage de document. Déporte hors de la
+    boucle (`run_in_threadpool`) ET sérialise (`_SCAN_SLOT`) : sans la seconde,
+    N appels concurrents redeviennent N balayages que le GIL sérialise de toute
+    façon, avec une latence qui croît avec N jusqu'à franchir l'échéance du
+    client."""
+    async with _SCAN_SLOT:
+        return await run_in_threadpool(fn, *args, **kwargs)
+
+
+def _no_analysis() -> dict[str, Any]:
+    """Analyse VIDE, rendue quand la place unique est tenue par un balayage qui
+    n'est pas une analyse live (une `/capture`) et qu'aucune analyse n'est encore
+    connue. Toujours accompagnée de `analysis_stale=True` : le panneau dit qu'il
+    ne montre pas le DOM de ce tour, au lieu d'attendre son tour et de franchir
+    l'échéance du client."""
+    return {"findings": [], "findings_dropped": 0, "html_chars_dropped": 0,
+            "forms": [], "mailtos": [], "verdict": compute_verdict([])}
+
 
 async def _live_analysis(dom: str) -> tuple[dict[str, Any], bool]:
     """`_analyze_dom` mémoïsé sur `sha256(dom)`, déporté hors de la boucle, à UNE
@@ -468,21 +505,25 @@ async def _live_analysis(dom: str) -> tuple[dict[str, Any], bool]:
         # `shield` : un appelant qui abandonne (poll annulé, client parti) ne doit
         # pas annuler l'analyse partagée par les autres.
         return await asyncio.shield(inflight), False
-    if _LIVE_INFLIGHT:
-        # La place unique est prise par l'analyse d'un AUTRE DOM. Aucun `await`
-        # ne sépare ce test de la prise de place ci-dessous : deux polls ne
-        # peuvent pas la prendre tous les deux.
+    if _SCAN_SLOT.locked():
+        # La place unique est prise — par l'analyse d'un AUTRE DOM, ou par une
+        # `/capture`. Aucun `await` ne sépare ce test de la prise de place
+        # ci-dessous : deux polls ne peuvent pas la prendre tous les deux.
         last = next(iter(_LIVE_ANALYSIS.values()), None)
         if last is not None:
             return last, True
-        # Premier tour de la session : rien de connu à servir. On attend
-        # l'analyse déjà lancée plutôt que d'en lancer une seconde.
-        other = next(iter(_LIVE_INFLIGHT.values()))
+        # Premier tour de la session : rien de connu à servir. Si une analyse
+        # live est déjà lancée, on l'attend plutôt que d'en lancer une seconde ;
+        # si la place est tenue par une `/capture`, on rend une analyse vide
+        # DITE périmée plutôt que d'attendre la fin d'un balayage complet.
+        other = next(iter(_LIVE_INFLIGHT.values()), None)
+        if other is None:
+            return _no_analysis(), True
         return await asyncio.shield(other), True
     future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     _LIVE_INFLIGHT[digest] = future
     try:
-        analysis = await run_in_threadpool(_analyze_dom, dom)
+        analysis = await _bounded_scan(_analyze_dom, dom)
     except BaseException as exc:
         if not future.done():
             future.set_exception(exc)
@@ -515,66 +556,109 @@ def _max_live_json_bytes() -> int:
     return source_budget("live")
 
 
-def _sheddable_windows(payload: dict[str, Any]) -> list[str]:
-    """Fenêtres délestables du payload `/live`, LUES SUR LA STRUCTURE : toute
-    valeur de type liste. Aucun nom de champ n'est écrit ici.
+def _variable_windows(
+    payload: dict[str, Any], path: tuple[str, ...] = (),
+) -> list[tuple[dict[str, Any], str, tuple[str, ...]]]:
+    """Fenêtres de VOLUME VARIABLE du payload `/live`, LUES SUR LA STRUCTURE :
+    toute valeur dont la taille sérialisée n'est pas bornée par sa NATURE. Aucun
+    nom de champ n'est écrit ici.
 
-    C'est la différence avec la version précédente, et c'est tout le sujet :
-    elle bouclait sur le tuple littéral `(("console",…),("network",…),
-    ("findings",…))` et laissait donc `forms` et `mailtos` — deux listes du même
-    payload, 100 % dictées par la page — hors du délestage. Mesuré sur 651840c,
-    page de 120 `<form action="<500 octets nuls>">` + 120 `mailto:` (les
-    plafonds d'extraction en retiennent 100 de chaque) : réponse de 490 631
-    octets, `truncation` à zéro (donc annoncée COMPLÈTE) aux plafonds 1 024,
-    65 536 et 262 144 ; et bout en bout avec
-    `OCULAR_MAX_INTERNAL_JSON_BYTES=262144` (un RESSERREMENT, opération que le
-    code approuve), 0 poll servi sur 3, tous en 502.
+    DEUX natures, parce que JSON n'en a que deux qui varient avec ce que la page
+    émet : une LISTE (on en retire des éléments) et une CHAÎNE (on la coupe). Un
+    dictionnaire est descendu — ses valeurs retombent dans les mêmes deux
+    natures. Un entier, un booléen, `null` : la nature les borne, ils ne peuvent
+    pas grandir avec la page. L'ensemble des natures JSON est CLOS par le format,
+    contrairement à un ensemble de noms de champs : c'est ce qui rend cette
+    énumération-ci légitime là où celle des noms ne l'était pas.
 
-    Un champ de volume variable ajouté demain au payload est délesté sans que
-    personne n'ait à relire cette fonction. Ce qui n'est pas une liste ne varie
-    pas avec ce que la page émet : `counts` a autant de clefs que le payload a
-    de listes, `truncation` autant que de compteurs, `verdict` est un mot. La
-    propriété est vérifiée en bout de chaîne, sur la réponse réelle et pour des
-    formes que cette fonction ne connaît pas, par
-    tests/test_session_server_live_bounds.py."""
-    return [key for key, value in payload.items() if isinstance(value, list)]
+    CE QUE ÇA FERME, et c'est le troisième déplacement du même défaut :
+    la version précédente ne rendait que `isinstance(value, list)`. Une clef
+    SCALAIRE dictée par la page — la plus évidente étant `dom.title`, que le tier
+    voisin `/capture` porte déjà — la traversait. Mesuré sur 5d37457, en
+    configuration PAR DÉFAUT, page portant un `<title>` de 20 000 000 de
+    caractères : corps `/live` de 20 000 374 octets pour un budget de 8 388 608,
+    donc 502 aux polls 1, 2 et 3 — le refus PERMANENT était de retour, au défaut,
+    et la suite restait verte parce que la page hostile du test ne contenait que
+    des listes.
+
+    On ne descend PAS dans les éléments d'une liste : la masse d'une liste se
+    réduit en retirant des éléments, et c'est compté comme tel. Deux leviers sur
+    la même masse compteraient deux fois la même perte."""
+    out: list[tuple[dict[str, Any], str, tuple[str, ...]]] = []
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            out.extend(_variable_windows(value, path + (key,)))
+        elif isinstance(value, (list, str)):
+            out.append((payload, key, path + (key,)))
+    return out
 
 
 def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
-    """Ramène la réponse `/live` sérialisée sous `cap` octets en délestant TOUTES
-    ses fenêtres (cf. `_sheddable_windows`) et en COMPTANT tout dans
-    `truncation`, sous un compteur DÉRIVÉ du nom du champ (`<champ>_dropped`) :
-    les trois compteurs du modèle (`network_dropped`, `console_dropped`,
-    `findings_dropped`) sont ceux de ses trois premières listes, un champ ajouté
-    apporte le sien. Côté UI, `truncationNotice` (web/ui/filter.js) énumère les
-    compteurs REÇUS et non une liste écrite d'avance : un compteur neuf atteint
-    l'analyste sans passer par personne.
+    """Ramène la réponse `/live` sérialisée sous `cap` octets en réduisant TOUTES
+    ses fenêtres de volume variable (cf. `_variable_windows`) et en COMPTANT tout
+    dans `truncation`, sous un compteur DÉRIVÉ du nom du champ ET de sa nature :
+
+      - liste  -> `<champ>_dropped`, le nombre d'ÉLÉMENTS retirés. Les trois
+        compteurs du modèle (`network_dropped`, `console_dropped`,
+        `findings_dropped`) sont ceux de ses trois premières listes ;
+      - chaîne -> `<champ>_chars_dropped`, le nombre de CARACTÈRES coupés — même
+        vocabulaire que `html_chars_dropped` dans le modèle.
+
+    Côté UI, `truncationNotice` (web/ui/filter.js) énumère les compteurs REÇUS et
+    non une liste écrite d'avance, et dérive leur libellé du SUFFIXE : un
+    compteur neuf atteint l'analyste sans passer par personne.
 
     Mesure avec `json.dumps` par défaut (`ensure_ascii=True`) : Starlette
     sérialise en `ensure_ascii=False`, toujours plus compact, donc la mesure est
     pessimiste — jamais optimiste.
 
-    TERMINAISON, sans compteur de tours : tant que la réponse dépasse `cap`, le
-    ratio vaut `(cap/size) * 0.9`, donc STRICTEMENT moins de 1 — chaque passe
-    retire donc au moins une entrée de chaque liste non vide. Le nombre
-    d'entrées est fini et décroît strictement : la boucle s'arrête, soit sous le
-    plafond, soit quand il n'y a plus rien à délester."""
+    PARTAGE ÉQUITABLE plutôt que ratio uniforme. Un même ratio appliqué à toutes
+    les fenêtres ampute une chaîne de 9 caractères dictée par le CODE
+    (`verdict`) autant, en proportion, que la liste de 9 Mio dictée par la PAGE
+    qui fait déborder la réponse. Chaque fenêtre reçoit donc une PART du budget
+    (partage max-min : qui tient sous sa part garde tout, et libère son reste
+    pour les autres) — seules les fenêtres qui débordent réellement sont
+    réduites, et elles le sont d'autant plus qu'elles pèsent.
+
+    TERMINAISON, sans compteur de tours : tant que la réponse dépasse `cap`, la
+    part de la fenêtre la plus lourde est STRICTEMENT inférieure à son coût
+    (marge de 10 %), donc chaque passe lui retire au moins un élément ou un
+    caractère. La masse variable est finie et décroît strictement : la boucle
+    s'arrête, soit sous le plafond, soit quand il n'y a plus rien à réduire (il
+    ne reste alors que la charpente du payload, dictée par le CODE et non par la
+    page)."""
     truncation = payload.setdefault("truncation", {})
     while True:
         size = len(json.dumps(payload))
         if size <= cap:
             return payload
-        ratio = max(0.0, (cap / size) * 0.9)
-        shed = 0
-        for key in _sheddable_windows(payload):
-            entries = payload[key]
-            kept = int(len(entries) * ratio)
-            if kept < len(entries):
-                counter = f"{key}_dropped"
-                truncation[counter] = truncation.get(counter, 0) + len(entries) - kept
-                payload[key] = entries[:kept]
-                shed += len(entries) - kept
-        if not shed:
+        fenetres = [(owner, key, chemin)
+                    for owner, key, chemin in _variable_windows(payload)
+                    if owner is not truncation]   # les compteurs ne sont pas une fenêtre
+        couts = [len(json.dumps(owner[key])) for owner, key, _ in fenetres]
+        # Budget des fenêtres = le plafond moins la charpente (clefs, compteurs,
+        # scalaires bornés). Marge de 10 % : converge en un ou deux tours.
+        allouable = max(0.0, (cap - (size - sum(couts))) * 0.9)
+        parts: dict[int, float] = {}
+        reste, restantes = allouable, len(fenetres)
+        for rang in sorted(range(len(fenetres)), key=lambda i: couts[i]):
+            part = min(couts[rang], reste / restantes) if restantes else 0.0
+            parts[rang] = part
+            reste -= part
+            restantes -= 1
+        reduit = 0
+        for rang, (owner, key, chemin) in enumerate(fenetres):
+            value, cout = owner[key], couts[rang]
+            kept = int(len(value) * parts[rang] / cout) if cout else 0
+            if kept >= len(value):
+                continue
+            perdu = len(value) - kept
+            suffixe = "_dropped" if isinstance(value, list) else "_chars_dropped"
+            counter = ".".join(chemin) + suffixe
+            truncation[counter] = truncation.get(counter, 0) + perdu
+            owner[key] = value[:kept]
+            reduit += perdu
+        if not reduit:
             return payload
 
 
@@ -698,7 +782,12 @@ async def capture(body: dict[str, Any]) -> dict[str, Any]:
     else:
         turnstile_solved, challenge = None, None
 
-    result, blobs = build_capture_result(
+    # MÊME PLACE UNIQUE que `/live` : `build_capture_result` balaye le document
+    # entier (`scan_html` + `extract_forms` + `extract_mailtos`). Appelé en ligne,
+    # il tenait la boucle d'évènements pendant tout le balayage et N `/capture`
+    # concurrentes affamaient le panneau live (mesuré : 6 -> 0/4 poll servi).
+    result, blobs = await _bounded_scan(
+        build_capture_result,
         target=_state["target"] or "",
         kind=_state["kind"] or "url",
         png=png,
