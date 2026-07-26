@@ -97,6 +97,14 @@ const n4 = truncationNotice({ websockets_dropped: 9 });
 assert.ok(n4 && n4.includes('9') && n4.includes('websockets'), n4);
 const n5 = truncationNotice({ cookies_truncated: 5 });
 assert.ok(n5 && n5.includes('5') && n5.includes('cookies'), n5);
+// ... et pour la NATURE VOISINE : `/live` coupe aussi les CHAÎNES du payload
+// (une clef scalaire dictée par la page traversait la garde), et le compteur
+// dit de combien de caractères. Le suffixe long doit primer sur `_dropped`,
+// sinon la coupe se lit « titre_chars non conservés ».
+const n5b = truncationNotice({ 'meta.description_chars_dropped': 41 });
+assert.ok(n5b && n5b.includes('41') && n5b.includes('caractères')
+          && n5b.includes('meta.description'), n5b);
+assert.ok(!n5b.includes('_chars'), `le suffixe doit être consommé, pas affiché : ${n5b}`);
 // ... et un compteur au nom hors convention n'est pas tu non plus :
 const n6 = truncationNotice({ bizarre: 7 });
 assert.ok(n6 && n6.includes('7') && n6.includes('bizarre'), n6);

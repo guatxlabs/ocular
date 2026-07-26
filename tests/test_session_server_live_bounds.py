@@ -179,42 +179,81 @@ def test_live_findings_cardinality_is_capped(live_client, monkeypatch):
 
 # --- 1 bis. le délestage porte sur TOUTES les fenêtres, pas sur trois noms ---
 
-def test_every_variable_volume_window_is_shed_including_ones_never_named():
-    """Le délestage bouclait sur le tuple littéral (console, network, findings)
-    et laissait `forms` et `mailtos` — deux listes du même payload, 100 %
-    dictées par la page — hors de son champ. Mesuré sur 651840c : réponse de
-    490 631 octets, `truncation` à ZÉRO donc annoncée COMPLÈTE, aux plafonds
-    1 024, 65 536 et 262 144.
-
-    LA MUTATION QUI COMPTE est dans ce test : `fenetre_inventee_2027` n'est
-    nommée nulle part dans le code de production. Si le délestage redevient une
-    liste de noms, ce champ (et le prochain champ ajouté au payload) survit au
-    plafond et ce test échoue."""
-    payload = {
+def _hostile_payload() -> dict:
+    """Charge hostile qui exerce LES DEUX NATURES de volume variable du payload —
+    des listes ET des chaînes, y compris sous un dictionnaire. Trois de ces
+    fenêtres ne sont nommées NULLE PART dans le code de production
+    (`fenetre_inventee_2027`, `titre_invente_2027`, `meta.description`) : si la
+    garde redevient une liste de noms — ou une liste de FORMES, ce qu'elle était
+    encore — elles survivent au plafond et le test le dit."""
+    return {
         "network": [{"url": "u" * 1000} for _ in range(300)],
         "console": [{"text": "c" * 1000} for _ in range(300)],
         "findings": [{"rule": "r" * 1000} for _ in range(300)],
         "forms": [{"action": "a" * 500, "method": "POST"} for _ in range(100)],
         "mailtos": ["m" * 320 for _ in range(100)],
         "fenetre_inventee_2027": ["z" * 1000 for _ in range(300)],
+        # NATURE VOISINE, celle qui traversait : une chaîne dictée par la page.
+        "titre_invente_2027": "T" * 300_000,
+        "meta": {"description": "D" * 300_000, "generator": "x" * 200_000},
         "counts": {"network": 300, "findings": 300, "console": 300},
         "truncation": Truncation().model_dump(mode="json"),
         "analysis_stale": False,
         "verdict": "benign",
     }
-    for cap in (1024, 65536, 262144):
-        fitted = ss._fit_live_payload(json.loads(json.dumps(payload)), cap)
-        size = len(json.dumps(fitted))
-        assert size <= cap, (
-            f"cap={cap} : réponse de {size} octets. Une fenêtre de volume "
-            f"variable échappe au délestage"
+
+
+def _windows_of(payload: dict, path: tuple = ()) -> dict:
+    """Taille de CHAQUE fenêtre de volume variable, par chemin — engendrée depuis
+    la structure du payload, pas depuis une liste écrite à la main."""
+    out = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            out.update(_windows_of(value, path + (key,)))
+        elif isinstance(value, (list, str)):
+            out[".".join(path + (key,))] = len(value)
+    return out
+
+
+@pytest.mark.parametrize("cap", [1024, 65536, 262144, 1024 * 1024])
+def test_every_variable_volume_window_is_bounded_and_says_what_it_lost(cap):
+    """La propriété, pour les DEUX natures : la réponse repasse sous le plafond,
+    et TOUTE fenêtre réduite dit EXACTEMENT ce qu'elle a perdu.
+
+    Mesuré sur 5d37457 : la garde ne rendait que `isinstance(value, list)`, donc
+    une clef scalaire dictée par la page la traversait — corps `/live` de
+    20 000 374 octets pour un budget de 8 388 608, 502 à chaque poll, AU DÉFAUT.
+    Le comptage est vérifié à l'élément près : « délesté sans le dire » est le
+    défaut d'origine, et un compteur approximatif le rouvrirait à moitié."""
+    avant = _windows_of(_hostile_payload())
+    fitted = ss._fit_live_payload(_hostile_payload(), cap)
+    apres = _windows_of({k: v for k, v in fitted.items() if k != "truncation"})
+
+    size = len(json.dumps(fitted))
+    assert size <= cap, (
+        f"cap={cap} : réponse de {size} octets. Une fenêtre de volume variable "
+        f"échappe à la garde"
+    )
+    for chemin, taille in avant.items():
+        if chemin.startswith("truncation"):
+            continue
+        perdu = taille - apres[chemin]
+        suffixe = "_chars_dropped" if isinstance(
+            _hostile_payload().get(chemin.split(".")[0]), (str, dict)) else "_dropped"
+        annonce = fitted["truncation"].get(chemin + suffixe, 0)
+        assert annonce == perdu, (
+            f"cap={cap} : `{chemin}` a perdu {perdu} et en annonce {annonce} — "
+            f"une réponse amputée qui s'annonce complète est le défaut d'origine"
         )
-        for window in ("forms", "mailtos", "fenetre_inventee_2027"):
-            counter = f"{window}_dropped"
-            assert fitted["truncation"].get(counter, 0) > 0, (
-                f"cap={cap} : `{window}` délestée SANS le dire — "
-                f"la réponse s'annonce complète alors qu'elle ne l'est pas"
-            )
+
+
+def test_a_window_that_fits_is_left_intact():
+    """Contrepartie : la réduction porte sur ce qui DÉBORDE. Un ratio uniforme
+    amputait `verdict` (9 caractères, dicté par le CODE) dans la même proportion
+    que la liste de plusieurs Mio dictée par la PAGE."""
+    fitted = ss._fit_live_payload(_hostile_payload(), 512 * 1024)
+    assert fitted["verdict"] == "benign"
+    assert fitted["counts"]["network"] == 300, "un compteur n'est pas une fenêtre"
 
 
 def test_the_live_response_stays_under_its_budget_whatever_the_page_emits(live_client, monkeypatch):
