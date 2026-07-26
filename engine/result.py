@@ -228,8 +228,15 @@ class OcularResult(BaseModel):
 # `static.extract_forms`/`extract_mailtos`) et n'y étaient pas. Mesuré sur ce
 # dépôt avec `OCULAR_MAX_RESULT_JSON_BYTES=262144` (valeur DANS les bornes
 # publiées), un résultat dont toute la masse est dans ces deux listes sortait à
-# 725 493 octets — ×2,8 le plafond — avec `truncation` à zéro, donc annoncé
-# COMPLET, et sans le moindre WARNING.
+# 491 245 octets — ×1,87 le plafond — avec `truncation` à zéro, donc annoncé
+# COMPLET, et sans le moindre WARNING. Ce chiffre est celui du VRAI chemin
+# page -> `extract_forms`/`extract_mailtos` -> `build` : les extracteurs
+# plafonnent à 100 éléments (`_MAX_FORMS`/`_MAX_MAILTOS`) et tronquent chacun
+# (`action[:500]`, `mailto[:320]`), donc une page qui pose 120 formulaires et
+# 120 mailto n'en fait passer que 100 de chaque. Un résultat COMPOSÉ À LA MAIN
+# avec 120 éléments bruts de 500 o. pèse 725 505 o. (mesuré), mais aucune page ne
+# peut le produire : c'est de là que venait le chiffre publié ici pendant un tour
+# (725 493 o.), et il surestimait de 48 % l'ampleur atteignable.
 #
 # Une liste de noms écrite à la main est fausse dès qu'un champ s'ajoute, et
 # c'est le troisième tour de suite qu'elle l'est. Ici, la garde ne peut plus
@@ -237,22 +244,58 @@ class OcularResult(BaseModel):
 # déclaré ci-dessous fait ÉCHOUER L'IMPORT du module (`_check_declarations`).
 # Ajouter un champ sans en déclarer la nature n'est donc pas un angle mort : ce
 # n'est pas exécutable.
+#
+# ET LA DÉCLARATION AGIT, pour les DEUX natures dictées par la page. La table
+# était parcourue pour bâtir le délestage (`SHED_PLAN`) et la doc
+# (`residual_paths`), mais RIEN n'en dérivait la coupe : `ResultBuilder.build`
+# énumérait six noms, si bien que déclarer un septième champ `CLIP` ne faisait
+# rien (cf. `_clip_plan` pour la mesure). `CLIP_PLAN` ferme cette moitié-là.
+#
+# Trois refus, tous à l'import, tous nommant le champ fautif :
+#   - champ de volume variable NON déclaré (`undeclared_fields`) ;
+#   - déclaration que la garde ne sait pas appliquer à la FORME du champ
+#     (`ill_shaped_declarations`) — `SHED` sur autre chose qu'une liste, `CLIP`
+#     sur autre chose qu'une chaîne ou un `dict[str, str]`, `CLIP` sur un porteur
+#     sans `truncated_fields` (la coupe y serait muette au niveau de l'entrée) ;
+#   - compteur, ou budget de coupe, que le modèle / `engine.wrapper` n'implémente
+#     pas.
 
 
 class Volume(str, Enum):
     """Ce que la garde anti-OOM fait du champ — pas ce qu'on croit de sa taille."""
 
     SHED = "shed"          # liste délestée par `_shed_to_json_cap` jusqu'à repasser sous le plafond
-    CLIP = "clip"          # champ texte coupé au point de coupe unique (`_clip_field`)
+    CLIP = "clip"          # champ texte (ou dict de texte) coupé au point de coupe
+                           # unique (`_clip_field`), au budget que `Decl.budget` nomme
     KEEP = "keep"          # jamais délesté : marqueur de coupe, ou preuve produite par l'analyste
     FIXED = "fixed"        # volume NON dicté par la page (identité du job, réfs sha256, tables du dépôt)
     RESIDUAL = "residual"  # ni coupé ni délesté : un dépassement y est MESURÉ et dit (`truncation.over_cap_bytes`)
 
 
 class Decl(NamedTuple):
-    volume: Volume
-    counter: str = ""      # SHED : compteur de `Truncation` où compter les éléments retirés
+    """Nature du champ, et ce qu'il faut pour l'appliquer SANS relire le code qui
+    l'applique.
 
+    `counter` — compteur de `Truncation` à incrémenter. SHED : les éléments
+    retirés. CLIP : les champs coupés ; vide = `DEFAULT_CLIP_COUNTER`
+    (`text_truncated`, le compteur générique du modèle).
+
+    `budget` — CLIP seulement : nom du budget en octets à appliquer. Vide = le
+    budget texte par défaut. Un nom que le module des plafonds n'implémente pas
+    fait ÉCHOUER L'IMPORT (cf. `engine.wrapper._CLIP_BUDGETS`) : un champ ne peut
+    donc pas être déclaré coupable « sur un budget qui n'existe pas » et rester
+    non coupé."""
+
+    volume: Volume
+    counter: str = ""
+    budget: str = ""
+
+
+# Compteur d'un champ CLIP qui n'en nomme pas : `text_truncated` compte les
+# CHAMPS coupés, quel que soit le champ. Un champ ajouté demain est donc compté
+# sans qu'on ait à lui inventer un compteur (et `truncated_fields` le NOMME sur
+# son porteur).
+DEFAULT_CLIP_COUNTER = "text_truncated"
 
 _S, _C, _K, _F, _R = Volume.SHED, Volume.CLIP, Volume.KEEP, Volume.FIXED, Volume.RESIDUAL
 
@@ -275,14 +318,14 @@ FIELD_VOLUME: dict[str, Decl] = {
     "Screenshot.phase":                     Decl(_F),
     "Screenshot.image_ref":                 Decl(_F),
     "Screenshot.viewport":                  Decl(_F),
-    "NetworkEntry.url":                     Decl(_C),
+    "NetworkEntry.url":                     Decl(_C, budget="url"),
     "NetworkEntry.method":                  Decl(_R),
-    "NetworkEntry.headers":                 Decl(_C),
-    "NetworkEntry.post_data":               Decl(_C),
+    "NetworkEntry.headers":                 Decl(_C, budget="headers"),
+    "NetworkEntry.post_data":               Decl(_C, "post_data_truncated", "post_data"),
     "NetworkEntry.resource_type":           Decl(_R),
     "NetworkEntry.initiator":               Decl(_R),
     "ConsoleEntry.level":                   Decl(_R),
-    "ConsoleEntry.text":                    Decl(_C),
+    "ConsoleEntry.text":                    Decl(_C, budget="console_text"),
     "ConsoleEntry.location":                Decl(_R),
     "StaticFinding.rule":                   Decl(_F),   # libellé du motif, table du dépôt
     "StaticFinding.match":                  Decl(_R),
@@ -292,8 +335,8 @@ FIELD_VOLUME: dict[str, Decl] = {
     "DynamicStep.triggered_requests":       Decl(_S, "other_dropped"),
     "DynamicStep.error":                    Decl(_R),
     # -- DOM : c'est ici que la liste écrite à la main manquait deux champs
-    "DomInfo.title":                        Decl(_C),
-    "DomInfo.final_url":                    Decl(_C),
+    "DomInfo.title":                        Decl(_C, budget="title"),
+    "DomInfo.final_url":                    Decl(_C, budget="title"),
     "DomInfo.redirect_chain":               Decl(_S, "other_dropped"),
     "DomInfo.forms":                        Decl(_S, "other_dropped"),
     "DomInfo.mailtos":                      Decl(_S, "other_dropped"),
@@ -400,7 +443,14 @@ def residual_paths() -> list[str]:
     liste délestable, la masse part avec les éléments).
 
     C'est la liste « ce qui n'est PAS garanti » de docs/DEPLOY-SECURITY.md §2.10
-    — dérivée d'ici, pour qu'elle ne puisse plus omettre un champ."""
+    — dérivée d'ici, pour qu'elle ne puisse plus omettre un champ.
+
+    Un champ `CLIP` n'y figure pas parce qu'il est BORNÉ — et cette prémisse est
+    désormais tenue par construction (`CLIP_PLAN` + `_check_declarations`), pas
+    supposée. Tant que la coupe était énumérée à la main, un champ déclaré `CLIP`
+    et jamais coupé était absent des DEUX listes : ni délesté, ni coupé, ni
+    déclaré résiduel — le WARNING de dépassement nommait alors des champs qui ne
+    portaient pas la masse."""
     out: list[str] = []
 
     def walk(cls: type[BaseModel], prefix: str, covered: bool) -> None:
@@ -440,11 +490,63 @@ def _shed_plan(cls: type[BaseModel] = OcularResult,
 SHED_PLAN: tuple[tuple[tuple[str, ...], str], ...] = ()
 
 
+def _clip_plan(cls: type[BaseModel] = OcularResult,
+               prefix: tuple[str, ...] = (),
+               seen: tuple[type, ...] = ()) -> list[tuple[tuple[str, ...], Decl]]:
+    """Chemin de CHAQUE champ à COUPER, dérivé du modèle — le pendant exact de
+    `_shed_plan` pour la nature voisine.
+
+    C'est ce qui manquait : `FIELD_VOLUME` était parcouru pour construire le
+    délestage (`SHED_PLAN`) et la doc (`residual_paths`), mais RIEN n'en dérivait
+    l'ensemble des champs coupés — `ResultBuilder.build` les énumérait à la main
+    (`url`, `headers`, `post_data`, `text`, `title`, `final_url`). Déclarer
+    `Decl(CLIP)` était donc INERTE : mesuré sur ce dépôt, un `DomInfo
+    .meta_description` déclaré coupable et rempli de 200 000 caractères par la
+    page sortait ENTIER, `truncated_fields` vide, pour un résultat à ×4,6 son
+    plafond ; sur un porteur délestable (`ConsoleEntry.stack`), 1 048 576 octets
+    étaient conservés pour un plafond par entrée de 32 768 avec `truncation`
+    VIDE — donc annoncé complet."""
+    plan: list[tuple[tuple[str, ...], Decl]] = []
+    for field, info in cls.model_fields.items():
+        decl = declaration(cls, field)
+        if decl is not None and decl.volume is Volume.CLIP:
+            plan.append((prefix + (field,), decl))
+        for sub in _nested_models(info.annotation):
+            if sub not in seen:
+                plan.extend(_clip_plan(sub, prefix + (field,), seen + (cls,)))
+    return plan
+
+
+CLIP_PLAN: tuple[tuple[tuple[str, ...], Decl], ...] = ()
+
+
+def clip_fields(cls: type[BaseModel]) -> list[tuple[str, Decl]]:
+    """Champs à couper d'UNE classe, dans l'ordre du modèle. Utilisé là où la
+    coupe doit avoir lieu AVANT la construction du modèle (le modèle refuse un
+    `post_data` trop long) — donc sur un dict d'entrée, pas sur une instance."""
+    out: list[tuple[str, Decl]] = []
+    for field in cls.model_fields:
+        decl = declaration(cls, field)
+        if decl is not None and decl.volume is Volume.CLIP:
+            out.append((field, decl))
+    return out
+
+
 def _owners(node: Any, segments: tuple[str, ...]) -> list[BaseModel]:
+    """Porteurs vivants d'un chemin du plan. Descend les listes ET les
+    dictionnaires de modèles : un champ `dict[str, Modèle]` était CONNU du plan
+    (`_shed_plan` construisait son chemin) mais jamais instancié ici, donc rien
+    n'était délesté dessous — le plan et les cibles n'avaient plus la même
+    longueur et l'échec sortait en `IndexError` illisible."""
     if not segments:
         return [node] if isinstance(node, BaseModel) else []
     value = getattr(node, segments[0], None)
-    nodes = value if isinstance(value, list) else [value]
+    if isinstance(value, dict):
+        nodes: Any = list(value.values())
+    elif isinstance(value, list):
+        nodes = value
+    else:
+        nodes = [value]
     out: list[BaseModel] = []
     for sub in nodes:
         if isinstance(sub, BaseModel):
@@ -463,6 +565,77 @@ def shed_targets(result: BaseModel) -> list[tuple[BaseModel, str, str]]:
     return out
 
 
+def clip_targets(result: BaseModel) -> list[tuple[BaseModel, str, Decl]]:
+    """`(porteur, champ, déclaration)` de chaque champ à couper PRÉSENT dans ce
+    résultat-là. Dérivé de `CLIP_PLAN`, donc du modèle — symétrique de
+    `shed_targets`, et c'est la symétrie qui manquait."""
+    out: list[tuple[BaseModel, str, Decl]] = []
+    for path, decl in CLIP_PLAN:
+        for owner in _owners(result, path[:-1]):
+            if hasattr(owner, path[-1]):
+                out.append((owner, path[-1], decl))
+    return out
+
+
+def _peeled(annotation: Any) -> Any:
+    """Annotation débarrassée de son `Optional` — la forme qu'on doit savoir
+    traiter."""
+    if get_origin(annotation) in (Union, types.UnionType):
+        args = [a for a in get_args(annotation) if a is not _NONE]
+        return args[0] if len(args) == 1 else annotation
+    return annotation
+
+
+def _list_shaped(annotation: Any) -> bool:
+    """Le délestage retire des ÉLÉMENTS : il ne sait le faire que sur une liste."""
+    return get_origin(_peeled(annotation)) is list
+
+
+def _text_shaped(annotation: Any) -> bool:
+    """La coupe travaille sur du TEXTE : une chaîne, ou un dictionnaire de
+    chaînes (`NetworkEntry.headers`), dont on retire des paires jusqu'au budget.
+    Un dictionnaire de MODÈLES, une liste, un entier : formes qu'elle ne sait pas
+    couper."""
+    peeled = _peeled(annotation)
+    if peeled is str:
+        return True
+    if get_origin(peeled) is dict:
+        args = get_args(peeled)
+        return len(args) == 2 and args[0] is str and args[1] is str
+    return False
+
+
+def ill_shaped_declarations(tree: Optional[dict[str, type[BaseModel]]] = None) -> list[str]:
+    """Champs dont la DÉCLARATION ne correspond pas à ce que la garde sait faire
+    de leur FORME. Fermé, jamais toléré : une déclaration qui ne s'applique pas
+    est exactement le défaut qu'on ferme ici (un champ déclaré coupable et jamais
+    coupé, ou déclaré délestable et jamais délesté).
+
+    `tree` n'existe que pour permettre de METTRE CETTE GARDE EN DÉFAUT sur un
+    modèle fabriqué (cf. tests) — même raison que `undeclared_fields`."""
+    faux: list[str] = []
+    for name, cls in (tree if tree is not None else model_tree()).items():
+        for field, info in cls.model_fields.items():
+            decl = declaration(cls, field)
+            if decl is None:
+                continue
+            if decl.volume is Volume.SHED and not _list_shaped(info.annotation):
+                faux.append(f"{name}.{field} : déclaré SHED mais n'est pas une "
+                            f"list[...] — le délestage retire des éléments, il ne "
+                            f"sait pas instancier {info.annotation!r}")
+            if decl.volume is Volume.CLIP:
+                if not _text_shaped(info.annotation):
+                    faux.append(f"{name}.{field} : déclaré CLIP mais n'est ni une "
+                                f"chaîne ni un dict[str, str] — la coupe ne sait "
+                                f"pas réduire {info.annotation!r}")
+                if not issubclass(cls, TruncatableEntry):
+                    faux.append(f"{name}.{field} : déclaré CLIP sur un porteur qui "
+                                f"n'hérite pas de TruncatableEntry — la coupe "
+                                f"serait muette au niveau de l'entrée (aucun "
+                                f"`truncated_fields` où NOMMER le champ coupé)")
+    return sorted(faux)
+
+
 def _check_declarations() -> None:
     missing, stale = undeclared_fields(), stale_declarations()
     if missing or stale:
@@ -474,15 +647,27 @@ def _check_declarations() -> None:
             "(FIXED/KEEP/RESIDUAL) rend `OcularResult` non bornable : déclarez-le "
             "(cf. docs/DEPLOY-SECURITY.md §2.10)."
         )
+    faux = ill_shaped_declarations()
+    if faux:
+        raise RuntimeError(
+            "engine.result.FIELD_VOLUME déclare une nature que la garde ne sait "
+            "pas appliquer à la FORME du champ — la déclaration serait INERTE, "
+            "donc le champ non borné :\n  " + "\n  ".join(faux)
+        )
 
 
 _check_declarations()
 SHED_PLAN = tuple(_shed_plan())
+CLIP_PLAN = tuple(_clip_plan())
 # Un compteur nommé dans une déclaration mais absent de `Truncation` ferait
-# disparaître en silence ce qu'un délestage a retiré.
-_orphelins = sorted({c for _, c in SHED_PLAN if c not in Truncation.model_fields})
+# disparaître en silence ce qu'un délestage — ou une coupe — vient de faire.
+_orphelins = sorted(
+    {c for _, c in SHED_PLAN if c not in Truncation.model_fields}
+    | {d.counter or DEFAULT_CLIP_COUNTER for _, d in CLIP_PLAN
+       if (d.counter or DEFAULT_CLIP_COUNTER) not in Truncation.model_fields}
+)
 if _orphelins:
     raise RuntimeError(
-        f"compteurs de délestage inconnus de Truncation : {_orphelins} — "
-        "des éléments seraient retirés sans qu'aucun compteur ne le dise."
+        f"compteurs inconnus de Truncation : {_orphelins} — des éléments seraient "
+        "retirés, ou des champs coupés, sans qu'aucun compteur ne le dise."
     )

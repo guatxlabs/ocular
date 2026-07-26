@@ -8,17 +8,23 @@ la garde protège ce qui a été MESURÉ, et le champ SUIVANT n'y est pas.
   - le délestage portait sur `console`/`network`/`static_findings` ; `dom.forms`
     et `dom.mailtos` — remplis DEPUIS LE CONTENU DE LA PAGE par les quatre tiers
     — n'y étaient pas. Mesuré avec `OCULAR_MAX_RESULT_JSON_BYTES=262144` (valeur
-    DANS les bornes publiées) : résultat de 725 493 octets, `truncation` à zéro,
-    donc annoncé COMPLET, sans le moindre WARNING ;
+    DANS les bornes publiées) : résultat de 491 245 octets — ×1,87 le plafond —
+    `truncation` à zéro, donc annoncé COMPLET, sans le moindre WARNING. Mesuré
+    sur le VRAI chemin page -> extracteurs -> `build`, les extracteurs
+    plafonnant à 100 éléments et tronquant chacun ;
   - le pré-élagage énumérait les mêmes champs à la main, avec le même trou ;
-  - le plafond par entrée bornait CHAQUE entrée mais jamais leur SOMME : 468,8 Mio
+  - le plafond par entrée bornait CHAQUE entrée mais jamais leur SOMME : 469,0 Mio
     de texte retenu par un `NetworkCapture`, mesurés au `ru_maxrss`, pour toute la
-    durée de la session interactive.
+    durée de la session interactive ;
+  - et la COUPE, elle, était restée énumérée : six noms écrits dans
+    `ResultBuilder.build`, si bien qu'un champ déclaré `CLIP` n'était pas coupé —
+    déclaré, exécuté, jamais borné, invisible.
 
 CE QUI EST TESTÉ ICI EST DÉRIVÉ. Les cas ne sont pas écrits un par un : ils sont
-ENGENDRÉS par `engine.result.SHED_PLAN`, lui-même dérivé du modèle. Un champ de
-volume variable ajouté demain est soit couvert par ces tests sans que personne
-ne les relise, soit refusé à l'import — il n'a pas de troisième issue.
+ENGENDRÉS par `engine.result.SHED_PLAN` et `CLIP_PLAN`, tous deux dérivés du
+modèle — un cas par liste délestable ET un cas par champ coupable. Un champ de
+volume variable ajouté demain est soit couvert par ces tests sans que personne ne
+les relise, soit refusé à l'import — il n'a pas de troisième issue.
 """
 import json
 import types
@@ -28,21 +34,36 @@ import pytest
 from pydantic import BaseModel
 
 from engine.result import (
+    CLIP_PLAN,
+    DEFAULT_CLIP_COUNTER,
     SHED_PLAN,
+    ConsoleEntry,
+    Decl,
     DomInfo,
     DynamicStep,
+    NetworkEntry,
     OcularResult,
+    StealthInfo,
     Truncation,
     Volume,
+    _nested_models,
+    _owners,
     _variable_volume,
     declaration,
+    ill_shaped_declarations,
     model_tree,
     residual_paths,
     shed_targets,
     stale_declarations,
     undeclared_fields,
 )
-from engine.wrapper import _json_size, _shed_to_json_cap
+from engine.wrapper import (
+    _CLIP_BUDGETS,
+    _clip_result,
+    _entry_bytes,
+    _json_size,
+    _shed_to_json_cap,
+)
 
 # Plafond de travail : petit devant les charges construites ci-dessous, pour que
 # le délestage DOIVE mordre. Ce n'est pas le défaut publié — celui-là est
@@ -105,11 +126,6 @@ def _fill(owner: BaseModel, field: str, n: int = ELEMENTS) -> None:
     setattr(owner, field, [value for _ in range(n)])
 
 
-def _targets():
-    result = _skeleton()
-    return result, shed_targets(result)
-
-
 def _ids():
     return [".".join(path) for path, _ in SHED_PLAN]
 
@@ -120,22 +136,31 @@ def _ids():
 def test_every_sheddable_list_of_the_model_is_actually_shed(index):
     """UN cas par liste délestable du MODÈLE. `dom.forms` et `dom.mailtos` sont
     dans le lot parce que le modèle les déclare, pas parce que quelqu'un a pensé
-    à les ajouter ici — c'est exactement ce qui avait manqué."""
-    result, targets = _targets()
-    owner, field, counter = targets[index]
-    _fill(owner, field)
+    à les ajouter ici — c'est exactement ce qui avait manqué.
+
+    Le porteur est INSTANCIÉ depuis le chemin (`_materialize`), pas pris dans une
+    liste indexée en parallèle de `SHED_PLAN` : quand les deux listes n'avaient
+    plus la même longueur — un porteur que `shed_targets` ne savait pas
+    instancier — l'échec sortait en `IndexError` qui ne nommait rien."""
+    path, counter = SHED_PLAN[index]
+    nom = ".".join(path)
+    result = _skeleton()
+    owner = _materialize(result, path[:-1])
+    assert isinstance(getattr(owner, path[-1], None), list), (
+        f"{nom} : déclaré délestable, mais le porteur instancié ne porte pas de "
+        f"liste — le délestage ne peut pas l'atteindre"
+    )
+    _fill(owner, path[-1])
     assert _json_size(result) > CAP, "la charge de ce test ne dépasse plus le plafond"
 
     shed = _shed_to_json_cap(result, CAP)
 
     size = _json_size(result)
     assert size <= CAP, (
-        f"{'.'.join(SHED_PLAN[index][0])} : résultat de {size} octets pour un "
-        f"plafond de {CAP} — la masse dictée par la page n'est pas délestée"
+        f"{nom} : résultat de {size} octets pour un plafond de {CAP} — la masse "
+        f"dictée par la page n'est pas délestée"
     )
-    assert getattr(shed, counter) > 0, (
-        f"{'.'.join(SHED_PLAN[index][0])} : délesté sans être compté"
-    )
+    assert getattr(shed, counter) > 0, f"{nom} : délesté sans être compté"
 
 
 def test_the_shed_names_the_field_on_its_carrier_when_it_can():
@@ -148,11 +173,28 @@ def test_the_shed_names_the_field_on_its_carrier_when_it_can():
 
 
 def test_forms_and_mailtos_alone_cannot_break_the_cap():
-    """Reproduction de la mesure : la masse est ENTIÈREMENT dans deux listes que
-    la liste écrite à la main ne connaissait pas."""
+    """Reproduction de la mesure PAR LE VRAI CHEMIN : une PAGE, ses extracteurs,
+    puis `build`. Le charger à la main avec 120 éléments bruts donnait une masse
+    (725 505 o. mesurés) qu'aucune page ne peut produire — les extracteurs
+    plafonnent à 100 éléments et tronquent chacun. Ce que la page atteint
+    RÉELLEMENT, mesuré sur 651840c avec `OCULAR_MAX_RESULT_JSON_BYTES=262144` :
+    491 245 o., ×1,87 le plafond, `truncation` à zéro."""
+    from engine.static import extract_forms, extract_mailtos
+
+    page = "".join(
+        f'<form action="{"\x00" * 500}" method="POST"></form>'
+        f'<a href="mailto:{i:04d}{"\x00" * 310}">x</a>'
+        for i in range(120)
+    )
     result = _skeleton()
-    result.dom.forms = [{"action": "\x00" * 500, "method": "POST"} for _ in range(120)]
-    result.dom.mailtos = ["\x00" * 500 for _ in range(120)]
+    result.dom.forms = extract_forms(page)
+    result.dom.mailtos = extract_mailtos(page)
+    assert len(result.dom.forms) == len(result.dom.mailtos) == 100, (
+        "les plafonds d'extraction ne retiennent plus 100 de chaque : la mesure "
+        "publiée en §2.10 ne décrit plus ce chemin"
+    )
+    assert _json_size(result) > CAP, "la charge de ce test ne dépasse plus le plafond"
+
     shed = _shed_to_json_cap(result, CAP)
     assert _json_size(result) <= CAP
     assert shed != Truncation(), "délestage muet : le résultat s'annonce complet"
@@ -181,6 +223,213 @@ def test_shedding_counters_all_exist_in_the_model():
     disparaître en silence ce que le délestage retire."""
     for path, counter in SHED_PLAN:
         assert counter in Truncation.model_fields, f"{'.'.join(path)} -> {counter} inconnu"
+
+
+# --- 1 bis. la COUPE couvre TOUT champ que le modèle déclare coupable ---------
+#
+# La nature voisine de `SHED`, et celle qui manquait : `FIELD_VOLUME` était
+# parcouru pour bâtir le délestage et la doc, mais RIEN n'en dérivait l'ensemble
+# des champs à couper — `ResultBuilder.build` en énumérait six à la main.
+# Déclarer un septième champ `CLIP` ne faisait donc RIEN : mesuré sur 5d37457,
+# un `DomInfo.meta_description` (UNE ligne de modèle + UNE de déclaration) rempli
+# de 200 000 caractères par la page sortait ENTIER, `truncated_fields` vide, pour
+# un résultat de 1 200 915 octets sous un plafond de 262 144 ; et sur un porteur
+# délestable (`ConsoleEntry.stack`), 1 048 576 octets étaient conservés pour un
+# plafond par entrée de 32 768 avec `truncation` VIDE — donc annoncé complet.
+
+def _clip_ids():
+    return [".".join(path) for path, _ in CLIP_PLAN]
+
+
+def _materialize(node: BaseModel, segments: tuple[str, ...]) -> BaseModel:
+    """Instancie les PORTEURS d'un chemin du plan, depuis le modèle. Sans ça, un
+    chemin dont le porteur est une liste vide (`network[]`) n'existerait pas dans
+    l'instance et le cas ne serait pas exercé. Générique : écrit porteur par
+    porteur, il raterait le porteur neuf exactement comme la garde qu'il éprouve."""
+    if not segments:
+        return node
+    field = segments[0]
+    info = type(node).model_fields[field]
+    sous = _nested_models(info.annotation)
+    value = getattr(node, field)
+    if sous:
+        if isinstance(value, list) and not value:
+            setattr(node, field, [_sample(sous[0], 8)])
+        elif isinstance(value, dict) and not value:
+            setattr(node, field, {"k": _sample(sous[0], 8)})
+        elif value is None:
+            setattr(node, field, _sample(sous[0], 8))
+    porteurs = _owners(node, (field,))
+    assert porteurs, f"aucun porteur instancié pour `{field}`"
+    return _materialize(porteurs[0], segments[1:])
+
+
+@pytest.mark.parametrize("index", range(len(CLIP_PLAN)), ids=_clip_ids())
+def test_every_clippable_field_of_the_model_is_actually_clipped(index):
+    """UN cas par champ COUPABLE du modèle, engendré par `CLIP_PLAN`. Un champ
+    déclaré `CLIP` demain entre ici sans que personne ne relise la coupe — et
+    s'il n'était pas coupé, c'est CE test-là qui le dirait, en le NOMMANT."""
+    path, decl = CLIP_PLAN[index]
+    nom = ".".join(path)
+    result = _skeleton()
+    owner = _materialize(result, path[:-1])
+    annotation = type(owner).model_fields[path[-1]].annotation
+    budget = _CLIP_BUDGETS[decl.budget]()
+    setattr(owner, path[-1], _sample(annotation, budget * 4))
+    assert _entry_bytes(getattr(owner, path[-1])) > budget, (
+        f"{nom} : la charge de ce cas ne dépasse plus le budget"
+    )
+
+    cut = _clip_result(result)
+
+    retenu = _entry_bytes(getattr(owner, path[-1]))
+    assert retenu <= budget, (
+        f"{nom} : {retenu} octets conservés pour un budget de {budget} — un champ "
+        f"déclaré coupable et jamais coupé, c'est le défaut d'origine"
+    )
+    assert path[-1] in owner.truncated_fields, (
+        f"{nom} : coupé sans être NOMMÉ sur son porteur"
+    )
+    counter = decl.counter or DEFAULT_CLIP_COUNTER
+    assert cut.get(counter) == 1, f"{nom} : coupé sans être compté sous `{counter}`"
+
+
+@pytest.mark.parametrize("index", range(len(CLIP_PLAN)), ids=_clip_ids())
+def test_the_builder_itself_clips_every_declared_field(index):
+    """La même propriété EN BOUT DE CHAÎNE : par `ResultBuilder.build`, le chemin
+    de production. Les porteurs que `build` remplit lui-même sont dérivés du plan,
+    pas énumérés ; ceux qu'il ne remplit pas sont couverts par le filet de bout de
+    chaîne, et ce test le vérifie aussi (le résultat sort de `build` dans tous les
+    cas)."""
+    from engine.wrapper import ResultBuilder
+
+    path, decl = CLIP_PLAN[index]
+    budget = _CLIP_BUDGETS[decl.budget]()
+    porteur, champ = path[:-1], path[-1]
+    kwargs: dict[str, Any] = {
+        "job_id": "j", "profile": "capture", "target": "https://x.test/",
+        "input_hash": None, "verdict": "unknown",
+    }
+    # Le porteur est choisi par le CHEMIN, pas par un nom écrit ici : `build`
+    # reçoit les entrées sous forme de dicts, le DOM sous forme de modèle.
+    modele = {"network": NetworkEntry, "console": ConsoleEntry, "dom": DomInfo}
+    if porteur and porteur[0] in modele:
+        cls = modele[porteur[0]]
+        annotation = cls.model_fields[champ].annotation
+        gros = _sample(annotation, budget * 4)
+        if porteur[0] == "dom":
+            kwargs["dom_info"] = DomInfo(**{champ: gros})
+        else:
+            requis = {n: _sample(i.annotation, 8)
+                      for n, i in cls.model_fields.items() if i.is_required()}
+            kwargs[porteur[0]] = [{**requis, champ: gros}]
+    else:  # pragma: no cover - aucun chemin de ce genre aujourd'hui
+        pytest.skip(f"{'.'.join(path)} : porteur non alimentable par `build`")
+
+    result, _ = ResultBuilder().build(**kwargs)
+
+    owner = _owners(result, porteur)[0]
+    retenu = _entry_bytes(getattr(owner, champ))
+    assert retenu <= budget, (
+        f"{'.'.join(path)} : {retenu} octets dans le résultat BÂTI pour un budget "
+        f"de {budget}"
+    )
+    assert champ in owner.truncated_fields
+    counter = decl.counter or DEFAULT_CLIP_COUNTER
+    assert getattr(result.truncation, counter) >= 1, (
+        f"{'.'.join(path)} : coupé sans que `{counter}` ne le dise"
+    )
+
+
+def test_clipping_counters_all_exist_in_the_model():
+    for path, decl in CLIP_PLAN:
+        counter = decl.counter or DEFAULT_CLIP_COUNTER
+        assert counter in Truncation.model_fields, f"{'.'.join(path)} -> {counter}"
+
+
+def test_a_clip_field_that_names_no_budget_is_still_cut():
+    """LE GESTE MINIMAL : une ligne de modèle, une ligne de déclaration
+    (`Decl(CLIP)`), rien d'autre. Le champ doit être coupé au budget par DÉFAUT —
+    sans quoi « déclarer suffit » redevient faux pour le prochain champ. Le
+    porteur est fabriqué ici parce que le modèle réel n'a, aujourd'hui, aucun
+    champ dans ce cas : la garde doit être vraie AVANT qu'il en existe un."""
+    from engine.wrapper import _clip_field
+
+    defaut = _CLIP_BUDGETS[""]()
+    assert 0 < defaut <= 64 * 1024, (
+        f"budget par défaut de {defaut} octets : hors de l'échelle des budgets "
+        f"calibrés (et de la borne haute du module)"
+    )
+    porteur = DomInfo()
+    porteur.title = "\x00" * (defaut * 4)
+    assert _clip_field(porteur, "title", defaut) is True
+    assert len(porteur.title.encode("utf-8")) <= defaut
+    assert porteur.truncated_fields == ["title"]
+
+
+def test_owners_reaches_carriers_held_in_a_mapping():
+    """`_owners` ne descendait que les listes : un porteur vivant dans un
+    `dict[str, Modèle]` était CONNU du plan et jamais instancié, donc ni délesté
+    ni coupé — et l'échec sortait en `IndexError`. Fabriqué ici pour la même
+    raison que ci-dessus : la garde doit être vraie avant le champ."""
+    class _Cadre(BaseModel):
+        pages: dict[str, DomInfo] = {}
+
+    cadre = _Cadre(pages={"a": DomInfo(title="x"), "b": DomInfo(title="y")})
+    atteints = _owners(cadre, ("pages",))
+    assert [d.title for d in atteints] == ["x", "y"]
+
+
+def test_every_declared_clip_budget_is_implemented():
+    """Un champ déclaré coupable sur un budget que `engine.wrapper` n'implémente
+    pas ne serait jamais coupé. L'import le refuse ; ce test le dit."""
+    for path, decl in CLIP_PLAN:
+        assert decl.budget in _CLIP_BUDGETS, (
+            f"{'.'.join(path)} : budget `{decl.budget}` inconnu de engine.wrapper"
+        )
+        assert _CLIP_BUDGETS[decl.budget]() > 0
+
+
+@pytest.mark.parametrize("cls_name,champ,annotation,decl,motif", [
+    ("_Neuf", "frames", dict[str, DomInfo], Decl(Volume.SHED, "other_dropped"),
+     "déclaré SHED mais n'est pas une list"),
+    ("_Neuf", "beacons", list[str], Decl(Volume.CLIP), "déclaré CLIP mais n'est ni une"),
+])
+def test_a_declaration_the_guard_cannot_apply_is_refused(cls_name, champ, annotation, decl, motif):
+    """LA MUTATION, jouée dans la suite : une déclaration JUSTE en apparence mais
+    que la garde ne sait pas appliquer à la FORME du champ serait INERTE — donc
+    le champ non borné, exactement comme `Decl(CLIP)` l'était pour tous les
+    champs. Elle doit être refusée à l'import, en NOMMANT le champ."""
+    from engine.result import FIELD_VOLUME
+
+    class _Neuf(DomInfo):
+        pass
+
+    _Neuf.model_fields[champ] = type(DomInfo.model_fields["title"])(annotation=annotation)
+    FIELD_VOLUME[f"{cls_name}.{champ}"] = decl
+    try:
+        faux = ill_shaped_declarations({cls_name: _Neuf})
+    finally:
+        FIELD_VOLUME.pop(f"{cls_name}.{champ}")
+    assert len(faux) == 1 and champ in faux[0] and motif in faux[0], faux
+
+
+def test_a_clip_declared_on_a_carrier_that_cannot_name_it_is_refused():
+    """Un champ coupé sur un porteur sans `truncated_fields` serait coupé MUET au
+    niveau de l'entrée — le défaut que tests/test_entry_truncation_markers.py
+    ferme. La déclaration est donc refusée, pas tolérée."""
+    from engine.result import FIELD_VOLUME
+
+    FIELD_VOLUME["StealthInfo.challenge"] = Decl(Volume.CLIP)
+    try:
+        faux = ill_shaped_declarations({"StealthInfo": StealthInfo})
+    finally:
+        FIELD_VOLUME["StealthInfo.challenge"] = Decl(Volume.RESIDUAL)
+    assert len(faux) == 1 and "TruncatableEntry" in faux[0], faux
+
+
+def test_the_model_has_no_ill_shaped_declaration():
+    assert ill_shaped_declarations() == []
 
 
 # --- 2. impossible d'ajouter un champ sans déclarer sa nature ----------------

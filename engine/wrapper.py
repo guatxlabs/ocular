@@ -22,6 +22,8 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 from engine.result import (
+    DEFAULT_CLIP_COUNTER,
+    FIELD_VOLUME,
     POST_DATA_MAX_CHARS,
     Artifacts,
     ConsoleEntry,
@@ -33,6 +35,9 @@ from engine.result import (
     StealthInfo,
     TruncatableEntry,
     Truncation,
+    Volume,
+    clip_fields,
+    clip_targets,
     residual_paths,
     shed_targets,
 )
@@ -90,25 +95,48 @@ _DEFAULT_MAX_HEADERS_BYTES = 8 * 1024           # 8 KiB, tout le dict
 _DEFAULT_MAX_CONSOLE_TEXT_BYTES = 32 * 1024     # 32 KiB — cf. ci-dessus
 _DEFAULT_MAX_TITLE_BYTES = 32 * 1024            # 32 KiB — `final_url` suit la
                                                 # distribution des URL ci-dessus
+# Budget par DÉFAUT d'un champ `CLIP` qui ne nomme pas le sien (cf.
+# `_CLIP_BUDGETS`). Même échelle que les trois budgets calibrés ci-dessus : un
+# champ texte dicté par la page est de la même famille que l'URL, le message
+# console et le titre, et 32 Kio est la valeur que leur calibration a retenue.
+_DEFAULT_MAX_TEXT_BYTES = 32 * 1024
 _DEFAULT_MAX_FINDINGS = 5000
 # Budget CUMULÉ du tampon de session — la borne qui manquait.
 #
 # Les plafonds par entrée bornent CHAQUE entrée, jamais leur SOMME : le produit
 # « cardinalité × taille par entrée » est ce que la page retient dans le
 # conteneur de session, pour TOUTE la durée de la session interactive (le
-# délestage du résultat, lui, n'a lieu qu'au `/capture`). Mesuré par le
-# haut-de-marque NOYAU (`resource.getrusage(...).ru_maxrss`), tampons remplis via
-# les vrais listeners de `NetworkCapture.attach`, 5 000 requêtes + 5 000 messages
-# console au plafond, trois exécutions par ligne :
-#   - plafonds par entrée à 4 096 / 8 192 / 8 192 o. : 97,7 Mio retenus,
-#     ru_maxrss 31 -> 153 Mio (153/153/153) ;
+# délestage du résultat, lui, n'a lieu qu'au `/capture`).
+#
+# MÉTHODE DE MESURE, parce que le chiffre ne veut rien dire sans elle. Haut-de-
+# marque NOYAU (`resource.getrusage(RUSAGE_SELF).ru_maxrss`), tampons remplis via
+# les VRAIS listeners de `NetworkCapture.attach`, 5 000 requêtes + 5 000 messages
+# console, chaînes DISTINCTES par entrée (sans quoi la RSS mesure une seule copie
+# partagée, pas le volume retenu), CHAQUE CHAMP ÉMIS EXACTEMENT À SON PLAFOND
+# (`url`, `post_data`, texte console) ; trois exécutions par ligne :
+#   - plafonds par entrée à 4 096 / 8 192 / 8 192 o. : 97,9 Mio retenus,
+#     ru_maxrss 31 -> 151 Mio (151/151/151) ;
 #   - plafonds par entrée à 32 768 o. (les actuels), SANS budget cumulé :
-#     468,8 Mio retenus, ru_maxrss 31 -> 503-505 Mio ;
+#     469,0 Mio retenus, ru_maxrss 31 -> 503 Mio (503/503/503) ;
 #   - mêmes plafonds AVEC le budget cumulé ci-dessous : 63,9 Mio retenus,
-#     ru_maxrss 31 -> 96-97 Mio.
+#     ru_maxrss 31 -> 95-96 Mio (96/95/96).
 # Relever les plafonds par entrée pour ne plus couper de contenu légitime a donc
 # multiplié par 4,8 la mémoire que la page dicte, dans un conteneur à
 # `--memory 2g` PARTAGÉ avec Camoufox. Ce coût-là n'avait pas été mesuré.
+#
+# CE QUE CES TROIS LIGNES NE DISENT PAS, et qu'un exploitant doit savoir avant de
+# dimensionner : elles supposent une page qui émet PILE le plafond. Ce que la
+# page émet AU-DESSUS du plafond existe en mémoire le temps d'être coupé, et ce
+# transitoire n'est retenu par aucun budget. Mesuré sur ce dépôt, mêmes 5 000 +
+# 5 000 entrées, budget cumulé actif, en faisant émettre à la page un multiple du
+# plafond :
+#     émis ×1 -> 63,9 Mio retenus, ru_maxrss 31 ->  95-96 Mio (96/95/96)
+#     émis ×2 -> 64,0 Mio retenus, ru_maxrss 32 -> 163 Mio (163/163/163)
+#     émis ×4 -> 64,0 Mio retenus, ru_maxrss 32 -> 225 Mio (225/225/225)
+# Le VOLUME RETENU est bien borné par le budget (64 Mio dans les trois cas) —
+# c'est la propriété que ce module garantit. Le PIC RÉSIDENT, lui, suit ce que la
+# page choisit d'émettre. Le seul chiffre sur lequel dimensionner sans hypothèse
+# de contenu est donc le volume retenu : 2 × `OCULAR_MAX_CAPTURE_BUFFER_BYTES`.
 #
 # Le budget cumulé borne la SOMME sans rendre son plafond à la première entrée
 # venue : au dépassement, ce sont des entrées ENTIÈRES qui sortent (côté le moins
@@ -291,65 +319,149 @@ def _max_result_json_bytes() -> int:
     return source_budget("capture")
 
 
-def _mark_truncated(entry: dict[str, Any], field: str) -> None:
+def _get(entry: Any, field: str) -> Any:
+    return entry.get(field) if isinstance(entry, dict) else getattr(entry, field, None)
+
+
+def _set(entry: Any, field: str, value: Any) -> None:
+    if isinstance(entry, dict):
+        entry[field] = value
+    else:
+        setattr(entry, field, value)
+
+
+def _mark_truncated(entry: Any, field: str) -> None:
     """Pose le marqueur PAR ENTRÉE. `truncated_fields` NOMME le champ amputé :
     un compteur global (`Truncation.text_truncated`) dit qu'une coupe a eu lieu
     quelque part, il ne désigne aucune entrée — l'analyste voyait donc une URL
     d'apparence complète et ne pouvait pas savoir qu'il lui en manquait la fin.
-    Le modèle portait déjà ce motif pour `post_data` et pour lui seul."""
-    marks = entry.get("truncated_fields")
+    Le modèle portait déjà ce motif pour `post_data` et pour lui seul.
+
+    Marche sur un DICT (coupe avant construction du modèle — `post_data` a une
+    longueur maximale que le modèle REFUSE) comme sur une INSTANCE (coupe du
+    résultat déjà bâti). `engine.result` garantit que tout porteur d'un champ
+    `CLIP` hérite de `TruncatableEntry` : il y a donc toujours un endroit où
+    NOMMER la coupe."""
+    marks = _get(entry, "truncated_fields")
     if not isinstance(marks, list):
         marks = []
-        entry["truncated_fields"] = marks
+        _set(entry, "truncated_fields", marks)
     if field not in marks:
         marks.append(field)
+        if not isinstance(entry, dict):
+            # pydantic ne revalide pas une affectation : la liste doit être
+            # RÉ-AFFECTÉE pour que le porteur voie sa propre marque quand elle
+            # existait déjà (`model_copy` partage l'objet liste).
+            _set(entry, "truncated_fields", marks)
 
 
-def _clip_field(entry: dict[str, Any], field: str, cap: int) -> bool:
-    """SEUL endroit où un champ texte d'une entrée est coupé. La coupe et son
+def _clip_mapping(mapping: dict[Any, Any], cap: int) -> tuple[dict[Any, Any], bool]:
+    """Réduit un DICTIONNAIRE de texte à son budget GLOBAL : 200 en-têtes de
+    8 Kio pèsent autant qu'un seul de 1,6 Mio. On garde les premières paires
+    jusqu'à épuisement du budget."""
+    kept: dict[Any, Any] = {}
+    used = 0
+    for key, value in mapping.items():
+        cost = (len(str(key).encode("utf-8", "replace"))
+                + len(str(value).encode("utf-8", "replace")))
+        if used + cost > cap:
+            return kept, True
+        kept[key] = value
+        used += cost
+    return mapping, False
+
+
+def _clip_field(entry: Any, field: str, cap: int) -> bool:
+    """SEUL endroit où un champ de volume variable est coupé. La coupe et son
     marqueur sont posés par le MÊME appel : il n'existe pas de chemin qui coupe
     sans nommer le champ coupé, et il n'y a rien à « ne pas oublier » quand un
-    champ s'ajoute. Renvoie True si la coupe a eu lieu."""
-    value, cut = _clip_utf8(entry.get(field), cap)
+    champ s'ajoute. Renvoie True si la coupe a eu lieu.
+
+    Les DEUX formes que `engine.result` autorise pour un champ `CLIP` sont
+    traitées ici, choisies sur la VALEUR et non sur le nom du champ : une chaîne
+    est coupée en octets UTF-8, un dictionnaire de texte est réduit à son budget
+    global. Toute autre forme est refusée à l'import du modèle."""
+    value = _get(entry, field)
+    if isinstance(value, dict):
+        kept, cut = _clip_mapping(value, cap)
+    else:
+        kept, cut = _clip_utf8(value, cap)
     if cut:
-        entry[field] = value
+        _set(entry, field, kept)
         _mark_truncated(entry, field)
     return cut
 
 
-def _truncate_post_data(entry: dict[str, Any], cap: int) -> bool:
-    """`post_data` passe par le point unique comme tout autre champ. Le booléen
-    historique `NetworkEntry.post_data_truncated` reste servi, mais il est
-    DÉRIVÉ de `truncated_fields` par le modèle : une seule source de vérité."""
-    return _clip_field(entry, "post_data", cap)
+# Budgets en octets des champs `CLIP`, par NOM de budget déclaré dans
+# `engine.result.FIELD_VOLUME`. C'est la seule liste écrite ici, et elle est
+# CONFRONTÉE au modèle à l'import (ci-dessous) : un champ déclaré coupable sur un
+# budget que ce module n'implémente pas fait échouer l'import au lieu de sortir
+# non coupé.
+_CLIP_BUDGETS: dict[str, Any] = {
+    "url": _max_url_bytes,
+    "headers": _max_headers_bytes,
+    "post_data": _max_post_data_bytes,
+    "console_text": _max_console_text_bytes,
+    "title": _max_title_bytes,
+    # Budget par DÉFAUT : un champ `CLIP` qui ne nomme pas le sien. Même échelle
+    # (32 Kio) que les trois budgets calibrés sur du contenu réel ci-dessus
+    # (URL/console/titre) — c'est un plafond par entrée de la même famille, pas
+    # une valeur nouvelle. Réglable par `OCULAR_MAX_TEXT_BYTES`.
+    "": lambda: _env_cap("OCULAR_MAX_TEXT_BYTES", _DEFAULT_MAX_TEXT_BYTES,
+                         _HARD_MAX_TEXT_BYTES),
+}
+
+_budgets_inconnus = sorted({
+    decl.budget for decl in FIELD_VOLUME.values()
+    if decl.volume is Volume.CLIP and decl.budget not in _CLIP_BUDGETS
+})
+if _budgets_inconnus:
+    raise RuntimeError(
+        f"budgets de coupe inconnus de engine.wrapper : {_budgets_inconnus} — un "
+        "champ déclaré CLIP sur un budget qui n'existe pas ne serait jamais coupé."
+    )
 
 
-def _clip_entry_text(entry: dict[str, Any], url_cap: int, headers_cap: int) -> int:
-    """Borne les champs texte d'UNE entrée réseau autres que `post_data` (qui a
-    son propre plafond). Renvoie le nombre de champs coupés, à compter dans
-    `Truncation.text_truncated` — le compteur global reste, en plus du marqueur
-    par entrée : il répond à « le résultat est-il complet ? », l'autre à
-    « CETTE ligne-là est-elle complète ? »."""
-    cut = int(_clip_field(entry, "url", url_cap))
-    headers = entry.get("headers")
-    if isinstance(headers, dict) and headers:
-        # Budget GLOBAL du dict : 200 en-têtes de 8 Kio pèsent autant qu'un seul
-        # de 1,6 Mio. On garde les premiers en-têtes jusqu'à épuisement.
-        kept: dict[str, str] = {}
-        used = 0
-        dropped = False
-        for key, value in headers.items():
-            cost = len(str(key).encode("utf-8", "replace")) + len(str(value).encode("utf-8", "replace"))
-            if used + cost > headers_cap:
-                dropped = True
-                break
-            kept[key] = value
-            used += cost
-        if dropped:
-            entry["headers"] = kept
-            _mark_truncated(entry, "headers")
-            cut += 1
+def _clip_declared(entry: Any, cls: type) -> dict[str, int]:
+    """Coupe TOUS les champs que le MODÈLE déclare coupables sur cette classe, et
+    rend `{compteur: nombre de champs coupés}`.
+
+    C'est le pendant de `shed_targets` pour la nature voisine : plus aucun nom de
+    champ n'est écrit sur le chemin de la coupe. Un champ `CLIP` ajouté demain à
+    `NetworkEntry`, `ConsoleEntry` ou `DomInfo` est coupé sans que personne ne
+    relise cette fonction, et compté sous le compteur que sa déclaration nomme
+    (`text_truncated` par défaut)."""
+    cut: dict[str, int] = {}
+    for field, decl in clip_fields(cls):
+        if _clip_field(entry, field, _CLIP_BUDGETS[decl.budget]()):
+            counter = decl.counter or DEFAULT_CLIP_COUNTER
+            cut[counter] = cut.get(counter, 0) + 1
     return cut
+
+
+def _clip_result(result: OcularResult) -> dict[str, int]:
+    """Filet de bout de chaîne : coupe tout champ `CLIP` du résultat DÉJÀ BÂTI,
+    où qu'il vive dans l'arbre — y compris sur un porteur que `ResultBuilder
+    .build` ne remplit pas lui-même. Rend `{compteur: champs coupés}`.
+
+    Les coupes faites en amont (sur les dicts d'entrée) ne comptent pas deux
+    fois : re-couper une valeur déjà sous son budget ne coupe rien."""
+    cut: dict[str, int] = {}
+    for owner, field, decl in clip_targets(result):
+        if _clip_field(owner, field, _CLIP_BUDGETS[decl.budget]()):
+            counter = decl.counter or DEFAULT_CLIP_COUNTER
+            cut[counter] = cut.get(counter, 0) + 1
+    return cut
+
+
+def _sum_counters(base: Truncation, *cuts: dict[str, int]) -> Truncation:
+    """Somme DÉRIVÉE du modèle : un compteur ajouté à `Truncation` traverse au
+    lieu d'être perdu en chemin."""
+    total = base.model_dump()
+    for cut in cuts:
+        for counter, n in cut.items():
+            total[counter] = total.get(counter, 0) + n
+    return Truncation(**total)
 
 
 def sha256_ref(data: bytes) -> str:
@@ -396,11 +508,13 @@ class NetworkCapture:
         self._costs: dict[str, list[int]] = {"network": [], "console": []}
         self._bytes: dict[str, int] = {"network": 0, "console": 0}
         # Ce qui a été REJETÉ ou coupé, reporté dans `OcularResult.truncation`
-        # via `truncation()` : le résultat dit ce qu'il ne contient pas.
+        # via `truncation()` : le résultat dit ce qu'il ne contient pas. Les
+        # coupes sont tenues PAR COMPTEUR DÉCLARÉ (`engine.result`), pas par un
+        # attribut par champ : un champ `CLIP` ajouté demain arrive avec son
+        # compteur et traverse jusqu'au résultat sans qu'on relise cette classe.
         self.dropped_network = 0
         self.dropped_console = 0
-        self.truncated_post_data = 0
-        self.truncated_text = 0
+        self._cut: dict[str, int] = {}
         # Quelle extrémité survit quand le plafond de cardinalité mord.
         #
         # `first` (défaut, tier BATCH) : une capture one-shot est dominée par la
@@ -416,24 +530,42 @@ class NetworkCapture:
 
     def truncation(self) -> Truncation:
         """État de troncature de CETTE capture, à passer à `ResultBuilder.build`."""
-        return Truncation(
-            network_dropped=self.dropped_network,
-            console_dropped=self.dropped_console,
-            post_data_truncated=self.truncated_post_data,
-            text_truncated=self.truncated_text,
+        return _sum_counters(
+            Truncation(network_dropped=self.dropped_network,
+                       console_dropped=self.dropped_console),
+            self._cut,
         )
 
     def retained_bytes(self, bucket: str) -> int:
-        """Octets de texte actuellement RETENUS pour cette famille d'entrées.
-        Exposé parce qu'un budget qu'on ne peut pas lire ne se mesure pas."""
-        self._resync(bucket)
+        """Octets de texte actuellement RETENUS pour cette famille d'entrées,
+        RE-DÉRIVÉS DU CONTENU à chaque lecture.
+
+        Exposé parce qu'un budget qu'on ne peut pas lire ne se mesure pas — et
+        re-dérivé parce qu'une comptabilité incrémentale ne peut pas voir un
+        REMPLACEMENT en place (une entrée échangée contre une plus lourde sans
+        changer la longueur de la liste) : mesuré, l'ancien coût restait annoncé
+        (1 012 octets annoncés pour 10 000 000 réellement retenus). La lecture
+        rend donc toujours le coût RÉEL, et le réinjecte dans la comptabilité —
+        le `_admit` suivant borne alors sur la bonne valeur.
+
+        Coût : O(octets retenus). C'est un chemin d'OBSERVATION, pas le chemin
+        d'insertion (`_admit` reste incrémental)."""
+        entries = getattr(self, bucket)
+        self._costs[bucket] = [_entry_bytes(e) for e in entries]
+        self._bytes[bucket] = sum(self._costs[bucket])
         return self._bytes[bucket]
 
     def _resync(self, bucket: str) -> None:
         """Re-dérive le coût du tampon si la liste a bougé hors de `_admit` — les
         runners y ajoutent leurs propres messages (`runner_analysis/render.py`,
         `runner_recon/capture.py`). Sans ça, la comptabilité dériverait de la
-        réalité, et un budget qui compte faux ne borne rien."""
+        réalité, et un budget qui compte faux ne borne rien.
+
+        Le déclencheur est la LONGUEUR : c'est ce que coûte O(1) à l'insertion.
+        Un REMPLACEMENT en place (même longueur, entrée plus lourde) échappe donc
+        à ce test — il est rattrapé par `retained_bytes()`, et aucun appelant du
+        dépôt ne le fait : c'est vérifié par une garde dérivée des tampons
+        eux-mêmes (tests/test_capture_buffer_accounting.py), pas par relecture."""
         entries = getattr(self, bucket)
         if len(self._costs[bucket]) != len(entries):
             self._costs[bucket] = [_entry_bytes(e) for e in entries]
@@ -480,6 +612,11 @@ class NetworkCapture:
         self._bytes[bucket] += cost
         return True
 
+    def _count(self, cut: dict[str, int]) -> None:
+        """Reporte les coupes sous le compteur que la DÉCLARATION nomme."""
+        for counter, n in cut.items():
+            self._cut[counter] = self._cut.get(counter, 0) + n
+
     def attach(self, page: Any) -> None:
         def _on_request(req: Any) -> None:
             # Plafonds de TAILLE par champ : une page hostile n'a pas besoin
@@ -492,9 +629,7 @@ class NetworkCapture:
                 "resource_type": getattr(req, "resource_type", None),
                 "post_data": getattr(req, "post_data", None),
             }
-            if _truncate_post_data(entry, _max_post_data_bytes()):
-                self.truncated_post_data += 1
-            self.truncated_text += _clip_entry_text(entry, _max_url_bytes(), _max_headers_bytes())
+            self._count(_clip_declared(entry, NetworkEntry))
             if not self._admit("network", entry, _max_network_entries()):
                 return
             self._req_index[req] = entry
@@ -507,8 +642,7 @@ class NetworkCapture:
 
         def _on_console(msg: Any) -> None:
             entry = {"level": msg.type, "text": msg.text}
-            if _clip_field(entry, "text", _max_console_text_bytes()):
-                self.truncated_text += 1
+            self._count(_clip_declared(entry, ConsoleEntry))
             self._admit("console", entry, _max_console_entries())
 
         page.on("request", _on_request)
@@ -577,8 +711,11 @@ def _shed_to_json_cap(result: OcularResult, cap: int) -> Truncation:
     `static_findings` — omettait `dom.forms` et `dom.mailtos`, que les quatre
     tiers remplissent DEPUIS LE CONTENU DE LA PAGE : mesuré avec
     `OCULAR_MAX_RESULT_JSON_BYTES=262144`, un résultat dont la masse est dans ces
-    deux listes sortait à 725 493 octets, `truncation` à zéro, donc annoncé
-    COMPLET. Un champ de volume variable ajouté demain ne peut plus manquer ici :
+    deux listes sortait à 491 245 octets (×1,87 le plafond), `truncation` à zéro,
+    donc annoncé COMPLET. C'est la mesure du VRAI chemin page -> extracteurs ->
+    `build` : les plafonds d'extraction en retiennent 100 de chaque et tronquent
+    chaque élément, donc une page de 120 formulaires + 120 mailto n'en fait
+    passer que 100. Un champ de volume variable ajouté demain ne peut plus manquer ici :
     sans déclaration, `engine.result` refuse de s'importer.
 
     Le délestage retire la MÊME FRACTION de chaque liste (l'ordre de parcours ne
@@ -708,33 +845,38 @@ class ResultBuilder:
         # sous le plafond ne compte rien).
         _raw_network = list(network or [])
         _raw_console = list(console or [])
-        _body_cap = _max_post_data_bytes()
-        _url_cap, _headers_cap = _max_url_bytes(), _max_headers_bytes()
-        _text_cap, _title_cap = _max_console_text_bytes(), _max_title_bytes()
+        # Les champs COUPÉS sont ceux que le MODÈLE déclare `CLIP` (`clip_fields`),
+        # avec le budget que leur déclaration nomme. Aucun nom de champ n'est
+        # écrit ici : la version précédente en énumérait six (`url`, `headers`,
+        # `post_data`, `text`, `title`, `final_url`) et déclarer un septième
+        # champ coupable ne faisait donc RIEN.
+        _cut: dict[str, int] = {}
+
+        def _tally(cuts: dict[str, int]) -> None:
+            for _counter, _n in cuts.items():
+                _cut[_counter] = _cut.get(_counter, 0) + _n
+
         _kept_network: list[dict[str, Any]] = []
-        _body_truncated = 0
-        _text_truncated = 0
         for _n in _raw_network[: _max_network_entries()]:
             _entry = dict(_n)
-            if _truncate_post_data(_entry, _body_cap):
-                _body_truncated += 1
-            _text_truncated += _clip_entry_text(_entry, _url_cap, _headers_cap)
+            _tally(_clip_declared(_entry, NetworkEntry))
             _kept_network.append(_entry)
         _kept_console = []
         for _c in _raw_console[: _max_console_entries()]:
             _entry_c = dict(_c)
-            _text_truncated += int(_clip_field(_entry_c, "text", _text_cap))
+            _tally(_clip_declared(_entry_c, ConsoleEntry))
             _kept_console.append(_entry_c)
-        # `document.title` et `final_url` sont écrits par la page au même titre
-        # que le reste — un titre de 10 Mio dictait 10 Mio de résultat.
-        # Même point unique : le DOM passe par un dict le temps de la coupe, donc
-        # `title`/`final_url` gagnent le marqueur par entrée comme les autres.
-        _dom_fields: dict[str, Any] = {"title": _dom.title, "final_url": _dom.final_url}
-        _cut_dom = int(_clip_field(_dom_fields, "title", _title_cap))
-        _cut_dom += int(_clip_field(_dom_fields, "final_url", _title_cap))
-        if _cut_dom:
-            _dom = _dom.model_copy(update=_dom_fields)
-            _text_truncated += _cut_dom
+        # Le DOM n'est PAS coupé ici : ses champs (`title`, `final_url`, et ceux
+        # qu'on lui ajoutera) sont pris en charge par le filet de bout de chaîne
+        # `_clip_result`, sur le résultat bâti. Ce qui doit être coupé AVANT la
+        # construction, c'est ce que le MODÈLE refuserait (`post_data` porte une
+        # longueur maximale) et ce que le triage lit (les entrées réseau/console,
+        # qu'il reçoit sous forme de dicts).
+        #
+        # Copie DÉFENSIVE : la coupe et son marqueur mutent l'instance, et
+        # l'appelant nous a prêté la sienne. Le marqueur reçoit sa propre liste,
+        # sans quoi il écrirait dans celle de l'appelant.
+        _dom = _dom.model_copy(update={"truncated_fields": list(_dom.truncated_fields)})
         _findings_cap = _max_findings()
         _findings_dropped = max(0, len(_findings) - _findings_cap)
         _findings = _findings[:_findings_cap]
@@ -746,15 +888,14 @@ class ResultBuilder:
         _here = Truncation(
             network_dropped=len(_raw_network) - len(_kept_network),
             console_dropped=len(_raw_console) - len(_kept_console),
-            post_data_truncated=_body_truncated,
             findings_dropped=_findings_dropped,
-            text_truncated=_text_truncated,
             html_chars_dropped=_html_chars_dropped,
         )
-        _truncation = Truncation(**{
-            name: getattr(_upstream, name) + getattr(_here, name)
-            for name in Truncation.model_fields
-        })
+        _truncation = _sum_counters(
+            Truncation(**{name: getattr(_upstream, name) + getattr(_here, name)
+                          for name in Truncation.model_fields}),
+            _cut,
+        )
         triage = compute_triage(
             _findings, verdict=verdict,
             network=_kept_network, console=_kept_console, dom=_dom,
@@ -783,6 +924,16 @@ class ResultBuilder:
             artifacts=self.artifacts,
             truncation=_truncation,
         )
+        # Filet de bout de chaîne pour la coupe : les trois porteurs ci-dessus
+        # sont ceux que CE build remplit, mais un champ `CLIP` peut vivre
+        # ailleurs dans l'arbre (sur un porteur qu'un autre chemin construit).
+        # `_clip_result` parcourt le résultat BÂTI et coupe tout ce que le modèle
+        # déclare coupable, où qu'il soit — ce qui vient d'être coupé au-dessus
+        # est déjà sous son budget, donc n'est pas compté deux fois.
+        _late = _clip_result(result)
+        if _late:
+            _truncation = _sum_counters(_truncation, _late)
+            result.truncation = _truncation
         # Dernière garde, MESURÉE : les plafonds ci-dessus bornent le texte, pas
         # le JSON échappé. Après ce point, `_json_size(result) <= cap` — c'est
         # cette propriété-là qui est testée, et c'est elle qui empêche le plafond

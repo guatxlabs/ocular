@@ -127,9 +127,12 @@ def test_headers_name_themselves(monkeypatch):
     req = _Req("https://e.test/")
     hooks["request"](req)
     cap.network[0]["headers"] = {f"h{i}": "v" * 40 for i in range(5)}
-    from engine.wrapper import _clip_entry_text
-    _clip_entry_text(cap.network[0], _max_url_bytes(), 64)
+    from engine.wrapper import _clip_declared
+    assert _clip_declared(cap.network[0], NetworkEntry) == {"text_truncated": 1}
     assert "headers" in cap.network[0]["truncated_fields"]
+    assert len(cap.network[0]["headers"]) == 1, (
+        "un dict d'en-têtes est réduit à son budget GLOBAL, pas champ par champ"
+    )
 
 
 # --- 2. l'alias historique reste servi, sans devenir une 2e source de vérité --
