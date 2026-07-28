@@ -236,7 +236,7 @@ def test_every_variable_volume_window_is_bounded_and_says_what_it_lost(cap):
 
     Mesuré sur 28ddf1c : la garde rendait `isinstance(value, (list, str))` et
     descendait les objets, donc une CLEF scalaire dictée par la page (comme un
-    `tuple`) la traversait — corps `/live` de 40 000 422 octets pour un budget de
+    `tuple`) la traversait — corps `/live` de 40 000 435 octets pour un budget de
     8 388 608, il DOUBLAIT, 502 à chaque poll, AU DÉFAUT. Le comptage est vérifié
     à l'unité près : « délesté sans le dire » est le défaut d'origine, et un
     compteur approximatif le rouvrirait à moitié."""
@@ -276,7 +276,7 @@ def test_a_window_that_fits_is_left_intact():
 def test_a_page_dictated_object_key_cannot_double_the_response():
     """Le défaut FERMÉ ce tour-ci, isolé. Une CLEF d'objet dictée par la page —
     `<meta name="AAA…20 Mio">` — restait dans la charpente : `/live` rendait
-    40 000 422 octets (il DOUBLAIT) pour un budget de 8 388 608, 502 permanent AU
+    40 000 435 octets (il DOUBLAIT) pour un budget de 8 388 608, 502 permanent AU
     DÉFAUT. Elle emportait `verdict` avec elle : la charpente seule dépassait le
     plafond, toutes les parts tombaient à zéro, et la chaîne de 6 caractères
     dictée par le CODE était amputée aussi complètement que la masse de la page.

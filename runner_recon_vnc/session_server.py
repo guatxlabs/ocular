@@ -585,11 +585,17 @@ def _variable_windows(
     On ne DESCEND PAS dans un objet pour en réduire les valeurs une à une : la
     CLEF échapperait alors à la borne — elle resterait dans la charpente, dictée
     par la page. Mesuré sur 28ddf1c, en configuration PAR DÉFAUT, page portant un
-    `<meta name="AAA…20 000 000">` : corps `/live` de 40 000 422 octets (il
+    `<meta name="AAA…20 000 000">` : corps `/live` de 40 000 435 octets (il
     DOUBLAIT) pour un budget de 8 388 608, donc 502 aux polls 1, 2 et 3 — le refus
     PERMANENT était de retour, au défaut, et la suite restait verte parce que la
     page hostile du test n'exerçait que des VALEURS, jamais une clef ni un tuple.
-    Une paire est bornée sur ses deux moitiés à la fois, ou pas du tout."""
+    Une paire est bornée sur ses deux moitiés à la fois, ou pas du tout.
+
+    PORTÉE : cette borne suppose des clefs d'objet SÉRIALISABLES en JSON (`str`),
+    ce que la couche HTTP impose de toute façon — une réponse dont une clef est un
+    `tuple`/`set` échoue à `json.dumps` (500) avant toute borne, ici comme chez
+    Starlette. Tous les producteurs de payload `/live` construisent des clefs
+    `str` ; un champ futur à clef non-`str` ne serait de toute façon pas servable."""
     return [
         (payload, key)
         for key, value in payload.items()
@@ -641,7 +647,9 @@ def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
                     if owner[key] is not truncation]   # les compteurs ne sont pas une fenêtre
         couts = [len(json.dumps(owner[key])) for owner, key in fenetres]
         # Budget des fenêtres = le plafond moins la charpente (clefs, compteurs,
-        # scalaires bornés). Marge de 10 % : converge en un ou deux tours.
+        # scalaires bornés). Marge de 10 % : chaque fenêtre est ramenée SOUS sa part
+        # par accumulation de coût (éléments/paires entiers), donc la somme repasse
+        # sous le plafond en UNE passe, quel que soit l'ordre des éléments.
         allouable = max(0.0, (cap - (size - sum(couts))) * 0.9)
         parts: dict[int, float] = {}
         reste, restantes = allouable, len(fenetres)
@@ -670,15 +678,35 @@ def _fit_live_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
                 if not perdu:
                     continue
                 owner[key], suffixe = kept, "_dropped"
-            else:
-                # Chaîne (octets coupés) ou tableau — `list` ou `tuple` : `[:n]`
-                # rend le même type, donc un tuple est réduit comme une liste.
+            elif isinstance(value, str):
+                # Chaîne : coupe proportionnelle en octets — le coût est uniforme le
+                # long de la chaîne, donc `[:n]` la ramène sous la part en une passe.
                 n = int(len(value) * part / cout) if cout else 0
                 if n >= len(value):
                     continue
                 perdu = len(value) - n
                 owner[key] = value[:n]
-                suffixe = "_chars_dropped" if isinstance(value, str) else "_dropped"
+                suffixe = "_chars_dropped"
+            else:
+                # Tableau (`list` ou `tuple`) : on RETIENT les premiers éléments tant
+                # que le coût CUMULÉ tient dans la part, puis on s'arrête — comme les
+                # paires d'un objet. Une coupe proportionnelle `[:n]` garderait le
+                # préfixe quel que soit son POIDS : un élément géant en tête resterait,
+                # la réponse ne descendrait pas sous la part, et il faudrait des dizaines
+                # de passes (mesuré, ordre-dépendant). L'accumulation par coût ramène la
+                # fenêtre sous sa part en UNE passe, quel que soit l'ordre. `value[:kept]`
+                # rend le même type — un tuple reste un tuple.
+                kept_n, used = 0, 0
+                for el in value:
+                    used += len(json.dumps(el))
+                    if used > part:
+                        break
+                    kept_n += 1
+                if kept_n >= len(value):
+                    continue
+                perdu = len(value) - kept_n
+                owner[key] = value[:kept_n]
+                suffixe = "_dropped"
             truncation[key + suffixe] = truncation.get(key + suffixe, 0) + perdu
             reduit += perdu
         if not reduit:
