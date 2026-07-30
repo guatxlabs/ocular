@@ -253,7 +253,7 @@ curl -X POST http://localhost:8000/sessions \
   -H "Content-Type: application/json" \
   -d '{"url": "https://exemple-suspect.tld"}'
 # HTTP 202 Accepted (réponse en < 1 s)
-# -> {"session_id": "sess-…", "token": "…"}  -- token capability WS, à usage unique
+# -> {"session_id": "sess-…", "token": "…"}  -- token capability WS, valable tant que la session vit
 ```
 
 > **202 ne veut PAS dire « prête ».** La session est *acceptée* ; son conteneur met encore ~7-9 s
@@ -373,8 +373,12 @@ Sur un VPS :
    s'exécute dans le conteneur `broker` (via `docker compose exec`, qui a accès au bon Redis
    et au volume partagé) — la stack doit être démarrée (`make up`) au préalable.
 
-Le tier `web` n'a jamais accès à `docker.sock` (seul `broker` y accède) et lit les artefacts en
-lecture seule depuis le volume partagé `ocular-artifacts`. Il est recommandé de mettre un
+Le tier `web` n'a jamais accès à `docker.sock` (seul `broker` y accède). Il monte le volume partagé
+`ocular-artifacts` en **lecture-écriture** — et non en lecture seule : il y écrit les artefacts des
+captures de session interactive (`POST /sessions/{id}/capture`). Ce qui borne le risque n'est pas le
+mode de montage mais le **store adressé par contenu** : `store_blobs` vérifie que `ref ==
+sha256(contenu)` avant toute écriture, donc un `web` compromis ne peut déposer un blob que **sous son
+propre nom de hash** — il ne peut pas empoisonner une entrée existante. Il est recommandé de mettre un
 reverse-proxy (Caddy) avec TLS + une couche d'authentification supplémentaire devant `web` avant
 toute exposition publique.
 
