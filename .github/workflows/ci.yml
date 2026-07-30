@@ -85,19 +85,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Un octet NUL dans un fichier suivi le fait classer en `data`, et `grep` SANS `-a` le
-      # saute EN SILENCE. Mesuré dans le dépôt frère `forge` — un NUL dans un commentaire de
-      # code, et grep y trouvait 0 occurrence d'un motif présent 9 fois : un secret déposé là
-      # n'aurait été vu par personne. La garde n'énumère aucun fichier : elle exige que TOUT
-      # fichier suivi porteur d'un NUL soit déclaré binaire dans `.gitattributes` — donc un
-      # fichier ajouté demain est couvert par construction — et que la déclaration reste
-      # étroite, pour qu'un `*.py binary` ne la désarme pas d'une ligne.
-      # NOTE : ce dépôt n'a AUCUN scan de secrets en CI (ni gitleaks ni équivalent), là où plume
-      # et forge en ont un. Cette garde ne le remplace pas — elle supprime seulement l'angle mort
-      # qui rendrait un tel scan muet sur un fichier. Le scan lui-même reste à ajouter.
-      - name: Aucun octet NUL non déclaré (sinon les scans de secrets sautent le fichier)
-        run: python3 .github/scripts/check_no_stray_nul.py
-
       - name: Les fichiers de licence des composants tiers sont présents
         # Régression déjà survenue DEUX FOIS, sur deux types de contenu : les
         # en-têtes noVNC renvoyaient à un LICENSE.txt qui n'était PAS distribué,
@@ -119,42 +106,88 @@ jobs:
       - name: Toute police redistribuée est couverte par une licence et un avis
         # La liste ci-dessus est une garde contre la SUPPRESSION des textes déjà
         # connus ; elle ne dit RIEN d'une police AJOUTÉE demain. Cette étape-ci
-        # est donc DÉRIVÉE du contenu réel : elle part des `.woff2` PRÉSENTS, pas
+        # est donc DÉRIVÉE du contenu réel : elle part des polices PRÉSENTES, pas
         # d'une énumération à maintenir. Ajouter une famille sans sa licence ni
         # son entrée d'avis échoue le build — c'est exactement le défaut qui est
         # passé inaperçu la première fois.
         #
-        # Deux exigences par FAMILLE (le sous-ensemble -latin/-latin-ext n'est pas
-        # une famille : une licence couvre la famille, pas le découpage) :
-        #   1. un texte de licence NON VIDE dont le nom cite la famille ;
-        #   2. la famille est nommée dans THIRD-PARTY-NOTICES.md.
-        # Le point 2 prouve que la famille est RECENSÉE, pas que le recensement
-        # soit complet — la complétude (copyright, version, amont) reste une
-        # relecture humaine. Les trois mutations ont été vérifiées : famille
-        # ajoutée sans licence, licence d'une seule famille retirée, licence
-        # présente mais vide.
+        # DEUX EXIGENCES PAR FAMILLE — le découpage `-latin` / `-latin-ext` n'est pas
+        # une famille, une licence couvre la famille pas le sous-ensemble :
+        #   1. un texte de licence NON VIDE, dans le dossier de la police, dont
+        #      l'AVIS DE COPYRIGHT nomme la famille ;
+        #   2. une section `## <Famille>` dans THIRD-PARTY-NOTICES.md.
+        #
+        # Les deux formes ont été RESSERRÉES après avoir mesuré que la version
+        # précédente ne mordait pas :
+        #   * elle cherchait la famille comme SOUS-CHAÎNE dans tout l'avis. Or ce
+        #     fichier contient « interactif » et « interdit » : mutation vérifiée,
+        #     la section « ## Inter » ENTIÈRE supprimée, la garde restait VERTE. La
+        #     comparaison porte désormais sur les TITRES de section, par ÉGALITÉ.
+        #   * elle acceptait un texte dont le NOM DE FICHIER cite la famille, ce qui
+        #     ne dit rien de son contenu. C'est la ligne `Copyright` du texte qui est
+        #     lue — soit exactement ce que la clause 2 de l'OFL exige d'accompagner.
+        #
+        # Les polices sont énumérées par TYPE, pas par extension ni par dossier : la
+        # signature du format (4 premiers octets) puis, en second filet, la
+        # description de `file`. Une police ajoutée sous un autre nom, hors de
+        # `web/ui/fonts`, ou sans extension est donc couverte par construction. Un
+        # fichier mal classé rend le build ROUGE plutôt que muet.
+        #
+        # Le point 2 prouve que la famille est RECENSÉE, pas que le recensement soit
+        # exact : la version, l'amont et l'avis de copyright restent une relecture
+        # humaine (ils se lisent dans la table `name` de la police, pas dans son nom
+        # de fichier). Mutations vérifiées ROUGES : texte de licence supprimé, vide,
+        # ou couvrant une autre famille ; section d'avis retirée (dont « ## Inter ») ;
+        # police ajoutée sans licence, dans un autre dossier, ou sans extension.
         run: |
           set -eu
           status=0
-          fonts=$(find web/ui/fonts -name '*.woff2' -print | sort)
-          [ -n "$fonts" ] || { echo "::error::aucune police trouvée — ce contrôle est devenu muet, le réparer"; exit 1; }
+
+          # Univers = ce que le dépôt SUIT, donc ce qu'il redistribue.
+          fonts=""
+          while IFS= read -r -d '' f; do
+            magic=$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')
+            case "$magic" in
+              # wOF2       wOFF       OTTO       TrueType   'true'     ttcf
+              774f4632|774f4646|4f54544f|00010000|74727565|74746366) ;;
+              *) file -b "$f" | grep -qiE 'font data|font format|opentype|truetype' || continue ;;
+            esac
+            fonts="$fonts$f
+          "
+          done < <(git ls-files -z)
+
+          [ -n "$fonts" ] || { echo "::error::aucune police détectée — ce contrôle est devenu muet, le réparer"; exit 1; }
+
           # Normalise pour comparer « jetbrains-mono » (nom de fichier) et
-          # « JetBrains Mono » (prose de l'avis) : minuscules, sans séparateur.
+          # « JetBrains Mono » (titre de section) : minuscules, sans séparateur.
+          # `[ _-]` et non `' -_'` : dans un intervalle, ` -_` va de l'espace au
+          # souligné et emporte chiffres, majuscules et ponctuation.
           norm() { tr '[:upper:]' '[:lower:]' | sed 's/[ _-]//g'; }
-          notices=$(norm < THIRD-PARTY-NOTICES.md)
-          for f in $fonts; do
+
+          headings=$(grep -E '^#{2,} ' THIRD-PARTY-NOTICES.md | sed -E 's/^#+ +//' | norm)
+
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
             dir=$(dirname "$f")
-            slug=$(basename "$f" .woff2 | sed -E 's/-latin(-ext)?$//' | norm)
-            printf '%s\n' "$notices" | grep -qF "$slug" \
-              || { echo "::error file=$f::famille « $slug » redistribuée mais absente de THIRD-PARTY-NOTICES.md"; status=1; }
+            base=$(basename "$f")
+            slug=$(printf '%s' "${base%.*}" | sed -E 's/-latin(-ext)?$//' | norm)
+            [ -n "$slug" ] || { echo "::error file=$f::aucune famille dérivable de ce nom de fichier"; status=1; continue; }
+
+            printf '%s\n' "$headings" | grep -qxF "$slug" \
+              || { echo "::error file=$f::famille « $slug » redistribuée sans section « ## <famille> » dans THIRD-PARTY-NOTICES.md"; status=1; }
+
             found=""
-            for lic in "$dir"/OFL-*.txt; do
+            for lic in "$dir"/OFL* "$dir"/LICEN[CS]E* "$dir"/COPYING*; do
               [ -s "$lic" ] || continue
-              case "$(basename "$lic" | norm)" in *"$slug"*) found=$lic ;; esac
+              cp=$(grep -i '^copyright' "$lic" | norm) || true
+              case "$cp" in *"$slug"*) found=$lic; break ;; esac
             done
             [ -n "$found" ] \
-              || { echo "::error file=$f::aucun texte de licence non-vide couvrant « $slug » dans $dir"; status=1; }
-          done
+              || { echo "::error file=$f::aucun texte de licence non vide dont l'avis de copyright nomme « $slug » dans $dir"; status=1; }
+          done <<EOF
+          $fonts
+          EOF
+
           exit $status
 
       - name: Aucun SPDX du projet posé sur du code tiers
@@ -166,6 +199,130 @@ jobs:
             exit 1
           fi
 
+  secrets:
+    # Scan de secrets — l'arbre ET l'historique. Un dépôt qui passe en public sans
+    # ce contrôle n'a aucun moyen de savoir qu'il ne publie pas une clef : ni la
+    # suite unitaire, ni `ruff`, ni la garde de licence ne regardent la VALEUR
+    # d'une chaîne. Ce dépôt en était dépourvu là où `plume` et `forge` en ont un.
+    name: Scan de secrets (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Historique COMPLET. Un secret « retiré » par un commit correctif reste
+          # dans les commits précédents, où il reste extractible : c'est justement
+          # là qu'il faut le voir. Le checkout par défaut est superficiel (1 seul
+          # commit) et le scan ne verrait alors que la pointe.
+          fetch-depth: 0
+
+      # AVANT le scan, et pour cause : un octet NUL dans un fichier suivi le fait
+      # classer en `data`, et `grep` SANS `-a` le saute EN SILENCE. Mesuré dans le
+      # dépôt frère `forge` — un NUL dans un commentaire de code, et grep y trouvait
+      # 0 occurrence d'un motif présent 9 fois : un secret déposé là n'aurait été vu
+      # par personne. La garde n'énumère aucun fichier : elle exige que TOUT fichier
+      # suivi porteur d'un NUL soit déclaré binaire dans `.gitattributes` — donc un
+      # fichier ajouté demain est couvert par construction — et que la déclaration
+      # reste étroite, pour qu'un `*.py binary` ne la désarme pas d'une ligne.
+      # Cette étape garde le scan ci-dessous : elle est ici, pas ailleurs, pour que
+      # « le scan est muet sur ce fichier » ne puisse pas passer inaperçu.
+      - name: Aucun octet NUL non déclaré (sinon le scan saute le fichier)
+        run: python3 .github/scripts/check_no_stray_nul.py
+
+      # Config gitleaks ÉPHÉMÈRE (écrite sur le runner, jamais commitée), sous
+      # $RUNNER_TEMP et non dans le workspace : le fichier de config ne doit pas
+      # devenir lui-même un fichier de l'arbre scanné.
+      #
+      # `extend.useDefault = true` garde TOUT le jeu de règles par défaut, et la
+      # seule suppression est SCOPÉE À UNE RÈGLE ET À UN FICHIER. Le mécanisme
+      # (`[[rules]]` portant l'`id` d'une règle par défaut + `[rules.allowlist]`)
+      # ne REMPLACE pas la règle : sa regex reste active partout ailleurs.
+      #
+      # POURQUOI jamais par répertoire. Allowlister `tests/`, `docs/` ou `deploy/`
+      # EN BLOC, pour toutes les règles, aveuglerait le scan sur des arborescences
+      # VIVANTES : une vraie clef déposée demain sous `deploy/` passerait sans un
+      # mot. Ocular est un outil de reconnaissance et manipule des jetons — c'est
+      # le dernier dépôt où se permettre un angle mort par commodité.
+      #
+      # Cette liste est CALIBRÉE PAR MESURE : le scan a d'abord été lancé avec ZÉRO
+      # allowlist sur l'arbre et sur l'historique (46 commits, ~7,7 Mo). Il a rendu
+      # UN SEUL constat, et l'entrée ci-dessous est celle de ce constat — vérifiée
+      # en lisant la valeur, pas supposée. Ajouter une entrée sans avoir lu la
+      # valeur, ou « au cas où », rouvre exactement le trou qu'on ferme ici.
+      # Après toute modification de l'arbre, revérifier localement :
+      #     gitleaks detect --source . --config <config> --no-banner --redact --exit-code 1
+      #
+      # RÉSERVE, à écrire plutôt qu'à découvrir : `fetch-depth: 0` donne l'historique
+      # COMPLET DE LA BRANCHE construite, pas du dépôt. Ce que GitHub publie sous
+      # `refs/pull/*` — l'état d'origine d'une PR, y compris ce qu'un force-push a
+      # ensuite retiré de la branche — n'est PAS fetché, donc PAS scanné, et reste
+      # pourtant récupérable par quiconque sur un dépôt public. Cette CI ne peut donc
+      # pas garantir l'absence de secret dans `refs/pull`. Le contrôle correspondant
+      # est un scan LOCAL, sur un clone qui a fetché ces refs :
+      #     gitleaks detect --source . --config <config> --log-opts="--all" --exit-code 1
+      #
+      # CE QUE CE SCAN LOCAL A RÉELLEMENT TROUVÉ, et ce qu'il n'a pas trouvé — les deux
+      # comptent, parce que la première rédaction de ce commentaire affirmait le contraire
+      # et a été RÉFUTÉE par mesure. Sur le dépôt frère `forge`, `--log-opts=--all` a
+      # exhibé une vraie clef privée Ed25519 (32 octets, double base64) : elle vit dans une
+      # génération ANTÉRIEURE à la recréation du dépôt, présente seulement dans le clone
+      # LOCAL. Vérifié ensuite, et c'est le point : ce commit n'est ancêtre d'AUCUNE
+      # référence serveur, et le fichier servi par `main` comme par les quatre
+      # `refs/pull/{1,2}/{head,merge}` est le MÊME blob — un gabarit volontairement
+      # invalide (38 caractères, base64 refusé), donc zéro matériel de clef publié.
+      # Autrement dit : l'angle mort de la CI sur `refs/pull` est réel et structurel, mais
+      # l'exemple ne prouve PAS qu'un secret y ait jamais été publié. Un scan `--all` voit
+      # tout ce que le clone local porte, y compris des objets qui n'ont jamais quitté la
+      # machine : ne confondez pas « trouvé en local » avec « publié ».
+      - name: Écrire la config gitleaks (allowlist scopée à la règle)
+        run: |
+          cat > "$RUNNER_TEMP/gitleaks-ci.toml" <<'EOF'
+          title = "ocular CI gitleaks config"
+          [extend]
+          useDefault = true
+
+          # FAUX POSITIF VÉRIFIÉ — `tests/test_entry_truncation_markers.py`, fonction
+          # `_oidc_token()`. La règle `generic-api-key` matche `id_token=eyJ...`. Le jeton
+          # est CONSTRUIT PAR LE TEST, pas collé : l'en-tête est la constante publique
+          # `eyJhbGciOiJSUzI1NiJ9` (soit `{"alg":"RS256"}`, décodé pour le vérifier), le
+          # corps est un base64url de claims fabriquées sur place (`sub: u1`, 110 groupes
+          # `CN=grp-NNNN,...,DC=example`) et la signature est la chaîne littérale `"sig"`.
+          # Aucun matériel de clef, aucune signature valide, rien qui ouvre un accès : la
+          # fixture n'existe que pour calibrer les plafonds de troncature sur une longueur
+          # réaliste. La règle reste ARMÉE sur tout le reste du dépôt, `tests/` inclus.
+          [[rules]]
+          id = "generic-api-key"
+          [rules.allowlist]
+          paths = ['''^tests/test_entry_truncation_markers\.py$''']
+          EOF
+
+      # Le BINAIRE épinglé, pas la `gitleaks-action` : celle-ci exige désormais un
+      # GITHUB_TOKEN sur les événements `pull_request` (et une licence pour les
+      # organisations), donc elle échouerait sur TOUTE PR et bloquerait le merge
+      # sous un ruleset qui exige la CI. Le binaire ne demande ni jeton ni licence
+      # et se comporte à l'identique sur `push` et sur `pull_request`.
+      #
+      # Épinglé par VERSION **et** par sha256 : un tag de release GitHub est mutable
+      # et l'archive derrière peut être remplacée. La version 8.24.3 et son
+      # empreinte sont celles déjà utilisées par `core`, `plume` et `forge` — une
+      # seule vérité dans la famille de dépôts, pas une deuxième à maintenir.
+      - name: Scan de secrets (arbre + historique)
+        run: |
+          set -euo pipefail
+          GL_VER=8.24.3
+          GL_SHA=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GL_VER}/gitleaks_${GL_VER}_linux_x64.tar.gz"
+          echo "${GL_SHA}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect \
+            --source . \
+            --config "$RUNNER_TEMP/gitleaks-ci.toml" \
+            --no-banner \
+            --redact \
+            --exit-code 1
+
   ci-ok:
     # POINT D'ENTRÉE UNIQUE du ruleset. Le nom `CI` est STABLE : il ne dépend
     # d'aucune matrice, donc faire évoluer les versions de Python testées ne
@@ -175,7 +332,11 @@ jobs:
     # devient impoussable, y compris pour le correctif qui réparerait ça.
     name: CI
     if: always() # sinon un job en échec SAUTE celui-ci au lieu de le faire échouer
-    needs: [unit, docker, licence]
+    # Tout job ajouté ici doit l'être AUSSI dans cette liste : un job absent de
+    # `needs` s'exécute, échoue… et ne bloque RIEN, parce que le seul contrôle
+    # exigé par le ruleset est `CI`, qui ne le regarde pas. C'est le cas de figure
+    # à vérifier avant de dire qu'un contrôle « est en CI ».
+    needs: [unit, docker, licence, secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
