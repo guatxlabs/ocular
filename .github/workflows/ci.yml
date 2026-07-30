@@ -85,6 +85,19 @@ jobs:
         with:
           persist-credentials: false
 
+      # Un octet NUL dans un fichier suivi le fait classer en `data`, et `grep` SANS `-a` le
+      # saute EN SILENCE. Mesuré dans le dépôt frère `forge` — un NUL dans un commentaire de
+      # code, et grep y trouvait 0 occurrence d'un motif présent 9 fois : un secret déposé là
+      # n'aurait été vu par personne. La garde n'énumère aucun fichier : elle exige que TOUT
+      # fichier suivi porteur d'un NUL soit déclaré binaire dans `.gitattributes` — donc un
+      # fichier ajouté demain est couvert par construction — et que la déclaration reste
+      # étroite, pour qu'un `*.py binary` ne la désarme pas d'une ligne.
+      # NOTE : ce dépôt n'a AUCUN scan de secrets en CI (ni gitleaks ni équivalent), là où plume
+      # et forge en ont un. Cette garde ne le remplace pas — elle supprime seulement l'angle mort
+      # qui rendrait un tel scan muet sur un fichier. Le scan lui-même reste à ajouter.
+      - name: Aucun octet NUL non déclaré (sinon les scans de secrets sautent le fichier)
+        run: python3 .github/scripts/check_no_stray_nul.py
+
       - name: Les fichiers de licence des composants tiers sont présents
         # Régression déjà survenue DEUX FOIS, sur deux types de contenu : les
         # en-têtes noVNC renvoyaient à un LICENSE.txt qui n'était PAS distribué,
