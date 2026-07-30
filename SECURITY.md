@@ -9,6 +9,18 @@ dans les métadonnées du dépôt.
 Merci d'inclure : la version ou le commit, le mode de déploiement (compose,
 natif), une reproduction minimale, et l'impact que vous estimez.
 
+## Versions couvertes
+
+Ocular **n'a pas encore de release taguée** : il n'existe donc aucune version à
+énumérer ici, et rien d'autre que `main` n'est maintenu. Les correctifs de
+sécurité atterrissent sur `main`, et c'est le commit de `main` qu'il faut citer
+dans un signalement.
+
+Cette section dira quelles versions sont couvertes le jour où il y aura des tags
+— pas avant. Annoncer une politique de support par version alors qu'aucune
+version n'existe serait une promesse fausse, et ferait chercher à un rapporteur
+un numéro qu'il ne peut pas trouver.
+
 ## Ce qu'est Ocular, et ce que cela implique
 
 Ocular **charge et exécute du contenu web hostile** : c'est sa fonction. La
