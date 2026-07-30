@@ -35,6 +35,12 @@ Messages de commit en français, format *conventional-commits*, un commit par
 changement cohérent. Indexez **chemin par chemin** — jamais `git add -A`, qui
 ramasse aussi ce qui traîne.
 
+## Code de conduite
+
+La participation à ce projet est régie par le [Code de conduite](CODE_OF_CONDUCT.md)
+(Contributor Covenant 2.1). Signalez un comportement inacceptable par le **canal
+privé** du dépôt (onglet *Security* / *Report abuse*), jamais par une issue publique.
+
 ## Licence
 
 Le code propre au projet est sous **AGPL-3.0-or-later** ; en contribuant, vous
