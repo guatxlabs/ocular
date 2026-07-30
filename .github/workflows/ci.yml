@@ -86,18 +86,63 @@ jobs:
           persist-credentials: false
 
       - name: Les fichiers de licence des composants tiers sont présents
-        # Régression déjà survenue : les en-têtes noVNC renvoyaient à un
-        # LICENSE.txt qui n'était PAS distribué. La MPL-2.0 (§3.1) et la licence
-        # MIT exigent que leur texte accompagne le source redistribué — une mise
-        # à jour de vendor/ qui oublie le fichier de licence est un manquement.
+        # Régression déjà survenue DEUX FOIS, sur deux types de contenu : les
+        # en-têtes noVNC renvoyaient à un LICENSE.txt qui n'était PAS distribué,
+        # et les quatre .woff2 étaient redistribués sans aucun texte d'OFL. La
+        # MPL-2.0 (§3.1), la licence MIT et l'OFL-1.1 (clause 2) exigent toutes
+        # que leur texte accompagne ce qui est redistribué — un ajout sous
+        # vendor/ ou fonts/ qui oublie le fichier de licence est un manquement.
         run: |
           set -e
           for f in COPYING \
                    THIRD-PARTY-NOTICES.md \
                    web/ui/vendor/novnc/LICENSE.txt \
-                   web/ui/vendor/novnc/vendor/pako/LICENSE; do
+                   web/ui/vendor/novnc/vendor/pako/LICENSE \
+                   web/ui/fonts/OFL-Inter.txt \
+                   web/ui/fonts/OFL-JetBrainsMono.txt; do
             [ -s "$f" ] || { echo "::error file=$f::fichier de licence manquant ou vide"; exit 1; }
           done
+
+      - name: Toute police redistribuée est couverte par une licence et un avis
+        # La liste ci-dessus est une garde contre la SUPPRESSION des textes déjà
+        # connus ; elle ne dit RIEN d'une police AJOUTÉE demain. Cette étape-ci
+        # est donc DÉRIVÉE du contenu réel : elle part des `.woff2` PRÉSENTS, pas
+        # d'une énumération à maintenir. Ajouter une famille sans sa licence ni
+        # son entrée d'avis échoue le build — c'est exactement le défaut qui est
+        # passé inaperçu la première fois.
+        #
+        # Deux exigences par FAMILLE (le sous-ensemble -latin/-latin-ext n'est pas
+        # une famille : une licence couvre la famille, pas le découpage) :
+        #   1. un texte de licence NON VIDE dont le nom cite la famille ;
+        #   2. la famille est nommée dans THIRD-PARTY-NOTICES.md.
+        # Le point 2 prouve que la famille est RECENSÉE, pas que le recensement
+        # soit complet — la complétude (copyright, version, amont) reste une
+        # relecture humaine. Les trois mutations ont été vérifiées : famille
+        # ajoutée sans licence, licence d'une seule famille retirée, licence
+        # présente mais vide.
+        run: |
+          set -eu
+          status=0
+          fonts=$(find web/ui/fonts -name '*.woff2' -print | sort)
+          [ -n "$fonts" ] || { echo "::error::aucune police trouvée — ce contrôle est devenu muet, le réparer"; exit 1; }
+          # Normalise pour comparer « jetbrains-mono » (nom de fichier) et
+          # « JetBrains Mono » (prose de l'avis) : minuscules, sans séparateur.
+          norm() { tr '[:upper:]' '[:lower:]' | sed 's/[ _-]//g'; }
+          notices=$(norm < THIRD-PARTY-NOTICES.md)
+          for f in $fonts; do
+            dir=$(dirname "$f")
+            slug=$(basename "$f" .woff2 | sed -E 's/-latin(-ext)?$//' | norm)
+            printf '%s\n' "$notices" | grep -qF "$slug" \
+              || { echo "::error file=$f::famille « $slug » redistribuée mais absente de THIRD-PARTY-NOTICES.md"; status=1; }
+            found=""
+            for lic in "$dir"/OFL-*.txt; do
+              [ -s "$lic" ] || continue
+              case "$(basename "$lic" | norm)" in *"$slug"*) found=$lic ;; esac
+            done
+            [ -n "$found" ] \
+              || { echo "::error file=$f::aucun texte de licence non-vide couvrant « $slug » dans $dir"; status=1; }
+          done
+          exit $status
 
       - name: Aucun SPDX du projet posé sur du code tiers
         # Déclarer l'AGPL sur un fichier MPL-2.0 / MIT serait une FAUSSE
