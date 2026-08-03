@@ -53,7 +53,6 @@ from engine.result import (
     ill_shaped_declarations,
     model_tree,
     residual_paths,
-    shed_targets,
     stale_declarations,
     undeclared_fields,
 )
@@ -181,9 +180,14 @@ def test_forms_and_mailtos_alone_cannot_break_the_cap():
     491 245 o., ×1,87 le plafond, `truncation` à zéro."""
     from engine.static import extract_forms, extract_mailtos
 
+    # Les `\x00` sont construits HORS de la partie expression : un antislash n'y est
+    # licite qu'à partir de 3.12 (PEP 701), or le plancher déclaré est 3.11 — et la
+    # matrice le teste. Chaîne engendrée strictement identique (sha256 vérifié).
+    bourrage_action = "\x00" * 500
+    bourrage_mailto = "\x00" * 310
     page = "".join(
-        f'<form action="{"\x00" * 500}" method="POST"></form>'
-        f'<a href="mailto:{i:04d}{"\x00" * 310}">x</a>'
+        f'<form action="{bourrage_action}" method="POST"></form>'
+        f'<a href="mailto:{i:04d}{bourrage_mailto}">x</a>'
         for i in range(120)
     )
     result = _skeleton()
