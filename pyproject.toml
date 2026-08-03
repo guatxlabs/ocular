@@ -32,7 +32,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "fakeredis>=2.36.2", "httpx>=0.28.1", "ruff>=0.15.22", "mypy>=2.3.0", "numpy>=2.4.6"]
+# `ruff` est ÉPINGLÉ À L'ÉGAL, pas en plancher — c'est une PORTE de CI, pas une
+# bibliothèque : son jeu de règles par défaut s'élargit d'une version à l'autre, donc
+# `>=` fait changer le verdict de la CI sans qu'aucun commit du dépôt ne bouge. Mesuré
+# le 2026-08-03 sur cet arbre : `ruff 0.15.22` → 0 constat, `ruff 0.16.1` (publiée le
+# 2026-07-30) → **381 constats sur 69 fichiers**. Monter de version est donc un
+# changement DÉLIBÉRÉ et revu, avec son lot de constats à trancher — jamais une
+# surprise au prochain `pip install`. Même raison que les actions tierces épinglées à
+# un SHA plus haut dans `ci.yml` : un identifiant mutable n'est pas une garde.
+dev = ["pytest>=9.1.1", "pytest-asyncio>=1.4.0", "fakeredis>=2.36.2", "httpx>=0.28.1", "ruff==0.15.22", "mypy>=2.3.0", "numpy>=2.4.6"]
 
 # Paquets DÉCLARÉS explicitement. Sans cette liste, setuptools tente une
 # découverte automatique, voit plusieurs répertoires racine (`deploy`, `docs`,
