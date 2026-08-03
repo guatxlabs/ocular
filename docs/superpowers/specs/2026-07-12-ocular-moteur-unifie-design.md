@@ -204,6 +204,23 @@ ocular/
 5. **Tier 3 gateway durci** : noVNC pixels via passerelle TLS, no-clipboard, input-only, sessions éphémères.
 6. **Durcissement + CI** : lint/format/type (ruff/mypy), scan deps (pip-audit), scan image (trivy), profils seccomp, CI qui exécute la régression sécu.
 
+> **État réel de la phase 6 — mesuré le 2026-08-03, pas supposé.** Ce document est un plan,
+> et un plan que personne ne recolle au réel finit par se lire comme un inventaire de
+> capacités. Trois de ces cinq points sont livrés, deux ne le sont pas :
+>
+> - **`ruff`** — livré : exécuté par le job `unit` de `.github/workflows/ci.yml`.
+> - **`pip-audit`** — livré : job `deps`, bloquant, outil épinglé par version et sha256.
+>   Il ne l'était PAS jusqu'au 2026-08-03 ; la ligne ci-dessus l'a annoncé pendant trois
+>   semaines sans qu'aucun job ne l'exécute.
+> - **profils seccomp** — livrés : `schemas/seccomp-{analysis,recon}.json`, appliqués par
+>   `broker/launcher.py` et `broker/sessions.py`.
+> - **`mypy`** — NON livré. Il est configuré (`[tool.mypy]` dans `pyproject.toml`) et
+>   installé par l'extra `dev`, mais **aucune CI ne l'invoque** : une configuration que
+>   personne ne lance n'est pas un contrôle de types.
+> - **scan d'image (`trivy`)** — NON livré. Aucun scan des images construites, sous aucun
+>   outil. Le job `deps` audite les paquets **Python** déclarés (manifeste et Dockerfiles) ;
+>   il ne dit rien des paquets **système** des images de base.
+
 Chaque phase est un lot délégable à un agent, avec checkpoint de revue.
 
 ---
