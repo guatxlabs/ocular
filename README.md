@@ -372,6 +372,12 @@ forger l'en-tête qu'il veut, pas la signature.
 - **Trois variables sont OBLIGATOIRES** ; s'il en manque une, **tout** jeton est refusé :
   `OCULAR_OIDC_ISSUER` (valeur exacte attendue en `iss`), `OCULAR_OIDC_AUDIENCE` (attendue en
   `aud`), `OCULAR_OIDC_JWKS_URL` (ex. `https://idp/realms/soc/protocol/openid-connect/certs`).
+- **Côté IdP, le jeton doit PORTER l'audience attendue.** Vérifié sur un Keycloak 26.0 réel :
+  un jeton du client `admin-cli` n'a AUCUN claim `aud` et se fait donc refuser
+  (`aud-non-conforme`) — ce n'est pas un défaut, la RFC 9068 exige `aud` sur un jeton d'accès.
+  Il faut un client muni d'un **mappeur d'audience** (`oidc-audience-mapper`, `included.client.audience`
+  = la valeur d'`OCULAR_OIDC_AUDIENCE`). Un `aud` multi-valué — le cas courant, par exemple
+  `["ocular", "master-realm", "account"]` — est accepté dès que l'audience attendue en fait partie.
 - **Le JWKS doit être en HTTPS.** C'est l'ancre de confiance : qui répond à sa place publie ses
   propres clés et signe les jetons qu'il veut. Pour un IdP joignable seulement en clair sur le
   réseau interne, l'assumer explicitement avec `OCULAR_OIDC_ALLOW_INSECURE_JWKS=1`.
