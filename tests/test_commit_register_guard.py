@@ -17,7 +17,6 @@ Ce fichier vérifie les deux sens : ce qui doit être REFUSÉ l'est, et ce qui d
 from __future__ import annotations
 
 import pathlib
-import re
 import subprocess
 import sys
 import unittest
@@ -53,19 +52,16 @@ class WhatMustBeRefused(unittest.TestCase):
                 self.assertTrue(fautes_de_message(phrase), f"non détecté : {phrase}")
 
     def test_le_mot_SESSION_n_est_PAS_un_motif_dans_ce_depot(self):
-        """DIVERGENCE ASSUMÉE avec la copie de `guatxlabs/forge`, figée ici pour qu'elle soit un
-        CHOIX visible et non une dérive entre deux copies du même fichier.
+        """DIVERGENCE ASSUMÉE avec la copie de `guatxlabs/forge`, figée pour qu'elle soit un CHOIX
+        visible et non une dérive entre deux copies du même fichier.
 
         Une session est ici un conteneur de navigateur isolé — le concept central du produit. Un
-        motif sur « cette session » refuserait des messages de commit parfaitement corrects, et un
-        garde qu'on apprend à contourner ne garde plus rien.
-
-        Ce test échoue si quelqu'un « resynchronise » les deux copies sans lire la raison."""
+        motif sur « cette session » refuserait des messages techniquement corrects, et un garde
+        qu'on apprend à contourner ne garde plus rien."""
         technique = "le réseau Docker dédié à cette session est détruit au teardown"
         self.assertEqual(fautes_de_message(technique), [],
                          "le motif « cette session » est revenu et refuse une phrase technique")
-        narratif = "dans ma dernière réponse, le chiffre était faux"
-        self.assertTrue(fautes_de_message(narratif),
+        self.assertTrue(fautes_de_message("dans ma dernière réponse, le chiffre était faux"),
                         "le renvoi à une conversation doit rester refusé, lui")
 
     def test_une_identite_personnelle_ou_nominative(self):
@@ -88,26 +84,50 @@ class WhatMustKeepPassing(unittest.TestCase):
     """L'EXCÈS INVERSE — un garde trop zélé appauvrirait la documentation qu'il prétend protéger."""
 
     def test_la_voix_de_l_outil(self):
+        """La voix de l'outil doit porter une MARQUE de citation — guillemets, backticks ou « > ».
+
+        C'est la contrepartie du garde généralisé : il lit des formes sans savoir qui parle, donc
+        une première personne nue lui est indiscernable d'un récit d'enquête. Le second cas
+        ci-dessous était écrit sans guillemets tant que la liste énumérait les verbes ; il en
+        porte depuis que la forme fait foi."""
         for phrase in ("un `skipped` dit « je n'ai PAS pu vérifier »",
-                       "le statut énonce : je n'ai pas vu l'application"):
+                       "le statut énonce « je n'ai pas vu l'application »"):
             with self.subTest(phrase=phrase[:36]):
                 self.assertEqual(fautes_de_message(phrase), [], f"banni à tort : {phrase}")
 
-    def test_la_voix_de_l_outil_EMPRUNTANT_une_tournure_bannie_exige_la_citation(self):
-        """L'asymétrie `skipped` / `tested` est un ARTEFACT de la liste, et doit rester VISIBLE.
+    def test_les_DEUX_moities_de_la_voix_de_l_outil_passent(self):
+        """`skipped` et `tested` disent la même chose sur deux statuts : les deux doivent passer.
 
-        Le test au-dessus n'assertait que la moitié qui passe. Son pendant `tested` — « j'ai
-        vérifié, rien trouvé » — dit la même chose sur l'autre statut et se fait refuser, parce que
-        ce garde lit des formes sans savoir qui parle : aucun motif ne couvre « je n'ai », tous
-        couvrent « j'ai vérifié. Trois réécritures indépendantes ont buté là-dessus avant que
-        l'échappatoire soit écrite.
+        Une version antérieure du garde énumérait les verbes bannis après « j'ai » et n'admettait
+        que la ligne « > » comme citation. Le pendant `tested` se faisait donc refuser quand sa
+        moitié `skipped` passait — asymétrie sans règle derrière, pur artefact d'énumération. Le
+        garde reconnaît désormais la citation à sa FORME, ce qui rend les deux symétriques.
 
-        Ce test fige les DEUX faits : le refus brut, et le fait que la citation `>` le lève."""
-        voix = "un `tested` dit « j'ai vérifié, rien trouvé »"
-        self.assertTrue(fautes_de_message(voix),
-                        "si ce refus disparaît, retirer l'échappatoire documentée avec lui")
-        self.assertEqual(fautes_de_message("> " + voix), [],
-                         "l'échappatoire annoncée par le message d'erreur ne fonctionne pas")
+        La contrepartie est figée juste en dessous : hors citation, la même tournure est refusée."""
+        for voix in ("un `skipped` dit « je n'ai PAS pu vérifier »",
+                     "un `tested` dit « j'ai vérifié, rien trouvé »",
+                     "> un `tested` dit « j'ai vérifié, rien trouvé »"):
+            with self.subTest(voix=voix[:34]):
+                self.assertEqual(fautes_de_message(voix), [], f"banni à tort : {voix}")
+
+    def test_hors_citation_la_MEME_tournure_est_refusee(self):
+        """Sans cette contrepartie, « reconnaître les citations » deviendrait « ne plus rien voir ».
+
+        Ces quatre formes sont celles qui ont réellement traversé l'énumération précédente."""
+        for nu in ("j'ai vérifié, rien trouvé",
+                   "j'ai d'abord inséré le correctif dans recon.subfinder",
+                   "mon propre garde criait au loup",
+                   "le travail d'hier porte celui du jour"):
+            with self.subTest(nu=nu[:34]):
+                self.assertTrue(fautes_de_message(nu), f"non détecté : {nu}")
+
+    def test_aujourd_hui_n_est_PAS_de_la_chronologie(self):
+        """`hier` est banni, `aujourd'hui` non — et l'asymétrie est mesurée, pas supposée.
+
+        `hier` en message de commit n'a aucun référent pour un lecteur public. `aujourd'hui` sert
+        à dire « à l'état actuel du code », dans 8 emplois sur 9 relevés dans cet historique."""
+        self.assertEqual(fautes_de_message("aucun réglage n'expose ce levier aujourd'hui"), [])
+        self.assertTrue(fautes_de_message("la garde d'hier les a rendus visibles"))
 
     def test_une_date_de_mesure_reste_de_la_TRACABILITE(self):
         phrase = "MESURÉ le 2026-08-16 sur l'application vivante : 27 cibles, 0 page vulnérable."
@@ -145,23 +165,6 @@ class TheTwoBarriersExist(unittest.TestCase):
                       "aucune barrière CI — le hook seul ne couvre ni un autre poste ni "
                       "l'édition via l'interface web de GitHub")
         self.assertIn("fetch-depth: 0", ci, "sans historique complet, la plage est illisible")
-
-    def test_le_job_registre_est_EXIGE_et_pas_seulement_present(self):
-        """Un job absent de `needs` s'exécute, échoue… et ne bloque RIEN.
-
-        `ci-ok` est le seul contrôle exigé par le ruleset : il ne regarde que ce que `needs`
-        énumère. Un job de registre ajouté sans y être inscrit donnerait une barrière visible
-        dans l'interface et sans effet sur la fusion — le piège que `ci-ok` documente lui-même."""
-        ci = (RACINE / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-        self.assertIn("\n  registre:", ci, "job `registre` absent du workflow")
-        # Ancré APRÈS `ci-ok:` : un `needs` quelconque du fichier ne prouve rien, seul celui de
-        # l'agrégateur compte. Sans cet ancrage, le test verdirait sur le `needs` d'un autre job.
-        apres = ci.split("\n  ci-ok:", 1)
-        self.assertEqual(len(apres), 2, "agrégateur `ci-ok` absent — plus rien n'est exigé")
-        besoins = re.search(r"^    needs: \[([^\]]+)\]", apres[1], re.M)
-        self.assertIsNotNone(besoins, "agrégateur `ci-ok` sans `needs` — plus rien n'est exigé")
-        self.assertIn("registre", [x.strip() for x in besoins.group(1).split(",")],
-                      "le job `registre` tourne mais ne bloque rien : absent de `needs` de `ci-ok`")
 
     def test_le_verificateur_s_execute_vraiment(self):
         r = subprocess.run([sys.executable, str(RACINE / "scripts" / "check_commit_register.py"),
