@@ -67,6 +67,15 @@ addopts = "-m 'not integration'"
 asyncio_mode = "auto"
 markers = [
   "integration: requires external tooling — Playwright + Chromium (playwright install chromium) and/or a working Docker daemon",
+  # Le smoke e2e de l'UI porte les DEUX marqueurs. `integration` est ce qui
+  # l'exclut de `pytest -m \"not integration\"` — y compris quand ce filtre est
+  # passé EXPLICITEMENT en ligne de commande, comme le fait la suite dockerisée
+  # (`deploy/Dockerfile.test`) : un `-m` en argument l'emporte sur celui
+  # d'`addopts`, donc élargir `addopts` seul ne l'exclurait PAS de là.
+  # `smoke_ui` est ce qui permet à `make test-int` de le laisser de côté
+  # (`-m \"integration and not smoke_ui\"`) : il exige une pile levée + un
+  # navigateur, il reste donc opt-in via `make smoke-ui`.
+  "smoke_ui: smoke e2e de l'UI dans un navigateur — exige `make up` + l'image runner (cf. `make smoke-ui`)",
 ]
 
 [tool.ruff]

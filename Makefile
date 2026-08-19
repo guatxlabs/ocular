@@ -1,4 +1,4 @@
-.PHONY: build-runner up down analyze script test test-int calibrate gc clean hooks
+.PHONY: build-runner up down analyze script test test-int smoke-ui calibrate gc clean hooks
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
@@ -58,8 +58,43 @@ test-local:
 	. .venv/bin/activate && pytest -m "not integration" -q
 # Tests d'INTÉGRATION : restent sur l'hôte (ils orchestrent Docker : build/run
 # d'images, pas de docker-in-docker). Nécessitent le CLI docker + le venv.
+# `not smoke_ui` : le smoke navigateur porte AUSSI le marqueur `integration`
+# (c'est ce qui l'exclut de `pytest -m "not integration"`, y compris quand ce
+# filtre est passé explicitement — cf. pyproject.toml). Il exige en plus une
+# pile LEVÉE, ce que les autres tests d'intégration n'exigent pas : on le
+# laisse donc opt-in, sur sa propre cible ci-dessous.
 test-int:
-	. .venv/bin/activate && pytest -m integration -q
+	. .venv/bin/activate && pytest -m "integration and not smoke_ui" -q
+# Smoke e2e de l'UI : charge les vues principales (login, submit, jobs,
+# détail/verdict, interactif) dans un VRAI navigateur et échoue sur la moindre
+# exception JS non rattrapée. Aucun autre test n'exécute l'application : les
+# tests unitaires vérifient que les fichiers sont servis, les tests .mjs que des
+# fonctions isolées calculent juste — un module qui n'importe plus passe au vert
+# chez les deux.
+#
+# CIBLE À PART, ET NON DANS LA MATRICE CI : les runners GitHub n'ont pas de
+# navigateur, et ce contrôle exige EN PLUS une pile levée (donc le démon Docker
+# et son socket). C'est un contrôle d'OPÉRATEUR, comme `test-int`.
+#
+# PRÉ-REQUIS : `make build-runner` (l'image runner embarque Camoufox et le
+# playwright épinglé qui sait lui parler) puis `make up`. Le jeton est lu dans
+# l'environnement (OCULAR_TOKEN) ou dans deploy/.env. Tout pré-requis manquant
+# fait SAUTER le test avec la commande à lancer — jamais planter la collecte.
+#
+# Pas de venv ici, contrairement à `test-int` : ce test n'importe que la
+# bibliothèque standard (il orchestre docker), le navigateur et les dépendances
+# du projet vivent dans le conteneur.
+#
+# Le FICHIER est nommé explicitement, et non `-m smoke_ui` seul sur tout
+# `tests/` : pytest doit IMPORTER un module pour lire ses marqueurs, donc un
+# `-m` global ferait échouer la collecte des ~55 modules qui importent pydantic/
+# fastapi sur un hôte où seules les dépendances de dev manquent — MESURÉ : « 55
+# errors during collection » là où ces deux tests-ci, eux, n'ont besoin de rien.
+# Le `-m smoke_ui` reste indispensable malgré le chemin : sans lui, le
+# `addopts = -m 'not integration'` du pyproject désélectionnerait tout.
+# Un futur second fichier de smoke doit être ajouté ici.
+smoke-ui:
+	python3 -m pytest tests/test_ui_smoke_e2e.py -m smoke_ui -q
 # Calibration HORS-LIGNE des poids de triage (lecture seule de la base saved,
 # aucun réseau). Tourne dans un conteneur jetable -> aucun résidu host. L'image
 # de test embarque déjà numpy (deploy/Dockerfile.test) : pas d'install à la volée.
