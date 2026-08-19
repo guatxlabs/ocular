@@ -59,7 +59,13 @@ BANNIES = {
     r"\bcomme demandé\b": "adresse directe à un interlocuteur",
     r"\b(?:vous|votre) (?:avez|aviez|aurez|trouverez)\b": "adresse directe à un interlocuteur",
     r"\bmerci (?:de|pour)\b": "adresse directe à un interlocuteur",
-    r"\b(?:notre|cette) session\b(?! gouvernée)": "chronologie de session comme fil narratif",
+    # PAS de motif sur « cette session » — DIVERGENCE ASSUMÉE avec la copie de `guatxlabs/forge`,
+    # à ne pas « resynchroniser » sans lire ceci. Dans ce dépôt, une session est un CONTENEUR de
+    # navigateur isolé : c'est le concept central du produit, et l'expression apparaît sans cesse
+    # en sens technique (« le réseau Docker dédié à cette session »). Le motif refuserait des
+    # messages de commit parfaitement corrects, et un garde qu'on apprend à contourner ne garde
+    # plus rien. La chronologie de session comme fil narratif reste interdite ; elle n'est
+    # simplement pas atteignable par ce motif-là sans noyer le signal.
     r"\bdans (?:ma|notre) (?:dernière |précédente )?(?:réponse|conversation)\b":
         "renvoi à une conversation",
 }

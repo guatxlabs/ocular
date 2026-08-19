@@ -48,10 +48,25 @@ class WhatMustBeRefused(unittest.TestCase):
                 self.assertTrue(fautes_de_message(phrase), f"non détecté : {phrase}")
 
     def test_la_chronologie_de_session_comme_fil_narratif(self):
-        for phrase in ("cette session a produit trois correctifs",
-                       "dans ma dernière réponse, le chiffre était faux"):
+        for phrase in ("dans ma dernière réponse, le chiffre était faux",):
             with self.subTest(phrase=phrase[:36]):
                 self.assertTrue(fautes_de_message(phrase), f"non détecté : {phrase}")
+
+    def test_le_mot_SESSION_n_est_PAS_un_motif_dans_ce_depot(self):
+        """DIVERGENCE ASSUMÉE avec la copie de `guatxlabs/forge`, figée ici pour qu'elle soit un
+        CHOIX visible et non une dérive entre deux copies du même fichier.
+
+        Une session est ici un conteneur de navigateur isolé — le concept central du produit. Un
+        motif sur « cette session » refuserait des messages de commit parfaitement corrects, et un
+        garde qu'on apprend à contourner ne garde plus rien.
+
+        Ce test échoue si quelqu'un « resynchronise » les deux copies sans lire la raison."""
+        technique = "le réseau Docker dédié à cette session est détruit au teardown"
+        self.assertEqual(fautes_de_message(technique), [],
+                         "le motif « cette session » est revenu et refuse une phrase technique")
+        narratif = "dans ma dernière réponse, le chiffre était faux"
+        self.assertTrue(fautes_de_message(narratif),
+                        "le renvoi à une conversation doit rester refusé, lui")
 
     def test_une_identite_personnelle_ou_nominative(self):
         for nom, email in (("pseudo-perso", "1234567+pseudo-perso@users.noreply.github.com"),
