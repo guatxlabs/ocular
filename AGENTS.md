@@ -68,13 +68,36 @@ personne (« j'avais écarté ce champ », « ma vérification »), l'adresse di
 mesure** (« MESURÉ le 2026-08-16 »), et un **« pourquoi » long** : la longueur n'a jamais été le
 défaut, l'adressage l'était.
 
-Le garde lit des **formes**, pas des intentions — il ne sait pas qui parle. Quand la voix de
-l'outil emprunte une tournure interdite, **préfixez la ligne de `>`** : c'en est une citation, et
-les lignes citées sont ignorées.
+Le garde lit des **formes**, pas des intentions — il ne sait pas qui parle. Toute élision de
+« je » et tout possessif (`mon`, `ma`, `mes`) sont refusés **en bloc**, quel que soit le verbe qui
+suit : la version qui énumérait les verbes a laissé passer 56 occurrences dans `guatxlabs/forge`,
+dans des commits qu'elle déclarait conformes.
+
+La voix de l'outil s'écrit pourtant à la première personne et doit passer. Elle passe en portant
+une **marque de citation** — guillemets « … », code entre backticks, ou ligne `>` :
 
 ```
 > un `tested` dit « j'ai vérifié, rien trouvé » — d'où le contrôle sur l'oracle
 ```
+
+Une citation ne traverse pas un saut de paragraphe, et un span de code ne doit pas être coupé par
+un retour à la ligne, sinon l'appariement des backticks se décale.
+
+**`hier` est interdit, `aujourd'hui` ne l'est pas** : le premier n'a aucun référent pour un lecteur
+qui arrive six mois plus tard, le second dit « à l'état actuel du code ».
+
+**DIVERGENCE ASSUMÉE avec `guatxlabs/forge`, à ne pas resynchroniser sans lire ceci** : ce dépôt
+n'a **aucun motif sur « session »**. Une session est ici un conteneur de navigateur isolé — le
+concept central du produit — et bannir l'expression refuserait des messages parfaitement corrects.
+Un garde qu'on apprend à contourner ne garde plus rien. Un test fige ce choix.
+
+**Les deux slots d'identité sont vérifiés, auteur ET committer** : un `cherry-pick`, un `rebase` ou
+l'édition web laissent l'auteur intact et écrivent une autre identité en committer. Une plage que
+git n'a pas su lire est un refus, pas un silence.
+
+**Un garde n'attrape que ce qu'il sait décrire.** Les 56 occurrences ci-dessus ont été trouvées par
+un audit *indépendant du garde*, écrit avec d'autres motifs, pas par lui. Avant d'affirmer qu'un
+dépôt est propre, écrire un contrôle indépendant et trier ses faux positifs à la main.
 
 **Comment ces règles tiennent** — le hook `commit-msg` arrête la faute au poste local, mais il
 **ne ferme pas** : `git clone` ne le transporte pas et l'édition web ne l'exécute jamais. C'est le
