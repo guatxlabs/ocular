@@ -143,6 +143,111 @@ def forward_for_header() -> str:
     return os.environ.get("OCULAR_FORWARD_FOR_HEADER", "X-Forwarded-For")
 
 
+# --- OIDC JWT in-app (sans reverse-proxy) — opt-in strict -------------------
+# MÊME MODÈLE que le forward-auth ci-dessus : par défaut OFF, et tant que
+# `oidc_enabled()` est faux AUCUN de ces accesseurs n'est appelé (cf.
+# `web/identity._oidc_claims`) — le comportement est alors identique, octet pour
+# octet, à celui d'avant l'introduction de l'OIDC.
+#
+# Différence de nature avec le forward-auth : ici Ocular ne fait confiance à
+# AUCUN intermédiaire, il vérifie lui-même la signature du jeton contre la clé
+# publique de l'IdP (JWKS). La surface de confiance n'est plus « le proxy
+# strippe bien l'en-tête » mais « l'URL JWKS configurée est bien celle de mon
+# IdP » — d'où l'exigence HTTPS par défaut ci-dessous.
+
+
+def oidc_enabled() -> bool:
+    """Opt-in strict : par défaut False → le bearer n'est JAMAIS interprété comme
+    un JWT, aucune requête JWKS n'est émise, et `resolve_identity` se comporte
+    exactement comme avant (bearer statique + forward-auth uniquement)."""
+    return os.environ.get("OCULAR_OIDC_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def oidc_issuer() -> str:
+    """`iss` EXIGÉ dans le jeton (comparaison exacte, jamais un préfixe). Vide =
+    configuration incomplète → tout jeton est refusé (fail-closed) : sans ancrage
+    sur l'émetteur, un jeton signé par n'importe quel IdP dont on aurait par
+    ailleurs l'URL JWKS serait accepté."""
+    return os.environ.get("OCULAR_OIDC_ISSUER", "").strip()
+
+
+def oidc_audience() -> str:
+    """`aud` EXIGÉ dans le jeton. Vide = configuration incomplète → refus.
+    Ne PAS rendre ce contrôle optionnel : sans lui, un jeton émis par le même
+    IdP pour une AUTRE application (un autre client du même realm) ouvrirait
+    Ocular — c'est la confusion d'audience, la faute classique des validations
+    OIDC maison. Piège Keycloak : par défaut `aud` vaut `account`, pas le
+    client-id ; il faut un *audience mapper* côté realm (cf. README)."""
+    return os.environ.get("OCULAR_OIDC_AUDIENCE", "").strip()
+
+
+def oidc_jwks_url() -> str:
+    """URL du document JWKS de l'IdP (Keycloak :
+    `.../realms/<r>/protocol/openid-connect/certs`). Vide = refus.
+    Volontairement EXPLICITE plutôt que dérivée de l'issuer par découverte
+    `/.well-known/openid-configuration` : la découverte ajoute un second appel
+    sortant et une indirection de plus sur le chemin d'authentification, pour
+    n'économiser qu'une variable d'environnement."""
+    return os.environ.get("OCULAR_OIDC_JWKS_URL", "").strip()
+
+
+def oidc_allow_insecure_jwks() -> bool:
+    """Autorise un JWKS en `http://` (IdP joignable uniquement sur le réseau
+    interne du déploiement). Par défaut False → seul `https://` est accepté.
+
+    Ce n'est pas du purisme : le JWKS EST l'ancre de confiance. Qui peut
+    répondre à sa place injecte sa propre clé publique et signe les jetons qu'il
+    veut — donc s'authentifie comme n'importe quel analyste, admin compris. En
+    clair sur le réseau, ça se réduit à un MITM. Même forme d'opt-in explicite
+    que `llm_allow_internal()`."""
+    return os.environ.get("OCULAR_OIDC_ALLOW_INSECURE_JWKS", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def oidc_jwks_ttl() -> int:
+    """Durée de vie du cache JWKS (s). 300 s : un IdP tourne ses clés à l'échelle
+    des heures/jours, et une clé nouvellement publiée est de toute façon
+    récupérée à la demande (refetch sur `kid` inconnu, cf. `web/oidc.JwksCache`).
+    Ce TTL borne surtout le nombre d'appels sortants BLOQUANTS sur le chemin
+    d'authentification."""
+    return _env_int("OCULAR_OIDC_JWKS_TTL", 300, minimum=1)
+
+
+def oidc_clock_skew() -> int:
+    """Tolérance d'horloge (s) appliquée à `exp` et `nbf`. 60 s : sans elle, une
+    dérive NTP de quelques secondes entre l'IdP et l'hôte Ocular produit des 401
+    intermittents impossibles à diagnostiquer. `minimum=0` : une tolérance nulle
+    est un réglage légitime (horloges synchronisées), contrairement à un
+    intervalle de boucle nul."""
+    return _env_int("OCULAR_OIDC_CLOCK_SKEW", 60, minimum=0)
+
+
+def oidc_http_timeout() -> float:
+    """Échéance (s) de la récupération du JWKS. Court par construction : l'appel
+    est SYNCHRONE sur le chemin d'authentification (cf. limite documentée dans
+    `web/oidc`), donc un IdP qui pend ne doit pas immobiliser un worker."""
+    return _env_float("OCULAR_OIDC_HTTP_TIMEOUT", 5.0, minimum=1.0)
+
+
+def oidc_username_claim() -> str:
+    """Claim portant l'identité affichable. Défaut `preferred_username`
+    (Keycloak, Authentik). Repli sur `sub` si absente — `sub` est le seul
+    identifiant garanti par la spec, mais c'est un UUID illisible dans une piste
+    d'audit."""
+    return os.environ.get("OCULAR_OIDC_USERNAME_CLAIM", "preferred_username").strip()
+
+
+def oidc_groups_claim() -> str:
+    """Claim portant les groupes (alimente `OCULAR_ADMIN_GROUP`, exactement comme
+    l'en-tête groupes du forward-auth). Chemin POINTÉ accepté, parce que les
+    rôles Keycloak sont IMBRIQUÉS : `realm_access.roles`. Défaut `groups`
+    (Authentik, oauth2-proxy, et Keycloak avec un mapper de groupes)."""
+    return os.environ.get("OCULAR_OIDC_GROUPS_CLAIM", "groups").strip()
+
+
 def session_ttl() -> int:
     return _env_int("OCULAR_SESSION_TTL", 1800)     # 30 min absolu
 

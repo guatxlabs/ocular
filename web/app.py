@@ -37,6 +37,7 @@ from ocular_settings import (
     llm_enabled,
     max_html_bytes,
     max_sessions,
+    oidc_enabled,
     redis_url,
     result_ttl,
     saved_db_path,
@@ -71,10 +72,12 @@ async def _auth(request, call_next):
         bearer_ok = bool(expected) and secrets.compare_digest(
             provided.encode("utf-8", "ignore"), expected.encode()
         )
-        if not token and not trust_forward_auth():
-            # fail-closed : jamais ouvert par défaut. Le forward-auth peut
-            # autoriser sans OCULAR_TOKEN, donc on ne 503 QUE si aucune des
-            # deux voies d'authentification n'est disponible.
+        if not token and not trust_forward_auth() and not oidc_enabled():
+            # fail-closed : jamais ouvert par défaut. Le forward-auth ET l'OIDC
+            # in-app peuvent autoriser sans OCULAR_TOKEN, donc on ne 503 QUE si
+            # AUCUNE des trois voies d'authentification n'est disponible — sinon
+            # un déploiement purement OIDC (l'IdP fait foi, aucun jeton statique
+            # à distribuer) serait 503 sur toutes ses routes.
             log.warning("auth rejected path=%s status=%d", request.url.path, 503)
             return JSONResponse({"detail": "OCULAR_TOKEN non configuré"}, status_code=503)
         authorized, identity, method = resolve_identity(request, bearer_ok=bearer_ok)
@@ -116,10 +119,13 @@ def _check_admin(request) -> JSONResponse | None:
     de token/groupe dans les logs — seulement path + status."""
     adm = os.environ.get("OCULAR_ADMIN_TOKEN")
     # Le mécanisme groupe n'est "configuré" que si un groupe admin est défini ET
-    # que le forward-auth est de confiance (opt-in) — sinon has_admin_group()
+    # qu'une source de groupes est armée — forward-auth de confiance (opt-in) ou
+    # OIDC in-app (le claim de groupes du JWT vérifié). Sinon has_admin_group()
     # renvoie déjà False (anti-spoofing), mais on veut distinguer "non configuré"
     # (503) de "configuré mais non accordé" (403).
-    group_mechanism_configured = bool(admin_group()) and trust_forward_auth()
+    group_mechanism_configured = bool(admin_group()) and (
+        trust_forward_auth() or oidc_enabled()
+    )
     if not adm and not group_mechanism_configured:
         log.warning("admin rejected path=%s status=%d", request.url.path, 503)
         return JSONResponse({"detail": "aucun mécanisme admin configuré"}, status_code=503)
