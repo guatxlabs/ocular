@@ -26,6 +26,47 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Registre public — IDENTITÉ (auteur ET committer) et ADRESSAGE des messages.
+  #
+  # Le hook `commit-msg` couvre le poste local, mais il ne ferme pas : `git clone`
+  # ne le transporte pas, et l'édition via l'interface web ne l'exécute JAMAIS —
+  # c'est exactement la voie par laquelle des commits à compte personnel sont
+  # entrés dans ces dépôts. Ce job est la barrière qui ferme.
+  # ---------------------------------------------------------------------------
+  registre:
+    name: Registre public (identité + adressage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # la plage poussée doit être lisible
+          persist-credentials: false # aucun jeton ne doit rester dans .git/config
+
+      - name: Vérifier les commits poussés
+        # Les deux valeurs sont des SHA imposés par GitHub, pas du texte libre — mais elles
+        # passent par `env:` plutôt que par une interpolation dans `run:`, qui est le motif
+        # d'injection à ne pas installer, fût-ce sur une entrée aujourd'hui inoffensive.
+        env:
+          BASE_PR: ${{ github.event.pull_request.base.sha }}
+          BASE_PUSH: ${{ github.event.before }}
+        run: |
+          set -eu
+          # Plage : les commits AJOUTÉS par ce push / cette PR. Sur une branche neuve
+          # (`before` = 000…0) ou un dispatch manuel, on retombe sur le dernier commit
+          # via `--rev`, PAS sur une plage littérale « -1 HEAD » : git recevrait cet
+          # argument comme UNE seule révision, la refuserait, et le garde conclurait
+          # « aucun commit, donc aucune faute » — un vert sans rien avoir lu.
+          BASE="${BASE_PR:-${BASE_PUSH:-}}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            echo "plage vérifiée : HEAD seul (pas de base lisible)"
+            python3 scripts/check_commit_register.py --rev HEAD
+          else
+            echo "plage vérifiée : $BASE..HEAD"
+            python3 scripts/check_commit_register.py --range "$BASE..HEAD"
+          fi
+
   unit:
     name: Tests unitaires (${{ matrix.python }})
     runs-on: ubuntu-latest
@@ -446,7 +487,7 @@ jobs:
     # `needs` s'exécute, échoue… et ne bloque RIEN, parce que le seul contrôle
     # exigé par le ruleset est `CI`, qui ne le regarde pas. C'est le cas de figure
     # à vérifier avant de dire qu'un contrôle « est en CI ».
-    needs: [unit, docker, licence, secrets, deps]
+    needs: [registre, unit, docker, licence, secrets, deps]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
