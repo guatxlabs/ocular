@@ -359,6 +359,39 @@ LDAP fronté par un proxy…), sans verrouillage.
 > forward-auth (filet) ; (2) le conteneur `web` n'est **jamais** joignable en direct, seul le
 > proxy l'atteint ; (3) le proxy doit **écraser** ces en-têtes, pas seulement les ajouter.
 
+#### OIDC JWT in-app (sans reverse-proxy) — optionnel
+
+Quand il n'y a **pas** de reverse-proxy authentifiant devant Ocular, le client peut présenter
+directement le jeton d'accès de l'IdP : `Authorization: Bearer <jwt>`. Ocular en vérifie
+lui-même la signature contre le JWKS du fournisseur (Keycloak, Authentik…), puis `iss`, `aud`
+et `exp`. Contrairement au forward-auth, aucun tiers n'est cru sur parole : un client peut
+forger l'en-tête qu'il veut, pas la signature.
+
+- **Désactivé par défaut.** Sans `OCULAR_OIDC_ENABLED=1`, aucun bearer n'est interprété comme
+  un JWT et aucun appel JWKS n'est émis — comportement strictement inchangé.
+- **Trois variables sont OBLIGATOIRES** ; s'il en manque une, **tout** jeton est refusé :
+  `OCULAR_OIDC_ISSUER` (valeur exacte attendue en `iss`), `OCULAR_OIDC_AUDIENCE` (attendue en
+  `aud`), `OCULAR_OIDC_JWKS_URL` (ex. `https://idp/realms/soc/protocol/openid-connect/certs`).
+- **Le JWKS doit être en HTTPS.** C'est l'ancre de confiance : qui répond à sa place publie ses
+  propres clés et signe les jetons qu'il veut. Pour un IdP joignable seulement en clair sur le
+  réseau interne, l'assumer explicitement avec `OCULAR_OIDC_ALLOW_INSECURE_JWKS=1`.
+- **Piège Keycloak** : sans *audience mapper* sur le client du realm, `aud` vaut `account` et
+  non votre `client_id` — les jetons seront refusés (à juste titre : sans contrôle d'audience,
+  un jeton émis pour une autre application du même realm ouvrirait Ocular).
+- Réglages : `OCULAR_OIDC_USERNAME_CLAIM` (défaut `preferred_username`, repli `sub`),
+  `OCULAR_OIDC_GROUPS_CLAIM` (défaut `groups` ; **chemin pointé** accepté pour les rôles
+  Keycloak : `realm_access.roles`), `OCULAR_OIDC_CLOCK_SKEW` (défaut 60 s),
+  `OCULAR_OIDC_JWKS_TTL` (défaut 300 s), `OCULAR_OIDC_HTTP_TIMEOUT` (défaut 5 s).
+- `OCULAR_ADMIN_GROUP` fonctionne à l'identique via le claim de groupes : `DELETE /saved` est
+  accordé à qui présente un jeton valide contenant ce groupe. `GET /auth/whoami` renvoie
+  `{"method": "oidc", ...}`.
+- Algorithmes acceptés : **RS256/RS384/RS512** uniquement (défauts de Keycloak et d'Authentik).
+  `none`, les algorithmes symétriques `HS*`, ainsi que `PS*`/`ES*` sont refusés.
+
+Les trois voies coexistent ; l'ordre de préséance est **bearer statique → forward-auth → OIDC**,
+de sorte que l'ajout de l'OIDC ne peut jamais changer la réponse d'une requête que les deux
+premières tranchaient déjà.
+
 ## Déployer
 
 Sur un VPS :
@@ -402,6 +435,15 @@ dans [`AGENTS.md`](AGENTS.md). Elle s'applique aux sessions humaines comme aux a
 
 Avant toute proposition de fusion : `make test` et `make test-int` verts, plus une
 vérification live de ce qui a changé.
+
+Si le changement touche l'UI (`web/ui/`), ajouter `make smoke-ui` : il charge les vues
+principales — login, submit, jobs, détail/verdict, interactif — dans un **vrai navigateur**
+(Camoufox headless, dans le conteneur runner) et échoue sur la moindre exception JS non
+rattrapée. C'est le seul contrôle qui EXÉCUTE l'application : `make test` vérifie que les
+fichiers sont servis, les tests `.mjs` que des fonctions isolées calculent juste — un module
+ES qui n'importe plus passe au vert chez les deux. Il exige une pile levée (`make up`) et
+reste donc hors CI *(les runners GitHub n'ont pas de navigateur)* ; sans pile, il **saute**
+en indiquant la commande à lancer.
 
 ## Licence
 
