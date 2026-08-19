@@ -119,15 +119,17 @@ Couche **native, résource-consciente**, purement additive : elle **complète** 
 
 ---
 
-## 🔜 Phase 3d — Correctness + UX + durcissement interactif
+## ✅ Phase 3d — Correctness + UX + durcissement interactif — LIVRÉE (A–J tous mergés)
 
 Regroupe le retour utilisateur (2026-07-13) + finitions. Chaque item passe par la méthode (spec courte → SDD → e2e).
+
+> ⚠️ **Les specs A1 à J1 ci-dessous sont conservées AU PRÉSENT, telles qu'elles ont été écrites avant réalisation.** Elles décrivent le défaut et l'attendu, pas un reste à faire — c'est l'encadré d'état juste en dessous qui fait foi. Le titre de cette section portait encore « 🔜 » alors que son propre encadré disait « COMPLÈTE » : un lecteur ne pouvait pas savoir laquelle des deux affirmations valait.
 
 > **État — PHASE 3d COMPLÈTE (A–J tous mergés) :**
 > - **3d-1** : ✅ A verdict · D nom unique · E GC planifié · F upload .htm/.html · G bandeau CSS · H schéma URL+fallback.
 > - **3d-2** : ✅ **I** filtrage SOC (`filter.js`, structuré, sans ReDoS) · ✅ **C** interactif (panneau live pollé/filtrable, fermeture auto onglet 60s + fermeture brutale `disconnected_at`/reaper grâce, sauvegarde) · ✅ **B** Turnstile (mapping viewport→écran `mozInnerScreen` + retry — **validé en direct sur un site protégé par Turnstile** (mapping viewport→écran vérifié)) · ✅ **J** recalibration verdict (re-tier + corroboration phishing/obfuscation — login légitime=benign, phishing/malware=malicious, faux négatifs audités+corrigés, EN+FR).
 >
-> **Suivis (dette, non bloquants)** : (a) Turnstile — le retry ajoute ~4s à toute capture ; gater sur un indicateur Cloudflare (iframe `challenges.cloudflare.com`) pour ne payer le délai que quand un challenge existe. (b) Interactif — le poll `/live` ne réarme pas `mark_connected` (ok tant qu'il n'y a pas de reconnect auto RFB). (c) Langage d'urgence phishing : EN+FR couverts ; autres langues rattrapées par le cluster form-externe mais patterns dédiés = dette.
+> **Suivis (dette, non bloquants)** : (a) Turnstile — le retry ajoute ~4s à toute capture ; gater sur un indicateur Cloudflare (iframe `challenges.cloudflare.com`) pour ne payer le délai que quand un challenge existe. (b) Interactif — le poll `/live` ne réarme pas `mark_connected` (ok tant qu'il n'y a pas de reconnect auto RFB). ~~(c) Langage d'urgence phishing : EN+FR couverts ; autres langues rattrapées par le cluster form-externe mais patterns dédiés = dette.~~ → **✅ RÉSOLU** : EN/FR/**ES/DE/PT**, 12 patterns rejoignant le cluster `_URGENCY`, ReDoS-safe et anti-faux-positif (cf. § Différés techniques). Ce suivi contredisait sa propre résolution, écrite trente lignes plus bas.
 
 ### A. Correctness du verdict
 - **A1 — Script externe seul ≠ malveillant.** `engine/static.py:25` classe **tout** `<script src=https://…>` en `critical` → `compute_verdict` renvoie `malicious`. Une page légitime avec un CDN est donc « malicious ». **Attendu** : un script externe seul ne doit **pas** faire basculer en `suspicious`/`malicious`. Fix : abaisser la sévérité de ce détecteur (`low`/`info`, reste visible comme finding) et/ou ne l'élever que combiné à d'autres signaux (obfuscation, `eval`, exfil). Revoir dans la foulée les autres détecteurs à sévérité trop agressive.
@@ -315,4 +317,4 @@ Nécessitent un **design/plus gros chantier** (pas juste de la dette de code) :
 
 ---
 
-*Dernière mise à jour : 2026-07-19 (publication publique AGPL sur guatxlabs/ocular). Voir `docs/superpowers/specs/` et `docs/superpowers/plans/` pour le détail de chaque phase.*
+*Dernière mise à jour : 2026-08-19 — alignement du titre de la phase 3d sur son propre état, et clôture du suivi (c) que la section « Différés techniques » avait déjà résolu. Publication publique AGPL sur guatxlabs/ocular le 2026-07-19. Voir `docs/superpowers/specs/` et `docs/superpowers/plans/` pour le détail de chaque phase.*
