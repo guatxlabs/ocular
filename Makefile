@@ -1,4 +1,4 @@
-.PHONY: build-runner up down analyze script test test-int calibrate gc clean
+.PHONY: build-runner up down analyze script test test-int calibrate gc clean hooks
 build-runner:
 	docker build -f runner_analysis/Dockerfile -t ocular-runner-analysis:latest .
 	docker build -f runner_recon/Dockerfile -t ocular-runner-recon:latest .
@@ -78,3 +78,13 @@ clean:
 	# c'est un environnement de dev délibéré, pas un cache — le supprimer
 	# depuis `clean` serait une surprise destructrice.
 	rm -rf .pytest_cache .mypy_cache .ruff_cache 2>/dev/null; true
+
+# Hooks du dépôt : identité d'auteur et registre des messages de commit. Le hook n'est PAS
+# transporté par `git clone` — c'est pourquoi cette cible existe, et pourquoi le job CI
+# `registre public` reste la barrière qui ferme (l'édition web n'exécute aucun hook).
+hooks:
+	@git config core.hooksPath .githooks
+	@echo "hooks actifs : $$(git config core.hooksPath)"
+	@echo "identité : $$(git config user.name) <$$(git config user.email)>"
+	@python3 scripts/check_commit_register.py --rev HEAD >/dev/null 2>&1 \
+	  && echo "dernier commit : conforme" || echo "dernier commit : NON conforme (cf. AGENTS.md)"

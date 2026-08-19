@@ -46,6 +46,46 @@ pousse dans le dépôt d'une autre.
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
+### Identité et registre public — vérifiés par la machine
+
+Deux règles non négociables, valables pour **toute** session, y compris une session sans mémoire
+de ce qui précède. Un commit qui les enfreint est refusé.
+
+**1. Une seule identité publique : `guatxlabs <noreply@guatx.com>`**, en auteur **et** en
+committer. Aucune adresse personnelle ni nominative, jamais. Un dépôt publié sous un collectif ne
+doit pas exposer le compte personnel de qui l'écrit. L'historique de ces dépôts a porté deux
+identités pour une même personne, dont un compte GitHub personnel entré par l'**édition via
+l'interface web** — d'où le contrôle sur le committer, que l'édition web est seule à changer.
+
+**2. Un message de commit s'adresse à un LECTEUR PUBLIC.** Écrivez pour quelqu'un qui n'était pas
+dans la pièce et qui doit pouvoir agir sur ce qu'il lit : **ce qui change et pourquoi**.
+
+*Interdit* — le commit n'est pas un compte rendu de conversation : le récit d'enquête à la première
+personne (« j'avais écarté ce champ », « ma vérification »), l'adresse directe à un interlocuteur
+(« comme vous l'avez demandé »), la chronologie de session comme fil narratif.
+
+*Admis* — la **voix de l'outil** (« un `skipped` dit *je n'ai PAS pu vérifier* »), une **date de
+mesure** (« MESURÉ le 2026-08-16 »), et un **« pourquoi » long** : la longueur n'a jamais été le
+défaut, l'adressage l'était.
+
+Le garde lit des **formes**, pas des intentions — il ne sait pas qui parle. Quand la voix de
+l'outil emprunte une tournure interdite, **préfixez la ligne de `>`** : c'en est une citation, et
+les lignes citées sont ignorées.
+
+```
+> un `tested` dit « j'ai vérifié, rien trouvé » — d'où le contrôle sur l'oracle
+```
+
+**Comment ces règles tiennent** — le hook `commit-msg` arrête la faute au poste local, mais il
+**ne ferme pas** : `git clone` ne le transporte pas et l'édition web ne l'exécute jamais. C'est le
+job CI `registre public`, qui voit tout ce qui arrive au dépôt, qui ferme.
+
+```sh
+make hooks                                                   # une fois par clone
+python3 scripts/check_commit_register.py --message-file <f>  # avant de committer
+python3 scripts/check_commit_register.py --range origin/main..HEAD
+```
+
 ## 3. Actions sortantes — GATÉES
 
 Ces actions ne sont **jamais** autonomes et exigent un feu vert humain explicite,
