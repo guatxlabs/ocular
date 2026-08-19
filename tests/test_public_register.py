@@ -30,6 +30,13 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 RACINE = pathlib.Path(__file__).resolve().parents[1]
 
+# Même raison que `test_commit_register_guard` : ce fichier relit la PROSE du dépôt (docs, README,
+# AGENTS), que l'image de test n'embarque pas. Sans ce saut, le contrôle de corpus minimal
+# échouerait en annonçant un dépôt appauvri là où il n'y a qu'une image amputée.
+if not (RACINE / "AGENTS.md").exists():
+    raise unittest.SkipTest(
+        "hors du dépôt (image de test) : la prose à relire n'est pas embarquée")
+
 #: Tournures qui trahissent une adresse à un interlocuteur plutôt qu'à un lecteur.
 BANNIES = {
     r"\bj'avais\b": "récit d'enquête à la première personne",

@@ -24,6 +24,19 @@ import unittest
 RACINE = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RACINE / "scripts"))
 
+# CE FICHIER TESTE LE DÉPÔT, PAS L'APPLICATION. La suite dockerisée n'embarque que le code livré
+# et `tests/` — ni `scripts/`, ni `.githooks/`, ni `.github/`. Le garde de registre n'y a donc
+# aucun objet à vérifier, et l'importer y lève `ModuleNotFoundError` : la collecte entière échoue
+# et emporte les 19 autres tests avec elle.
+#
+# Le saut est conditionné à un FAIT — l'absence du garde sur le disque — et non à une variable
+# d'environnement qu'on pourrait poser par erreur. Là où le dépôt est présent (job « Tests
+# unitaires », poste de développement), ces tests s'exécutent tous.
+if not (RACINE / "scripts" / "check_commit_register.py").exists():
+    raise unittest.SkipTest(
+        "hors du dépôt (image de test) : le garde de registre n'a rien à vérifier ici — "
+        "il est exercé par le job « Tests unitaires » et par le job CI « Registre public »")
+
 from check_commit_register import (  # noqa: E402
     BANNIES, faute_d_identite, fautes_de_message, verifier_revisions)
 
@@ -178,7 +191,12 @@ class TheTwoBarriersExist(unittest.TestCase):
         l'interface web que des commits à compte personnel sont entrés ici. Le contrôle se fait sur
         un dépôt jetable : rien n'est lu ni écrit dans le dépôt courant."""
         import os
+        import shutil
         import tempfile
+        if shutil.which("git") is None:
+            self.skipTest("git absent : ce test FABRIQUE un dépôt pour observer le committer, "
+                          "il ne peut pas s'en passer (le garde, lui, refuse proprement — cf. "
+                          "`test_une_plage_ILLISIBLE_est_un_REFUS_et_non_un_succes`)")
         with tempfile.TemporaryDirectory() as d:
             def git(*a, **env):
                 subprocess.run(["git", *a], cwd=d, capture_output=True, check=True,

@@ -57,8 +57,21 @@ COPY ocular_settings.py ocular_logging.py saved_store.py ./
 # entrer même si le dockerignore est ignoré (build sans BuildKit), ce qui rend
 # vraie l'affirmation ci-dessus (« c'est CETTE liste qui garantit l'absence de
 # fuite »).
-COPY Makefile README.md ./
+COPY Makefile README.md AGENTS.md ./
 COPY deploy/docker-compose.yml deploy/gateway.conf deploy/Dockerfile.broker \
      deploy/Dockerfile.web deploy/Dockerfile.test deploy/.env.example ./deploy/
+# docs/ et scripts/ — deux familles de tests non-integration RELISENT le dépôt plutôt que le
+# code : la liste des résidus publiée dans `docs/DEPLOY-SECURITY.md` doit correspondre au
+# modèle, et le garde de registre (`scripts/check_commit_register.py`, `.githooks`, `.github`)
+# doit être présent et exécutable.
+#
+# Ces répertoires sont copiés PLUTÔT QUE les tests correspondants sautés : un contrôle qui se
+# saute là où on lance `make test` est un contrôle qu'on n'exécute plus, et personne ne le
+# remarque. Ils ne contiennent que du texte et du code de contrôle — aucun secret, l'allowlist
+# ci-dessus reste vraie.
+COPY docs ./docs
+COPY scripts ./scripts
+COPY .githooks ./.githooks
+COPY .github ./.github
 
 CMD ["pytest", "-m", "not integration", "-q"]

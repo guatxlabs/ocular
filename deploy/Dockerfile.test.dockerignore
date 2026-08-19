@@ -11,7 +11,12 @@
 *.egg-info
 .coverage
 .superpowers
-docs
+# docs/ n'est PLUS exclu : deux familles de tests non-integration relisent le dépôt plutôt que
+# le code — la liste des résidus publiée dans `docs/DEPLOY-SECURITY.md` doit correspondre au
+# modèle, et le garde de registre lit `.github/`. Les exclure faisait échouer ces tests DANS
+# l'image en annonçant un dépôt incohérent là où il n'y avait qu'un contexte amputé.
+# Ce sont des fichiers de texte : le contexte reste lean, et l'allowlist de COPY du Dockerfile
+# reste la garantie qu'aucun secret n'entre.
 artifacts
 *.db
 *.db-*
