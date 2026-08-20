@@ -206,12 +206,32 @@ def _doc(unit: str, kib: int) -> str:
     return unit * max(1, (kib * 1024) // len(unit))
 
 
+def _cout_plancher_ms(doc: str, essais: int = 3) -> float:
+    """Le MEILLEUR de `essais` mesures.
+
+    Le bruit d'ordonnancement est à SENS UNIQUE : il ajoute du temps, il n'en
+    retire jamais. Le minimum est donc l'estimateur du coût réel, et prendre la
+    moyenne reviendrait à mesurer la charge de la machine autant que le code.
+    Sur un runner partagé, une seule mesure suffit à faire dériver un ratio."""
+    return min(_cost_ms(doc) for _ in range(essais))
+
+
 @pytest.mark.parametrize("nom,unit", FORMES_EXOTIQUES)
 def test_exotic_forms_are_linear_in_size(nom, unit):
     """×4 de taille : un coût quadratique est multiplié par ~16, un linéaire par
-    ~4. Mesuré avant sur `<input` : 981 ms -> 52 608 ms de 16 à 128 Kio (×53,6)."""
-    petit = _cost_ms(_doc(unit, 16))
-    grand = _cost_ms(_doc(unit, 64))
+    ~4. Mesuré avant sur `<input` : 981 ms -> 52 608 ms de 16 à 128 Kio (×53,6).
+
+    LE SEUIL RESTE À 8, à mi-chemin entre le linéaire attendu et le quadratique
+    qu'on refuse — c'est la MESURE qui est rendue robuste, pas la garde qui est
+    desserrée. Un coût quadratique donne toujours ~16 et échoue toujours.
+
+    Pourquoi ce changement : le test a rougi en CI sur `Tests unitaires (3.13)`
+    au passage d'un commit PUREMENT DOCUMENTAIRE, qui ne peut pas changer le
+    coût d'une expression régulière. Mesuré localement sous 3.13, six fois de
+    suite : ratio 3,4 à 4,9. L'échec venait du runner, pas du code — une mesure
+    de temps réel sur une machine partagée, avec seulement 2× de marge."""
+    petit = _cout_plancher_ms(_doc(unit, 16))
+    grand = _cout_plancher_ms(_doc(unit, 64))
     ratio = grand / max(petit, 1e-6)
     assert ratio < 8.0, (
         f"forme {nom!r} : ×{ratio:.1f} de coût pour ×4 de taille "
