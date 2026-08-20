@@ -49,8 +49,11 @@ Quatre modes, un même schéma de résultat (`OcularResult`) et un même verdict
 - **Authentik** — la validation OIDC est éprouvée contre un Keycloak réel, pas contre Authentik.
 - **Récupération JWKS synchrone** — sur un chemin `async`, bornée (une par TTL, échéance courte).
   La rendre non bloquante imposerait de propager `async` jusque dans les chemins WebSocket.
-- **Smoke e2e de l'UI hors matrice CI** — il exige un navigateur, absent des runners GitHub. Il
-  reste une cible d'opérateur (`make smoke-ui`), comme les tests d'intégration.
+- **Smoke e2e de l'UI hors matrice CI** — ce n'est pas le navigateur qui manque : il vit dans
+  l'image `ocular-runner-recon`, et les runners GitHub ont Docker. C'est le COÛT — bâtir ou
+  tirer ~3,4 Go d'image et lever la pile complète, sur un runner dont le disque tient dans une
+  quinzaine de gigaoctets. Il reste une cible d'opérateur (`make smoke-ui`), comme les tests
+  d'intégration.
 
 ## Limites assumées
 
