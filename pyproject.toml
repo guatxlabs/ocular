@@ -26,7 +26,7 @@ dependencies = [
   "fastapi>=0.139.2",
   "uvicorn>=0.51.0",
   "redis>=8.0.1",
-  "playwright>=1.41",
+  "playwright>=1.62.0",
   "jsonschema>=4.26.0",
   "websockets>=16.1.1",
 ]
