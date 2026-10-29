@@ -126,6 +126,80 @@ def test_network_capture_attach_collects_request_response_console():
     assert cap.console == [{"level": "log", "text": "hi"}]
 
 
+class _NavPage(_FakePage):
+    """Page factice avec un `main_frame` : les requêtes de navigation portent
+    leur cadre, comme dans Playwright (`request.frame`)."""
+
+    def __init__(self):
+        super().__init__()
+        self.main_frame = object()
+
+
+class _NavRequest(_FakeRequest):
+    def __init__(self, url, frame, navigation=True, resource_type="document"):
+        super().__init__(url, resource_type=resource_type)
+        self.frame = frame
+        self._navigation = navigation
+
+    def is_navigation_request(self):
+        return self._navigation
+
+
+def test_redirect_chain_follows_main_frame_navigations_only():
+    page = _NavPage()
+    cap = NetworkCapture()
+    cap.attach(page)
+    iframe = object()
+    for req in (
+        _NavRequest("http://lien-court.example/capture", page.main_frame),
+        _NavRequest("https://lien-court.example/capture", page.main_frame),       # 301 http->https
+        _NavRequest("https://lien-court.example/app.js", page.main_frame, navigation=False, resource_type="script"),
+        _NavRequest("https://ads.example/frame", iframe),              # iframe : hors chaîne
+        _NavRequest("https://example.com/public/index", page.main_frame),  # saut JS
+    ):
+        page.fire("request", req)
+
+    assert cap.redirect_chain() == [
+        "http://lien-court.example/capture",
+        "https://lien-court.example/capture",
+        "https://example.com/public/index",
+    ]
+    # la collecte réseau, elle, garde TOUTES les requêtes
+    assert len(cap.network) == 5
+
+
+def test_redirect_chain_empty_without_redirect_and_dedupes_reloads():
+    page = _NavPage()
+    cap = NetworkCapture()
+    cap.attach(page)
+    page.fire("request", _NavRequest("https://x/a", page.main_frame))
+    assert cap.redirect_chain() == []          # une seule URL n'est pas une chaîne
+    page.fire("request", _NavRequest("https://x/a", page.main_frame))
+    assert cap.redirect_chain() == []          # rechargement : doublon fusionné
+
+
+def test_redirect_chain_is_bounded_against_redirect_loops():
+    page = _NavPage()
+    cap = NetworkCapture()
+    cap.attach(page)
+    for i in range(500):
+        page.fire("request", _NavRequest(f"https://loop/?{i}", page.main_frame))
+    chain = cap.redirect_chain()
+    assert len(chain) == 20 and chain[0] == "https://loop/?0"
+    assert len(cap.navigations) == 20             # borné À L'INSERTION, pas à la lecture
+    assert cap.truncation().other_dropped == 480  # la coupe est dite
+
+
+def test_redirect_chain_ignores_requests_without_frame_api():
+    # Un objet requête sans `is_navigation_request`/`frame` (moteur différent,
+    # cadre détaché) ne doit ni lever dans le listener ni casser la collecte.
+    page = _NavPage()
+    cap = NetworkCapture()
+    cap.attach(page)
+    page.fire("request", _FakeRequest("https://x/a"))
+    assert cap.redirect_chain() == [] and len(cap.network) == 1
+
+
 def test_network_capture_response_without_matching_request_is_ignored():
     page = _FakePage()
     cap = NetworkCapture()

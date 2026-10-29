@@ -86,13 +86,15 @@ async def _scroll_to_load(page: Any) -> None:
         await page.wait_for_load_state("networkidle", timeout=5000)  # réseau calmé
 
 
-def _dom_info(dom_html: bytes, title: str, final_url: str) -> DomInfo:
+def _dom_info(
+    dom_html: bytes, title: str, final_url: str, redirect_chain: Optional[list[str]] = None
+) -> DomInfo:
     """DomInfo enrichi des formulaires (action+méthode) et cibles mailto extraits
     du DOM (indicateurs d'exfiltration ; cf. static.extract_forms/extract_mailtos).
     Factorisé entre les deux chemins de capture (3a et scripté)."""
     dom_str = dom_html.decode("utf-8", "replace") if dom_html else ""
     return DomInfo(
-        title=title, final_url=final_url,
+        title=title, final_url=final_url, redirect_chain=redirect_chain or [],
         forms=extract_forms(dom_str), mailtos=extract_mailtos(dom_str),
     )
 
@@ -146,6 +148,7 @@ def build_result(
     final_url: str,
     turnstile_solved: bool,
     truncation: Optional[Truncation] = None,
+    redirect_chain: Optional[list[str]] = None,
 ) -> tuple[OcularResult, dict[str, bytes]]:
     """Logique pure (aucune dépendance navigateur) : compose l'`OcularResult`
     profil `capture` à partir de données déjà capturées. Testable directement
@@ -169,7 +172,7 @@ def build_result(
         target=url,
         input_hash=url_input_hash(url),
         verdict=compute_verdict(findings),
-        dom_info=_dom_info(dom_html, title, final_url),
+        dom_info=_dom_info(dom_html, title, final_url, redirect_chain),
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
         static_findings=scan,
         network=network,
@@ -471,6 +474,7 @@ async def capture_url(url: str, timeout_ms: int = 45000) -> tuple[OcularResult, 
     return build_result(
         url, screenshots, capture.network, capture.console, dom_html, title,
         final_url, turnstile_solved, truncation=capture.truncation(),
+        redirect_chain=capture.redirect_chain(),
     )
 
 
@@ -561,6 +565,10 @@ async def capture_scripted(
         except Exception as exc:  # noqa: BLE001 - la résolution ne doit jamais casser le scripté
             capture.console.append({"level": "warning", "text": f"turnstile: {type(exc).__name__}"})
 
+        # Chaîne figée AVANT les steps : les navigations qu'ils déclenchent
+        # (`goto`, clic sur un lien) sont voulues par l'analyste, pas des
+        # redirections de la cible.
+        redirect_chain = capture.redirect_chain()
         journal = await run_steps(
             page, validated_steps, screenshot_cb=screenshot_cb, deadline=deadline
         )
@@ -604,7 +612,7 @@ async def capture_scripted(
         target=url,
         input_hash=url_input_hash(url),
         verdict=compute_verdict(findings),
-        dom_info=_dom_info(dom_html, title, final_url),
+        dom_info=_dom_info(dom_html, title, final_url, redirect_chain),
         stealth=StealthInfo(engine="camoufox", turnstile_solved=turnstile_solved),
         static_findings=scan,
         network=capture.network,

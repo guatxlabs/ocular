@@ -93,6 +93,18 @@ def test_build_result_capture_profile_and_hash():
     assert r.artifacts.dom_html_ref in blobs
 
 
+def test_build_result_carries_redirect_chain_to_dom():
+    chain = ["http://lien-court.example/capture", "https://example.com/public/index"]
+    r, _ = build_result(
+        url="http://lien-court.example/capture", screenshots=[], network=[], console=[],
+        dom_html=b"<p>x</p>", title="t", final_url=chain[-1],
+        turnstile_solved=None, redirect_chain=chain,
+    )
+    assert r.dom.redirect_chain == chain
+    # le triage voit enfin la chaîne (signal resté muet tant qu'elle était vide)
+    assert "redirect_chain" in {s.key for s in r.triage.signals}
+
+
 # --- Task B1 : solve_turnstile — retry détection + mapping viewport->écran + vérif ---
 #
 # `vision` (numpy/opencv/xdotool) n'est pas installé dans ce venv de test (il ne

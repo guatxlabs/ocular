@@ -179,6 +179,12 @@ _HARD_MAX_RESULT_JSON_BYTES = 128 * 1024 * 1024
 # en 1-2 tours ; la borne existe pour qu'un cas pathologique termine, pas pour
 # être atteinte.
 _SHED_MAX_ROUNDS = 8
+# Borne de la chaîne de redirection : une page HOSTILE peut boucler sur
+# elle-même (`location.href = location.href + "?x"`) pendant toute une session
+# interactive. La borne s'applique À L'INSERTION (`_record_navigation`), pas à
+# la lecture : sans elle, le tampon des navigations grossirait sans fin, hors
+# de tout budget. 20 sauts couvrent largement une chaîne de cloaking réelle.
+_MAX_REDIRECT_HOPS = 20
 
 
 def _max_artifact_bytes() -> int:
@@ -527,6 +533,12 @@ class NetworkCapture:
         # exactement la preuve recherchée : le POST d'exfiltration émis après le
         # 5000e appel disparaissait sans laisser de trace côté analyste.
         self.keep = keep if keep in ("first", "last") else "first"
+        # URLs des requêtes de NAVIGATION du cadre principal, dans l'ordre.
+        # Playwright émet un `request` par saut (3xx, `location.href`,
+        # meta-refresh) : c'est la chaîne de redirection vue par le navigateur.
+        # Doublons consécutifs fusionnés et longueur bornée À L'INSERTION ; les
+        # URLs sont déjà coupées au budget `url` (`_clip_declared`).
+        self.navigations: list[str] = []
 
     def truncation(self) -> Truncation:
         """État de troncature de CETTE capture, à passer à `ResultBuilder.build`."""
@@ -630,6 +642,8 @@ class NetworkCapture:
                 "post_data": getattr(req, "post_data", None),
             }
             self._count(_clip_declared(entry, NetworkEntry))
+            if _is_main_frame_navigation(page, req):
+                self._record_navigation(entry["url"])
             if not self._admit("network", entry, _max_network_entries()):
                 return
             self._req_index[req] = entry
@@ -648,6 +662,29 @@ class NetworkCapture:
         page.on("request", _on_request)
         page.on("response", _on_response)
         page.on("console", _on_console)
+
+    def _record_navigation(self, url: str) -> None:
+        if self.navigations and self.navigations[-1] == url:
+            return                                   # rechargement : même saut
+        if len(self.navigations) >= _MAX_REDIRECT_HOPS:
+            self._count({"other_dropped": 1})        # dit, jamais silencieux
+            return
+        self.navigations.append(url)
+
+    def redirect_chain(self) -> list[str]:
+        """Chaîne de redirection du cadre principal. Vide quand la page s'est
+        chargée sans saut : une seule URL n'est pas une chaîne."""
+        return list(self.navigations) if len(self.navigations) > 1 else []
+
+
+def _is_main_frame_navigation(page: Any, req: Any) -> bool:
+    """Vrai si `req` navigue le cadre PRINCIPAL (les iframes ne font pas partie
+    de la chaîne de redirection). Ne lève jamais : un listener qui lève casse
+    la collecte réseau entière (cadre détaché, page fermée en cours de route)."""
+    try:
+        return bool(req.is_navigation_request()) and req.frame == page.main_frame
+    except Exception:  # noqa: BLE001 - un listener ne doit jamais lever
+        return False
 
 
 def _escaped_len(value: Any) -> int:
