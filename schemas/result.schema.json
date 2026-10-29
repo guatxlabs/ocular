@@ -114,9 +114,90 @@
           },
           "title": "Links",
           "type": "array"
+        },
+        "domains": {
+          "items": {
+            "$ref": "#/$defs/DomainInfo"
+          },
+          "title": "Domains",
+          "type": "array"
         }
       },
       "title": "DomInfo",
+      "type": "object"
+    },
+    "DomainInfo": {
+      "description": "Fiche RDAP d'un domaine enregistrable de la chaîne de redirection\n(cf. engine.domain_intel). Champs `None` = inconnu ou masqué par le\nregistre (RGPD) — jamais une preuve d'absence.",
+      "properties": {
+        "domain": {
+          "title": "Domain",
+          "type": "string"
+        },
+        "created": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Created"
+        },
+        "age_days": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Age Days"
+        },
+        "registrant": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registrant"
+        },
+        "registrar": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Registrar"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "domain"
+      ],
+      "title": "DomainInfo",
       "type": "object"
     },
     "DynamicStep": {

@@ -6,7 +6,7 @@ réglage des poids/seuils : éditable à la main, versionné en Git. Un jeu cali
 OCULAR_TRIAGE_WEIGHTS. Poids calés sur la logique de engine/verdict.py."""
 
 BUILTIN = {
-    "version": "builtin-1",
+    "version": "builtin-2",  # builtin-2 : + signaux de domaines (RDAP)
     "base": 5,
     "bands": {"medium": 40, "high": 70},  # score < medium -> low ; >= high -> high
     "signals": {
@@ -27,6 +27,14 @@ BUILTIN = {
         "many_third_parties":    (8.0,  "Nombreux tiers réseau"),
         "console_errors":        (4.0,  "Erreurs console"),
         "redirect_chain":        (6.0,  "Chaîne de redirections"),
+        # Signaux de domaines (engine/domain_intel.py, RDAP). 30 : un domaine
+        # de moins de `YOUNG_DOMAIN_DAYS` dans la chaîne fait passer une page
+        # par ailleurs muette (base 5 + redirections 6 + inter-domaines 4 + 30
+        # = 45) en bande `medium` — c'est le
+        # profil type d'un lien de phishing qui rebondit vers la marque imitée.
+        "young_domain":          (30.0, "Domaine récent"),
+        "registrant_mismatch":   (10.0, "Titulaires différents dans la chaîne"),
+        "cross_domain_redirect": (4.0,  "Redirection inter-domaines"),
     },
 }
 
@@ -34,3 +42,7 @@ BUILTIN = {
 # se déclenche. Ici (pas dans BUILTIN) car c'est un paramètre d'extraction, pas
 # un poids calibrable.
 MANY_THIRD_PARTIES_THRESHOLD = 10
+
+# Âge (jours) sous lequel un domaine de la chaîne est « récent ». 30 j : la
+# plupart des domaines de phishing servent dans le mois qui suit leur achat.
+YOUNG_DOMAIN_DAYS = 30

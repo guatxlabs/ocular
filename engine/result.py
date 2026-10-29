@@ -105,6 +105,18 @@ class DynamicStep(BaseModel):
     error: Optional[str] = None
 
 
+class DomainInfo(BaseModel):
+    """Fiche RDAP d'un domaine enregistrable de la chaîne de redirection
+    (cf. engine.domain_intel). Champs `None` = inconnu ou masqué par le
+    registre (RGPD) — jamais une preuve d'absence."""
+    domain: str
+    created: Optional[str] = None      # date d'enregistrement ISO (registre)
+    age_days: Optional[int] = None     # âge AU MOMENT de l'analyse
+    registrant: Optional[str] = None   # titulaire (organisation), si publié
+    registrar: Optional[str] = None
+    error: Optional[str] = None        # consultation ratée (timeout, TLD sans RDAP…)
+
+
 class DomInfo(TruncatableEntry):
     title: str = ""
     final_url: str = ""
@@ -112,6 +124,7 @@ class DomInfo(TruncatableEntry):
     forms: list[dict] = Field(default_factory=list)   # [{action, method}] — cf. static.extract_forms
     mailtos: list[str] = Field(default_factory=list)  # cibles mailto: — cf. static.extract_mailtos
     links: list[str] = Field(default_factory=list)
+    domains: list[DomainInfo] = Field(default_factory=list)
 
 
 class StealthInfo(BaseModel):
@@ -341,6 +354,15 @@ FIELD_VOLUME: dict[str, Decl] = {
     "DomInfo.forms":                        Decl(_S, "other_dropped"),
     "DomInfo.mailtos":                      Decl(_S, "other_dropped"),
     "DomInfo.links":                        Decl(_S, "other_dropped"),
+    "DomInfo.domains":                      Decl(_S, "other_dropped"),   # ≤ MAX_DOMAINS (engine.domain_intel)
+    # Fiches RDAP : volume dicté par le REGISTRE, pas par la page — `domain` est
+    # un nom validé (≤ 253 o.), les autres champs viennent de la réponse RDAP
+    # (bornée à 1 Mio à la lecture) ; un dépassement reste mesuré et dit.
+    "DomainInfo.domain":                    Decl(_R),
+    "DomainInfo.created":                   Decl(_R),
+    "DomainInfo.registrant":                Decl(_R),
+    "DomainInfo.registrar":                 Decl(_R),
+    "DomainInfo.error":                     Decl(_F),   # nom d'exception ou libellé du dépôt
     # -- reste
     "StealthInfo.challenge":                Decl(_R),
     "TriageSignal.key":                     Decl(_F),

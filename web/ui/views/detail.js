@@ -608,6 +608,23 @@ function mount(app, id, src) {
     return sec;
   }
 
+  // Fiche RDAP d'un domaine (engine/domain_intel.py) en une ligne lisible.
+  // Un champ absent = inconnu ou masqué par le registre, jamais « aucun ».
+  function domainLine(d) {
+    const parts = [String(d.domain || '?')];
+    if (d.error) {
+      parts.push('registre injoignable (' + String(d.error) + ')');
+    } else {
+      if (d.created) {
+        const age = d.age_days == null ? '' : (d.age_days < 365 ? ' (' + d.age_days + ' j)' : ' (' + Math.floor(d.age_days / 365) + ' ans)');
+        parts.push('créé le ' + String(d.created).slice(0, 10) + age);
+      }
+      parts.push('titulaire : ' + (d.registrant ? String(d.registrant) : 'masqué ou inconnu'));
+      if (d.registrar) parts.push('registraire : ' + String(d.registrar));
+    }
+    return parts.join(' · ');
+  }
+
   function buildDom(r) {
     const dom = r.dom || {};
     const artifacts = r.artifacts || {};
@@ -632,6 +649,10 @@ function mount(app, id, src) {
     addRow('Chaîne de redirection',
       (dom.redirect_chain && dom.redirect_chain.length) ? dom.redirect_chain.join(' → ') : '—',
       'redirect_chain');
+    const domains = Array.isArray(dom.domains) ? dom.domains : [];
+    if (domains.length) {
+      addRow('Domaines de la chaîne', el('div', {}, domains.map((d) => el('div', {}, domainLine(d)))), 'domains');
+    }
     const restMark = marks.rest(el);
     if (restMark) addRow('Champs coupés', restMark);
     const card = el('div.card', {}, [kv]);

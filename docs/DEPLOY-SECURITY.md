@@ -31,6 +31,8 @@ Ce document distingue **ce qu'Ocular garantit dans son code** de **ce qui reste 
 
 **Mode strict egress** (`OCULAR_REQUIRE_EGRESS_GUARD=1`) : le runner **REFUSE de démarrer** (fail-closed) si le garde est désactivé, au lieu de lancer un navigateur à egress direct. Un garde désactivé émet toujours un **WARNING bruyant**.
 
+**Consultation RDAP des domaines** (`OCULAR_DOMAIN_INTEL`, ON par défaut) : après une capture, le **broker** (pas le runner) interroge le serveur RDAP officiel du TLD de chaque domaine de la chaîne de redirection (annuaire IANA, https seul, sans redirection, 5 domaines et 10 s au plus) pour en lire l'âge et le titulaire. Le registre apprend donc depuis l'IP du broker qu'on s'intéresse au domaine. `OCULAR_DOMAIN_INTEL=0` coupe ce flux sortant ; les signaux de triage de domaines restent alors muets.
+
 ---
 
 ## 2. Résiduels à la charge de l'opérateur (couche réseau — INDISPENSABLE en réseau sensible)

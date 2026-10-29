@@ -8,9 +8,12 @@ import subprocess
 import time
 
 from bus.queue import Job
+from engine import domain_intel
 from engine.artifacts import store_blobs
+from engine.result import OcularResult
+from engine.triage import compute_triage
 from ocular_logging import get_logger
-from ocular_settings import artifacts_dir
+from ocular_settings import artifacts_dir, domain_intel_enabled
 
 log = get_logger("broker.launcher")
 
@@ -106,6 +109,30 @@ def _parse_and_store(stdout: str, artifacts_dir: str) -> str:
             " ".join(f"{k}={v}" for k, v in sorted(truncation.items()) if v),
         )
     return json.dumps(result)                     # résultat léger, sans blobs
+
+
+def enrich_domains(result_json: str, lookup_chain=domain_intel.lookup_chain) -> str:
+    """Ajoute à un résultat `capture` les fiches RDAP des domaines de sa
+    chaîne de redirection (`dom.domains`), puis RECALCULE le triage pour que
+    les signaux de domaines y figurent. Fait ici, côté broker, et pas dans le
+    runner : le bac à sable de capture n'a pas à joindre les registres.
+
+    Ne fait jamais échouer le job : un résultat illisible, une chaîne vide ou
+    une panne RDAP rendent le résultat tel quel (le triage du runner reste)."""
+    try:
+        result = OcularResult.model_validate_json(result_json)
+    except Exception:  # noqa: BLE001 - le résultat brut reste la référence
+        return result_json
+    if not result.dom.redirect_chain:
+        return result_json
+    result.dom.domains = lookup_chain(result.dom.redirect_chain)
+    result.triage = compute_triage(
+        result.static_findings, verdict=result.verdict,
+        network=[n.model_dump() for n in result.network],
+        console=[c.model_dump() for c in result.console],
+        dom=result.dom,
+    )
+    return result.model_dump_json()
 
 
 def base_hardening(name: str, rm: bool = True) -> list[str]:
@@ -211,7 +238,10 @@ def run_job(job: Job) -> str:
         log.error("runner failed job_id=%s duration_ms=%d", job.job_id, duration_ms)
         raise RuntimeError(f"runner a échoué: {proc.stderr.decode()[:500]}")
     log.info("runner done job_id=%s duration_ms=%d", job.job_id, duration_ms)
-    return _parse_and_store(proc.stdout.decode(), _ARTIFACTS_DIR)
+    result_json = _parse_and_store(proc.stdout.decode(), _ARTIFACTS_DIR)
+    if job.profile == "capture" and domain_intel_enabled():
+        result_json = enrich_domains(result_json)
+    return result_json
 
 
 run_analysis_job = run_job  # rétro-compat pour les tests/imports existants

@@ -18,7 +18,7 @@ def test_result_with_triage_roundtrips():
     tri = Triage(
         score=72, band="high", second_opinion="suspicious", agrees_with_rules=False,
         signals=[TriageSignal(key="k", label="L", weight=35.0, detail="d")],
-        weights_version="builtin-1",
+        weights_version="builtin-2",
     )
     r = _minimal_result(triage=tri)
     dumped = r.model_dump(mode="json")
@@ -31,7 +31,7 @@ from engine.triage_weights import BUILTIN
 
 
 def test_builtin_shape():
-    assert BUILTIN["version"] == "builtin-1"
+    assert BUILTIN["version"] == "builtin-2"
     assert 0 <= BUILTIN["bands"]["medium"] < BUILTIN["bands"]["high"] <= 100
     for key, (weight, label) in BUILTIN["signals"].items():
         assert isinstance(key, str) and isinstance(weight, (int, float))
@@ -118,7 +118,7 @@ def test_console_errors_signal():
 
 def test_load_weights_default_is_builtin():
     weights, err = load_weights()
-    assert weights["version"] == "builtin-1" and err is None
+    assert weights["version"] == "builtin-2" and err is None
 
 
 def test_load_weights_malformed_falls_back(tmp_path, monkeypatch):
@@ -126,7 +126,7 @@ def test_load_weights_malformed_falls_back(tmp_path, monkeypatch):
     bad.write_text("{ not json")
     monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(bad))
     weights, err = load_weights()
-    assert weights["version"] == "builtin-1"
+    assert weights["version"] == "builtin-2"
     assert err is not None
 
 
@@ -202,7 +202,7 @@ def test_empty_weights_file_falls_back(tmp_path, monkeypatch):
     p.write_text("{}")
     monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(p))
     weights, err = load_weights()
-    assert weights["version"] == "builtin-1"
+    assert weights["version"] == "builtin-2"
     assert err is not None
     tri = compute_triage([], verdict="benign")
     assert any(s.key == "weights_load_error" for s in tri.signals)
@@ -212,7 +212,7 @@ def test_malformed_signal_entry_falls_back(tmp_path, monkeypatch):
     # forme globale valide mais une entrée de signal n'est pas [poids, libellé].
     _write_weights(tmp_path, monkeypatch, signals={"external_form": "oops"})
     weights, err = load_weights()
-    assert weights["version"] == "builtin-1"
+    assert weights["version"] == "builtin-2"
     assert err is not None
     # compute_triage ne doit pas lever et doit surfacer l'erreur de chargement.
     tri = compute_triage([_rf("External form action", "medium")], verdict="benign")
@@ -238,5 +238,5 @@ def test_validate_weights_rejects_bad_band_order(tmp_path, monkeypatch):
     }))
     monkeypatch.setenv("OCULAR_TRIAGE_WEIGHTS", str(bad))
     weights, err = load_weights()
-    assert weights["version"] == "builtin-1"  # fallback
+    assert weights["version"] == "builtin-2"  # fallback
     assert err is not None

@@ -7,8 +7,9 @@ import os
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from engine.domain_intel import chain_domains
 from engine.result import DomInfo, StaticFinding, Triage, TriageSignal, Verdict
-from engine.triage_weights import BUILTIN, MANY_THIRD_PARTIES_THRESHOLD
+from engine.triage_weights import BUILTIN, MANY_THIRD_PARTIES_THRESHOLD, YOUNG_DOMAIN_DAYS
 from engine.verdict import _CRED, _OBF, _URGENCY
 
 
@@ -22,6 +23,21 @@ def _network_hosts(network: list[dict[str, Any]]) -> set[str]:
         if h:
             hosts.add(h)
     return hosts
+
+
+def _domain_signals(dom: Optional[DomInfo]) -> dict[str, tuple[bool, str]]:
+    """Signaux tirés des fiches RDAP DÉJÀ stockées dans `dom.domains` (aucune
+    requête ici : la calibration rejoue ce calcul hors ligne). Un titulaire
+    inconnu ou masqué ne compte jamais comme « différent »."""
+    domains = list(dom.domains) if dom else []
+    young = [d for d in domains if d.age_days is not None and d.age_days < YOUNG_DOMAIN_DAYS]
+    owners = {d.registrant.casefold().strip(): d.registrant for d in domains if d.registrant}
+    hops = chain_domains(dom.redirect_chain) if dom else []
+    return {
+        "young_domain": (bool(young), ", ".join(f"{d.domain} : {d.age_days} j" for d in young)),
+        "registrant_mismatch": (len(owners) > 1, " / ".join(sorted(owners.values())) if len(owners) > 1 else ""),
+        "cross_domain_redirect": (len(hops) > 1, " → ".join(hops) if len(hops) > 1 else ""),
+    }
 
 
 def extract_signals(
@@ -53,6 +69,7 @@ def extract_signals(
         "many_third_parties":    (len(hosts) > MANY_THIRD_PARTIES_THRESHOLD, f"{len(hosts)} hôtes distincts" if hosts else ""),
         "console_errors":        (n_err > 0, f"{n_err} erreurs console" if n_err else ""),
         "redirect_chain":        (n_redir > 1, f"{n_redir} sauts" if n_redir > 1 else ""),
+        **_domain_signals(dom),
     }
 
 

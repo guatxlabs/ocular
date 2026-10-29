@@ -311,6 +311,16 @@ def egress_guard_enabled() -> bool:
     )
 
 
+def domain_intel_enabled() -> bool:
+    """Consultation RDAP (âge + titulaire) des domaines de la chaîne de
+    redirection, faite par le BROKER après la capture. ON par défaut ; le
+    registre de chaque TLD apprend alors qu'on s'intéresse au domaine (la
+    capture l'a déjà contacté). `OCULAR_DOMAIN_INTEL=0` pour la couper."""
+    return os.environ.get("OCULAR_DOMAIN_INTEL", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+
+
 def require_egress_guard() -> bool:
     """Mode STRICT (déploiement en réseau sensible : entreprise/prod/client).
     Quand `OCULAR_REQUIRE_EGRESS_GUARD` est actif, désactiver le garde egress est

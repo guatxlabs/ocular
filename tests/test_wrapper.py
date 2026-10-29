@@ -241,7 +241,7 @@ def test_build_populates_triage():
     )
     assert result.triage is not None
     assert result.triage.band == "high"
-    assert result.triage.weights_version == "builtin-1"
+    assert result.triage.weights_version == "builtin-2"
 
 
 def test_add_screenshot_skips_oversized(monkeypatch):

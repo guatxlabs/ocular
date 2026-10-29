@@ -58,7 +58,7 @@ const I18N_EN = {
   'Réseau': 'Network', 'Console': 'Console', 'DOM': 'DOM',
   'Télécharger le DOM': 'Download the DOM', 'aucune requête réseau': 'no network request',
   'console vide': 'empty console', 'Titre': 'Title', 'URL finale': 'Final URL',
-  'Chaîne de redirection': 'Redirect chain', 'détections': 'findings', 'requêtes': 'requests',
+  'Chaîne de redirection': 'Redirect chain', 'Domaines de la chaîne': 'Chain domains', 'détections': 'findings', 'requêtes': 'requests',
   'Job introuvable ou expiré.': 'Job not found or expired.',
   'Analyse en attente — actualisation automatique…': 'Analysis pending — auto-refreshing…',
   'Aucune capture pour cette analyse.': 'No screenshot for this analysis.',
