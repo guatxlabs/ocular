@@ -113,6 +113,32 @@ def test_fetch_refuses_plain_http():
         domain_intel._fetch_json("http://rdap.example/domain/x.fr")
 
 
+@pytest.mark.parametrize("url", [
+    "https://127.0.0.1/domain/x.fr",
+    "https://169.254.169.254/latest/meta-data/",
+    "https://[::1]/domain/x.fr",
+    "https://10.0.0.5:8443/domain/x.fr",
+])
+def test_fetch_refuses_internal_hosts(url):
+    # lien `related` hostile d'un registraire : jamais de connexion interne
+    with pytest.raises(ValueError, match="non public"):
+        domain_intel._fetch_json(url)
+
+
+def test_fetch_connects_to_the_checked_ip_not_a_reresolution(monkeypatch):
+    # DNS-rebinding : la connexion part vers l'IP VÉRIFIÉE, sans 2e résolution.
+    monkeypatch.setattr(domain_intel, "resolve_allowed_ip", lambda host, port: "192.0.2.7")
+    seen = []
+
+    def fake_create_connection(addr, timeout=None):
+        seen.append(addr)
+        raise OSError("stop")
+    monkeypatch.setattr(domain_intel.socket, "create_connection", fake_create_connection)
+    with pytest.raises(OSError):
+        domain_intel._fetch_json("https://rdap.example/domain/x.fr")
+    assert seen == [("192.0.2.7", 443)]
+
+
 def test_lookup_chain_marks_slow_domains_timeout(monkeypatch):
     monkeypatch.setattr(domain_intel, "_TOTAL_BUDGET_S", 0.2)
     import threading

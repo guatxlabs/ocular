@@ -11,7 +11,11 @@ Appelé par le BROKER après la capture, jamais par le runner : le bac à sable
 de capture n'a aucune raison de joindre les registres. Les URLs interrogées
 viennent de l'annuaire IANA (et du lien `related` que rend le registre), le
 nom de domaine n'est qu'un segment de chemin validé — la page analysée ne
-choisit aucun hôte contacté ici.
+choisit aucun hôte contacté ici. Le lien `related` désigne toutefois un hôte
+de REGISTRAIRE que rien ne garantit : chaque requête résout donc son hôte,
+refuse une IP non publique (`engine.ssrf`) et se connecte à CETTE IP-là
+(pinning, défait le DNS-rebinding) — le broker détient le socket Docker, il
+ne doit jamais devenir un relais vers le réseau interne.
 
 Fail-safe : aucune fonction publique ne lève. Une consultation ratée donne
 une `DomainInfo(error=...)`, et un champ masqué par le registre (RGPD) reste
@@ -19,9 +23,11 @@ une `DomainInfo(error=...)`, et un champ masqué par le registre (RGPD) reste
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import re
+import socket
 import threading
 import time
 import urllib.request
@@ -31,6 +37,7 @@ from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
 
 from engine.result import DomainInfo
+from engine.ssrf import resolve_allowed_ip
 from ocular_logging import get_logger
 
 log = get_logger("domain_intel")
@@ -103,14 +110,39 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect(), urllib.request.ProxyHandler({}))
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connexion TLS vers une IP DÉJÀ vérifiée ; SNI et certificat restent
+    vérifiés sur le nom d'hôte d'origine (même mécanique que web/llm.py)."""
+
+    def __init__(self, host, pinned_ip, **kw):
+        super().__init__(host, **kw)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, pinned_ip):
+        super().__init__()
+        self._pinned_ip = pinned_ip
+
+    def https_open(self, req):
+        return self.do_open(lambda host, **kw: _PinnedHTTPSConnection(host, self._pinned_ip, **kw), req)
 
 
 def _fetch_json(url: str) -> Any:
-    if urlsplit(url).scheme != "https":
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname:
         raise ValueError("RDAP hors https refusé")
+    pinned_ip = resolve_allowed_ip(parts.hostname, parts.port or 443)
+    if pinned_ip is None:
+        raise ValueError("hôte RDAP non public ou non résolu")
+    opener = urllib.request.build_opener(
+        _PinnedHTTPSHandler(pinned_ip), _NoRedirect(), urllib.request.ProxyHandler({}))
     req = urllib.request.Request(url, headers={"Accept": "application/rdap+json, application/json"})
-    with _OPENER.open(req, timeout=_HTTP_TIMEOUT_S) as resp:
+    with opener.open(req, timeout=_HTTP_TIMEOUT_S) as resp:
         body = resp.read(_MAX_BODY_BYTES + 1)
     if len(body) > _MAX_BODY_BYTES:
         raise ValueError("réponse RDAP trop grande")
