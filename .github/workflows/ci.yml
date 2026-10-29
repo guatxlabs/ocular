@@ -51,8 +51,14 @@ jobs:
         env:
           BASE_PR: ${{ github.event.pull_request.base.sha }}
           BASE_PUSH: ${{ github.event.before }}
+          # Sur `pull_request`, `HEAD` est le commit de FUSION SYNTHÉTIQUE que GitHub
+          # fabrique (`refs/pull/N/merge`), committer « GitHub » : le garde refusait
+          # donc toute PR pour un commit qui ne sera jamais publié. On juge la TÊTE
+          # de la PR, c'est-à-dire les commits réellement proposés.
+          HEAD_PR: ${{ github.event.pull_request.head.sha }}
         run: |
           set -eu
+          HEAD_REF="${HEAD_PR:-HEAD}"
           # Plage : les commits AJOUTÉS par ce push / cette PR. Sur une branche neuve
           # (`before` = 000…0) ou un dispatch manuel, on retombe sur le dernier commit
           # via `--rev`, PAS sur une plage littérale « -1 HEAD » : git recevrait cet
@@ -61,10 +67,10 @@ jobs:
           BASE="${BASE_PR:-${BASE_PUSH:-}}"
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
             echo "plage vérifiée : HEAD seul (pas de base lisible)"
-            python3 scripts/check_commit_register.py --rev HEAD
+            python3 scripts/check_commit_register.py --rev "$HEAD_REF"
           else
-            echo "plage vérifiée : $BASE..HEAD"
-            python3 scripts/check_commit_register.py --range "$BASE..HEAD"
+            echo "plage vérifiée : $BASE..$HEAD_REF"
+            python3 scripts/check_commit_register.py --range "$BASE..$HEAD_REF"
           fi
 
   unit:
