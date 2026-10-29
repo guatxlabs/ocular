@@ -18,7 +18,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # `-wait-for-browser`, en attente d'un signal du driver Node qui ne vient
 # jamais). `playwright==1.49.1` (contemporain de ce build Camoufox) résout le
 # handshake -- testé empiriquement : navigation + capture OK.
-RUN pip install --no-cache-dir camoufox[geoip] opencv-python-headless numpy "playwright==1.49.1" pydantic
+# camoufox PINNÉ lui aussi, pour la même raison : sans version, un rebuild du
+# 2026-10-29 a tiré camoufox 0.5.8, incompatible sur deux points mesurés --
+# (1) il écrit au LANCEMENT un fontconfig dans INSTALL_DIR/fontconfig, chemin
+# qu'occupe le symlink `fontconfig -> fontconfigs` posé plus bas (et que la
+# 0.5.8 ne fournit plus) : `FileExistsError`, toute capture échoue ;
+# (2) une fois ce point contourné, `Browser.new_page()` lui passe un argument
+# `contrast` inconnu de playwright 1.49.1 (`TypeError`). Monter camoufox impose
+# donc de monter playwright ET de revoir le symlink fontconfig, ensemble.
+RUN pip install --no-cache-dir "camoufox[geoip]==0.4.11" opencv-python-headless numpy "playwright==1.49.1" pydantic
 # Pas de patch coreBundle.js ici : avec playwright==1.49.1 le fichier
 # driver/package/lib/coreBundle.js visé par l'ancien sed n'existe plus (le
 # sed tournait donc en no-op silencieux, masqué par le `|| true`). La
