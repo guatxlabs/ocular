@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.41.0-jammy@sha256:6db13504e3915a9d9fee8638432c8036216bfda087ea36dd86608db83e3eb560
+FROM mcr.microsoft.com/playwright/python:v1.65.0-jammy@sha256:47cdbe730dd99920b551d8ad5c33547cbc08237de4ac7b6830b1ace3ca33d3ff
 
 WORKDIR /app
 # playwright==1.41.0 pinné pour matcher les binaires navigateurs déjà présents
